@@ -95,8 +95,14 @@ export interface ForecastState {
   trailingStageStr: string; // "🛡️ Начальный SL" | "🔒 BE+..." | "💰 Защита 50%" | "🚀 Трейл X.X ATR"
   trailingStageIdx: number;
   leg1Hit: boolean;
+  leg1Idx?: number;
+  leg1Time?: number;
   leg2Hit: boolean;
+  leg2Idx?: number;
+  leg2Time?: number;
   leg3Hit: boolean;
+  leg3Idx?: number;
+  leg3Time?: number;
   leg4Hit: boolean;
   leg5Hit: boolean;
   isPlanBActive: boolean;
@@ -1180,45 +1186,118 @@ export function evaluateSuperIndicator(
         }
       }
 
-      // Check whether target or entry was hit on any bar since start
+      // Check whether target or entry was hit on any bar since start, recording the exact hit bar index & time
       let leg1Hit = prev.leg1Hit;
+      let leg1Idx = prev.leg1Idx;
+      let leg1Time = prev.leg1Time;
       let leg2Hit = prev.leg2Hit;
+      let leg2Idx = prev.leg2Idx;
+      let leg2Time = prev.leg2Time;
       let leg3Hit = prev.leg3Hit;
+      let leg3Idx = prev.leg3Idx;
+      let leg3Time = prev.leg3Time;
+
       for (let bi = anchorIdx; bi < n; bi++) {
         const cb = candles[bi];
         if (prev.isBull) {
-          if (cb.low <= prev.p1Entry) leg1Hit = true;
-          if (cb.high >= prev.p2Tp1) leg2Hit = true;
-          if (cb.high >= prev.p3Tp2) leg3Hit = true;
+          if (!leg1Hit && cb.low <= prev.p1Entry) {
+            leg1Hit = true;
+            leg1Idx = bi;
+            leg1Time = cb.time;
+          }
+          if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1) {
+            leg2Hit = true;
+            leg2Idx = bi;
+            leg2Time = cb.time;
+          }
+          if (leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2) {
+            leg3Hit = true;
+            leg3Idx = bi;
+            leg3Time = cb.time;
+          }
         } else {
-          if (cb.high >= prev.p1Entry) leg1Hit = true;
-          if (cb.low <= prev.p2Tp1) leg2Hit = true;
-          if (cb.low <= prev.p3Tp2) leg3Hit = true;
+          if (!leg1Hit && cb.high >= prev.p1Entry) {
+            leg1Hit = true;
+            leg1Idx = bi;
+            leg1Time = cb.time;
+          }
+          if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1) {
+            leg2Hit = true;
+            leg2Idx = bi;
+            leg2Time = cb.time;
+          }
+          if (leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2) {
+            leg3Hit = true;
+            leg3Idx = bi;
+            leg3Time = cb.time;
+          }
         }
       }
 
-      // 1. Invalidation: Stop loss hit (Plan B activation)
+      // Active trailing stop progression
+      let activeTrailingSl = prev.activeTrailingSl;
+      let trailingStageStr = prev.trailingStageStr;
+      let trailingStageIdx = prev.trailingStageIdx;
+
+      const currentProfit = prev.isBull ? close - prev.p1Entry : prev.p1Entry - close;
+      const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
+
+      if (currentProfit >= distToTp1) {
+        activeTrailingSl = prev.isBull
+          ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
+          : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
+        trailingStageStr = "💰 Защита 50%";
+        trailingStageIdx = 2;
+      } else if (currentProfit >= distToTp1 * 0.70) {
+        activeTrailingSl = prev.isBull ? prev.p1Entry + atrVal * 0.15 : prev.p1Entry - atrVal * 0.15;
+        trailingStageStr = "🔒 BE+0.15";
+        trailingStageIdx = 1;
+      }
+
+      // =========================================================================
+      // PINE SCRIPT v6 STATE REASONS TO RESET FORECAST:
+      // A forecast stays locked at fc_start_bar and ONLY changes if there's a reason:
+      // =========================================================================
+      const entryWaitBars = tfSec <= 300 ? 8 : tfSec <= 1800 ? 7 : 6;
       const slBroken = prev.isBull ? close < prev.invalidLevelSl : close > prev.invalidLevelSl;
+      const trailingHit = prev.isBull ? close < activeTrailingSl : close > activeTrailingSl;
+      const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? (n - 1 - leg2Idx) : 0;
+
+      // 1. Invalidation: Stop loss hit (Plan B activation)
       if (slBroken) {
         shouldTriggerNewForecast = true;
         triggerReason = `Слом SL (${prev.invalidLevelSl.toFixed(1)}) — активация Плана Б`;
       }
       // 2. Final TP2 hit and completed
-      else if (leg3Hit && barsPassed >= 3) {
+      else if (leg3Hit && typeof leg3Idx === "number" && (n - 1 - leg3Idx >= 3)) {
         shouldTriggerNewForecast = true;
         triggerReason = `Цель TP2 (${prev.p3Tp2.toFixed(1)}) достигнута`;
       }
-      // 3. Timeout without entry (12 bars passed)
-      else if (!leg1Hit && barsPassed >= 12) {
+      // 3. Trailing SL hit after taking TP1 (trade successfully concluded in profit)
+      else if (leg2Hit && trailingHit && trailingStageIdx > 0) {
         shouldTriggerNewForecast = true;
-        triggerReason = `Таймаут входа (${barsPassed} баров без отката)`;
+        triggerReason = `Взят TP1 (${prev.p2Tp1.toFixed(1)}) и сработал трейлинг-стоп`;
       }
-      // 4. Maximum cycle completion (20 bars)
-      else if (barsPassed >= 20) {
+      // 4. Stale timeout without entry (Pine: entry_wait_bars passed without touching entry)
+      else if (!leg1Hit && barsPassed >= entryWaitBars) {
+        shouldTriggerNewForecast = true;
+        triggerReason = `Таймаут входа (${barsPassed} баров без отката к уровню)`;
+      }
+      // 5. Stale after TP1 without reaching TP2 (> 25 bars)
+      else if (leg2Hit && !leg3Hit && barsSinceTp1 >= 25) {
+        shouldTriggerNewForecast = true;
+        triggerReason = `Таймаут движения к TP2 (${barsSinceTp1} баров)`;
+      }
+      // 6. Maximum overall cycle completion (40 bars)
+      else if (barsPassed >= 40) {
         shouldTriggerNewForecast = true;
         triggerReason = `Волновой цикл завершен (${barsPassed} баров)`;
       }
-      // 5. Structure breakout in opposite direction with high momentum
+      // 7. Structural reversal: high-confidence opposite sweep or opposite BOS with high delta
+      else if ((prev.isBull && isHighSweep && !isLowSweep) || (!prev.isBull && isLowSweep && !isHighSweep)) {
+        shouldTriggerNewForecast = true;
+        triggerReason = `Снятие ликвидности в противоположную сторону (${prev.isBull ? "High Sweep" : "Low Sweep"})`;
+      }
       else if (isBos && (isBullishBreak !== prev.isBull) && isExtremeDelta) {
         shouldTriggerNewForecast = true;
         triggerReason = `Структурный разворот (${isBullishBreak ? "BOS ↑" : "BOS ↓"})`;
@@ -1226,36 +1305,24 @@ export function evaluateSuperIndicator(
 
       if (!shouldTriggerNewForecast) {
         // PRESERVE ANCHORED FORECAST LEVELS
-        let activeTrailingSl = prev.activeTrailingSl;
-        let trailingStageStr = prev.trailingStageStr;
-        let trailingStageIdx = prev.trailingStageIdx;
-
-        const currentProfit = prev.isBull ? close - prev.p1Entry : prev.p1Entry - close;
-        const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
-
-        if (currentProfit >= distToTp1) {
-          activeTrailingSl = prev.isBull
-            ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
-            : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
-          trailingStageStr = "💰 Защита 50%";
-          trailingStageIdx = 2;
-        } else if (currentProfit >= distToTp1 * 0.70) {
-          activeTrailingSl = prev.isBull ? prev.p1Entry + atrVal * 0.15 : prev.p1Entry - atrVal * 0.15;
-          trailingStageStr = "🔒 BE+0.15";
-          trailingStageIdx = 1;
-        }
-
         finalForecast = {
           ...prev,
           startBar: anchorIdx,
           startLogical: anchorIdx,
           startTime: existingItem.anchorCandleTime,
+          startPrice: existingItem.forecast.startPrice,
           barsSinceStart: barsPassed,
           isLocked: true,
           statusReason: `Фиксирован (бар #${anchorIdx}, ${barsPassed} баров назад)`,
           leg1Hit,
+          leg1Idx,
+          leg1Time,
           leg2Hit,
+          leg2Idx,
+          leg2Time,
           leg3Hit,
+          leg3Idx,
+          leg3Time,
           activeTrailingSl: Math.round(activeTrailingSl * 100) / 100,
           trailingStageStr,
           trailingStageIdx
@@ -1281,12 +1348,14 @@ export function evaluateSuperIndicator(
       p3Tp2: Math.round(p3Tp2 * 100) / 100,
       p5Tp3: Math.round(p5Tp3 * 100) / 100,
       invalidLevelSl: Math.round(invalidLevelSl * 100) / 100,
-      activeTrailingSl: Math.round(activeTrailingSl * 100) / 100,
-      trailingStageStr,
-      trailingStageIdx,
+      activeTrailingSl: Math.round(invalidLevelSl * 100) / 100,
+      trailingStageStr: "🛡️ Начальный SL",
+      trailingStageIdx: 0,
       leg1Hit: isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry,
-      leg2Hit: isBull ? lastCandle.high >= p2Tp1 : lastCandle.low <= p2Tp1,
-      leg3Hit: isBull ? lastCandle.high >= p3Tp2 : lastCandle.low <= p3Tp2,
+      leg1Idx: (isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry) ? n - 1 : undefined,
+      leg1Time: (isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry) ? lastCandle.time : undefined,
+      leg2Hit: false,
+      leg3Hit: false,
       leg4Hit: false,
       leg5Hit: false,
       isPlanBActive,

@@ -364,6 +364,216 @@ import {
   resetIndicatorForecast
 } from "../lib/pineSuperIndicatorEngine";
 
+interface ChartOverlaysProps {
+  chart: IChartApi | null;
+  series: any;
+  chartWrapperRef: React.RefObject<HTMLDivElement | null>;
+  activeAsset: AssetSymbol;
+  activeTf: Timeframe;
+  marketStatus: {
+    isOpen: boolean;
+    isPremarket?: boolean;
+    isClearing?: boolean;
+    sessionType?: string;
+    statusBadge?: string;
+    statusText: string;
+  };
+  barCountdownFormatted: string;
+  candles: any[];
+}
+
+const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
+  chart,
+  series,
+  chartWrapperRef,
+  activeAsset,
+  activeTf,
+  marketStatus,
+  barCountdownFormatted,
+  candles
+}) => {
+  const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
+  const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
+  const candlesRef = useRef(candles);
+  useEffect(() => {
+    candlesRef.current = candles;
+  }, [candles]);
+
+  useEffect(() => {
+    if (!chart || !series) return;
+    const handleCrosshairMove = (param: any) => {
+      if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+        setHoveredCandle(null);
+        return;
+      }
+      const data = param.seriesData?.get(series);
+      if (data && typeof data === "object") {
+        const fullCandle = candlesRef.current?.find((c) => c.time === param.time);
+        const o = "open" in data ? (data as any).open : (fullCandle?.open ?? (data as any).value ?? 0);
+        const h = "high" in data ? (data as any).high : (fullCandle?.high ?? o);
+        const l = "low" in data ? (data as any).low : (fullCandle?.low ?? o);
+        const c = "close" in data ? (data as any).close : (fullCandle?.close ?? (data as any).value ?? o);
+        setHoveredCandle({
+          time: Number(param.time),
+          open: Number(o),
+          high: Number(h),
+          low: Number(l),
+          close: Number(c),
+          volume: fullCandle?.volume ?? 0
+        });
+      } else {
+        setHoveredCandle(null);
+      }
+    };
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+    return () => {
+      try { chart.unsubscribeCrosshairMove(handleCrosshairMove); } catch {}
+    };
+  }, [chart, series]);
+
+  useEffect(() => {
+    if (!series) return;
+    const updateCoord = () => {
+      const last = candlesRef.current && candlesRef.current.length > 0 ? candlesRef.current[candlesRef.current.length - 1] : null;
+      if (!last || !series) return;
+      try {
+        const y = series.priceToCoordinate(last.close);
+        if (typeof y === "number" && !isNaN(y)) {
+          setPriceCoordY(y);
+        }
+      } catch {}
+    };
+    updateCoord();
+    if (chart) {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(updateCoord);
+      const interval = setInterval(updateCoord, 500);
+      return () => {
+        clearInterval(interval);
+        try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateCoord); } catch {}
+      };
+    }
+  }, [chart, series, candles]);
+
+  const latestCandle = candles && candles.length > 0 ? candles[candles.length - 1] : null;
+  const displayCandle = hoveredCandle || latestCandle;
+  const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+
+  let ohlcBlock = null;
+  if (displayCandle) {
+    const isHover = !!hoveredCandle;
+    const o = displayCandle.open ?? displayCandle.close;
+    const c = displayCandle.close;
+    const h = displayCandle.high ?? Math.max(o, c);
+    const l = displayCandle.low ?? Math.min(o, c);
+    const chg = c - o;
+    const chgPct = o !== 0 ? (chg / o) * 100 : 0;
+    const isBull = c >= o;
+    const toneClass = isBull ? "text-emerald-400" : "text-rose-400";
+    const mskTimeStr = new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date(displayCandle.time * 1000)).replace(",", "") + " МСК";
+
+    ohlcBlock = (
+      <div className="absolute top-1.5 left-2 z-15 pointer-events-none flex items-center gap-1 sm:gap-2 text-[9.5px] sm:text-[10.5px] font-mono bg-[#0c101d]/90 backdrop-blur-xs px-2 py-0.5 sm:py-1 rounded-lg border border-gray-800 select-none shadow-md flex-wrap max-w-[94%]">
+        <div className="flex items-center gap-1 font-bold">
+          <span className="text-white">{activeAsset}</span>
+          <span className="text-cyan-400 bg-cyan-950/80 px-1 py-0.2 rounded text-[9px] border border-cyan-800/60">{activeTf}</span>
+          {marketStatus.isPremarket ? (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold flex items-center gap-1">
+              <span className="w-1 h-1 rounded-full bg-amber-300 animate-ping" />
+              <span>{marketStatus.statusBadge || "Премаркет"}</span>
+            </span>
+          ) : marketStatus.isClearing ? (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold">
+              {marketStatus.statusBadge || "Клиринг"}
+            </span>
+          ) : !marketStatus.isOpen ? (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/90 text-slate-300 border border-slate-700 font-sans font-bold">
+              {marketStatus.statusBadge || "⏸ Сейчас нет торгов"}
+            </span>
+          ) : (
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-sans font-bold">
+              {marketStatus.statusBadge || "Торги онлайн"}
+            </span>
+          )}
+          {isHover && (
+            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              Свеча
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+          <span className="text-gray-400">О:<span className={toneClass}>{o.toFixed(dec)}</span></span>
+          <span className="text-gray-400">В:<span className={toneClass}>{h.toFixed(dec)}</span></span>
+          <span className="text-gray-400">Н:<span className={toneClass}>{l.toFixed(dec)}</span></span>
+          <span className="text-gray-400">З:<span className={toneClass}>{c.toFixed(dec)}</span></span>
+          <span className={`font-bold ${toneClass}`}>
+            {chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)
+          </span>
+          {displayCandle.volume ? (
+            <span className="text-gray-400 hidden md:inline">
+              Объём: <span className="text-gray-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
+            </span>
+          ) : null}
+          <span className="text-cyan-300 text-[9px] sm:text-[10px] font-mono font-bold flex items-center gap-1 border-l border-gray-700/80 pl-1.5">
+            <Clock className="h-2.5 w-2.5 text-cyan-400 animate-pulse" />
+            <span>Бар: {barCountdownFormatted}</span>
+          </span>
+          <span className="text-cyan-300/90 text-[9px] sm:text-[10px] flex items-center gap-1 border-l border-gray-700/80 pl-1.5 hidden sm:flex">
+            <span>{mskTimeStr}</span>
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const maxH = chartWrapperRef.current?.clientHeight || 600;
+  const isBadgeVisible = priceCoordY !== null && priceCoordY >= 5 && priceCoordY <= (maxH - 20);
+
+  return (
+    <>
+      {ohlcBlock}
+      {isBadgeVisible && (
+        <div
+          className="absolute z-20 pointer-events-none select-none flex justify-center"
+          style={{
+            top: `${priceCoordY + 13}px`,
+            right: "2px",
+            width: marketStatus.isOpen ? "58px" : "80px"
+          }}
+          title={marketStatus.isOpen ? `Отсчёт времени закрытия бара ${activeTf}: ${barCountdownFormatted}` : marketStatus.statusText}
+        >
+          {marketStatus.isOpen ? (
+            <div className="bg-[#0f141f]/95 border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+              <span>{barCountdownFormatted}</span>
+            </div>
+          ) : marketStatus.isPremarket ? (
+            <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+              <span className="w-1 h-1 rounded-full bg-amber-400 animate-ping" />
+              <span>Премаркет</span>
+            </div>
+          ) : marketStatus.isClearing ? (
+            <div className="bg-[#1c180b]/95 border border-yellow-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-yellow-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+              <span>⏸ Клиринг</span>
+            </div>
+          ) : (
+            <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+              <span>⏸ {marketStatus.statusBadge || "Стоп"}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+});
+
 export interface AutonomousTradingStationProps {
   currentUser?: UserAccountItem;
   onUserChange?: (user: UserAccountItem) => void;
@@ -586,6 +796,42 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // Live Market & GEX Data
   const [candles, setCandles] = useState<any[]>(() => generateFallbackCandles("XAUUSD", "15m", 140));
+  const [candlesKey, setCandlesKey] = useState<string>("XAUUSD_15m");
+  const activeAssetRef = useRef<AssetSymbol>(activeAsset);
+  const activeTfRef = useRef<Timeframe>(activeTf);
+  useEffect(() => {
+    activeAssetRef.current = activeAsset;
+    activeTfRef.current = activeTf;
+  }, [activeAsset, activeTf]);
+  const fetchSeqRef = useRef<number>(0);
+  const clientCandlesCacheRef = useRef<Map<string, any[]>>(new Map());
+
+  // Instant hydration and cache lookup for timeframe switching
+  const handleSelectTimeframe = (tf: Timeframe) => {
+    if (tf === activeTf) return;
+    activeTfRef.current = tf;
+    const key = `${activeAsset}_${tf}`;
+    const cached = clientCandlesCacheRef.current.get(key);
+    if (cached && cached.length > 0) {
+      setCandles(cached);
+      setCandlesKey(key);
+    }
+    setActiveTf(tf);
+  };
+
+  // Instant hydration and cache lookup for asset switching
+  const handleSelectAsset = (asset: AssetSymbol) => {
+    if (asset === activeAsset) return;
+    activeAssetRef.current = asset;
+    const key = `${asset}_${activeTf}`;
+    const cached = clientCandlesCacheRef.current.get(key);
+    if (cached && cached.length > 0) {
+      setCandles(cached);
+      setCandlesKey(key);
+    }
+    setActiveAsset(asset);
+  };
+
   const [gexReport, setGexReport] = useState<GexMarketReport | null>(null);
   const [dayGexReport, setDayGexReport] = useState<GexMarketReport | null>(null);
   const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
@@ -637,7 +883,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // 1-second live ticker for TradingView bar close countdown
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(() => Math.floor(Date.now() / 1000));
-  const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -675,37 +920,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     return { formatted, seconds: diff };
   }, [candles, currentStepSec, currentTimeSec]);
 
-  // Synchronize price coordinate on price scale for live countdown badge
-  useEffect(() => {
-    const updateCoord = () => {
-      const last = candles && candles.length > 0 ? candles[candles.length - 1] : null;
-      if (!seriesInstanceRef.current || !last) return;
-      try {
-        const y = seriesInstanceRef.current.priceToCoordinate(last.close);
-        if (typeof y === "number" && !isNaN(y)) {
-          setPriceCoordY(y);
-        }
-      } catch {}
-    };
-    updateCoord();
-    const chart = chartInstanceRef.current;
-    if (chart) {
-      chart.timeScale().subscribeVisibleLogicalRangeChange(updateCoord);
-      chart.subscribeCrosshairMove(updateCoord);
-      // Periodic fallback sync so pan/drag on price scale keeps badge aligned
-      const interval = setInterval(updateCoord, 500);
-      return () => {
-        clearInterval(interval);
-        try {
-          chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateCoord);
-          chart.unsubscribeCrosshairMove(updateCoord);
-        } catch {}
-      };
-    }
-  }, [candles]);
-
-  // Hovered candle for TradingView-style OHLC display & Moscow time tooltip
-  const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
+  // Candle reference for sub-features
   const candlesRef = useRef<any[]>(candles);
   useEffect(() => {
     candlesRef.current = candles;
@@ -1007,7 +1222,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // 100% synchronized indicator output (Engine single source of truth for both chart and HUD)
   const indicatorOutput = useMemo<SuperIndicatorOutput | null>(() => {
-    if (!candles || candles.length < 10) return null;
+    if (!candles || candles.length < 10 || candlesKey !== `${activeAsset}_${activeTf}`) return null;
     return evaluateSuperIndicator(candles, activeAsset, activeTf, presetSel, {
       showOb,
       showFvg,
@@ -1024,6 +1239,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
   }, [
     candles,
+    candlesKey,
     activeAsset,
     activeTf,
     presetSel,
@@ -1287,16 +1503,50 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const priceLinesRef = useRef<any[]>([]);
   const zonesPrimitiveRef = useRef<TradingViewZonesPrimitive | null>(null);
   const lastFittedKeyRef = useRef<string>("");
+  const prevCleanCandlesRef = useRef<any[]>([]);
 
   // 1. Fetch Market Candles from local server
   const fetchCandles = async (symbol: AssetSymbol, interval: Timeframe) => {
+    const mySeq = ++fetchSeqRef.current;
     try {
       setIsLoadingCandles(true);
       const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=160`);
       if (res.ok) {
         const data = await res.json();
+        // Discard stale out-of-order responses if user switched asset or timeframe
+        if (mySeq !== fetchSeqRef.current || symbol !== activeAssetRef.current || interval !== activeTfRef.current) {
+          return;
+        }
         if (data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
-          setCandles(data.candles);
+          const cleanBars: any[] = [];
+          for (let i = 0; i < data.candles.length; i++) {
+            const c = data.candles[i];
+            if (!c || typeof c.time !== "number" || isNaN(c.time)) continue;
+            if (cleanBars.length > 0 && c.time <= cleanBars[cleanBars.length - 1].time) {
+              const last = cleanBars[cleanBars.length - 1];
+              cleanBars[cleanBars.length - 1] = {
+                time: last.time,
+                open: Number(c.open ?? last.open),
+                high: Math.max(Number(c.high ?? last.high), last.high),
+                low: Math.min(Number(c.low ?? last.low), last.low),
+                close: Number(c.close ?? last.close),
+                volume: Number(c.volume || last.volume || 100)
+              };
+            } else {
+              cleanBars.push({
+                time: c.time,
+                open: Number(c.open),
+                high: Number(c.high),
+                low: Number(c.low),
+                close: Number(c.close),
+                volume: Number(c.volume || 100)
+              });
+            }
+          }
+          const key = `${symbol}_${interval}`;
+          clientCandlesCacheRef.current.set(key, cleanBars);
+          setCandles(cleanBars);
+          setCandlesKey(key);
           setLastUpdatedMsk(new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК");
         }
         if (data.oandaData) {
@@ -1567,8 +1817,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const applyPreset = (presetName: string, changeAsset = false) => {
     setPresetSel(presetName);
     if (presetName === "Золото (XAUUSD) - 5 мин Скальпинг") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("5m");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("5m");
       setLbSt(2);
       setLbIt(8);
       setLbLt(18);
@@ -1578,8 +1828,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(0.95);
       setFcLookback(18);
     } else if (presetName === "Золото (XAUUSD) - 15 мин Оптимальный") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("15m");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("15m");
       setLbSt(3);
       setLbIt(10);
       setLbLt(22);
@@ -1589,8 +1839,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.10);
       setFcLookback(25);
     } else if (presetName === "Золото (XAUUSD) - 30 мин Свинг-Интрадей") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("30m");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("30m");
       setLbSt(4);
       setLbIt(12);
       setLbLt(26);
@@ -1600,8 +1850,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.15);
       setFcLookback(30);
     } else if (presetName === "Золото (XAUUSD) - 1 час Интрадей/Тренд") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("1h");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("1h");
       setLbSt(4);
       setLbIt(13);
       setLbLt(28);
@@ -1611,8 +1861,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.18);
       setFcLookback(32);
     } else if (presetName === "Золото (XAUUSD) - 4 часа Свинг") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("4h");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("4h");
       setLbSt(5);
       setLbIt(14);
       setLbLt(30);
@@ -1622,8 +1872,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.20);
       setFcLookback(35);
     } else if (presetName === "Золото (XAUUSD) - 1 день Инвестиционный/Дневной") {
-      if (changeAsset) setActiveAsset("XAUUSD");
-      setActiveTf("1d");
+      if (changeAsset) handleSelectAsset("XAUUSD");
+      handleSelectTimeframe("1d");
       setLbSt(5);
       setLbIt(15);
       setLbLt(32);
@@ -1633,8 +1883,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.22);
       setFcLookback(38);
     } else if (presetName === "Биткоин (BTCUSD) - 15 мин Оптимальный") {
-      if (changeAsset) setActiveAsset("BTCUSDT");
-      setActiveTf("15m");
+      if (changeAsset) handleSelectAsset("BTCUSDT");
+      handleSelectTimeframe("15m");
       setLbSt(3);
       setLbIt(10);
       setLbLt(24);
@@ -1644,7 +1894,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.20);
       setFcLookback(25);
     } else if (presetName === "Общий (Все активы) - 1 мин Скальпинг") {
-      setActiveTf("1m");
+      handleSelectTimeframe("1m");
       setLbSt(2);
       setLbIt(5);
       setLbLt(14);
@@ -1654,7 +1904,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(0.75);
       setFcLookback(12);
     } else if (presetName === "Общий (Все активы) - 5 мин Быстрый скальпинг") {
-      setActiveTf("5m");
+      handleSelectTimeframe("5m");
       setLbSt(3);
       setLbIt(8);
       setLbLt(18);
@@ -1664,7 +1914,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(0.90);
       setFcLookback(18);
     } else if (presetName === "Общий (Все активы) - 15 мин Оптимальный") {
-      setActiveTf("15m");
+      handleSelectTimeframe("15m");
       setLbSt(4);
       setLbIt(10);
       setLbLt(24);
@@ -1674,7 +1924,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.10);
       setFcLookback(25);
     } else if (presetName === "Общий (Все активы) - 1 час Часовой тренд") {
-      setActiveTf("1h");
+      handleSelectTimeframe("1h");
       setLbSt(5);
       setLbIt(13);
       setLbLt(28);
@@ -1684,7 +1934,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setFcTargetMult(1.18);
       setFcLookback(30);
     } else if (presetName === "Общий (Все активы) - 4 часа Свинг-трейдинг") {
-      setActiveTf("4h");
+      handleSelectTimeframe("4h");
       setLbSt(5);
       setLbIt(14);
       setLbLt(30);
@@ -1961,39 +2211,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     resizeObserver.observe(container);
 
-    // Crosshair move subscription for TradingView-style candle OHLC & Moscow time
-    const handleCrosshairMove = (param: any) => {
-      if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
-        setHoveredCandle(null);
-        return;
-      }
-      const s = seriesInstanceRef.current;
-      if (!s) return;
-      const data = param.seriesData?.get(s);
-      if (data && typeof data === "object") {
-        const fullCandle = candlesRef.current?.find((c) => c.time === param.time);
-        const o = "open" in data ? (data as any).open : (fullCandle?.open ?? (data as any).value ?? 0);
-        const h = "high" in data ? (data as any).high : (fullCandle?.high ?? o);
-        const l = "low" in data ? (data as any).low : (fullCandle?.low ?? o);
-        const c = "close" in data ? (data as any).close : (fullCandle?.close ?? (data as any).value ?? o);
-        setHoveredCandle({
-          time: Number(param.time),
-          open: Number(o),
-          high: Number(h),
-          low: Number(l),
-          close: Number(c),
-          volume: fullCandle?.volume ?? 0
-        });
-      } else {
-        setHoveredCandle(null);
-      }
-    };
-    chart.subscribeCrosshairMove(handleCrosshairMove);
-
     return () => {
-      try {
-        chart.unsubscribeCrosshairMove(handleCrosshairMove);
-      } catch {}
       try {
         resizeObserver.disconnect();
       } catch {}
@@ -2543,17 +2761,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const chart = chartInstanceRef.current;
     const series = seriesInstanceRef.current;
     const volumeSeries = volumeSeriesRef.current;
-    if (!chart || !series || candles.length === 0 || activeTab !== "chart") return;
+    if (!chart || !series || !candles || candles.length === 0 || activeTab !== "chart") return;
 
-    // 1. Set main price candles
-    const currentKey = `${activeAsset}_${activeTf}`;
+    // Do NOT run until candles match the active asset and timeframe
+    if (candlesKey !== `${activeAsset}_${activeTf}`) return;
+
+    const currentKey = `${activeAsset}_${activeTf}_${chartStyle}`;
     const isNewAssetOrTf = lastFittedKeyRef.current !== currentKey;
-    let prevLogicalRange: any = null;
-    try {
-      if (!isNewAssetOrTf) {
-        prevLogicalRange = chart.timeScale().getVisibleLogicalRange();
-      }
-    } catch {}
 
     // Configure dynamic precision & minMove for every asset
     const assetDec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
@@ -2574,128 +2788,187 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     } catch {}
 
-    // Deduplicate and enforce strictly ascending timestamps for Lightweight Charts
-    const cleanCandles: any[] = [];
-    for (let i = 0; i < candles.length; i++) {
-      const c = candles[i];
-      if (!c || typeof c.time !== "number" || isNaN(c.time)) continue;
-      if (cleanCandles.length > 0 && c.time <= cleanCandles[cleanCandles.length - 1].time) {
-        const last = cleanCandles[cleanCandles.length - 1];
-        cleanCandles[cleanCandles.length - 1] = {
-          time: last.time,
-          open: Number(c.open ?? last.open),
-          high: Math.max(Number(c.high ?? last.high), last.high),
-          low: Math.min(Number(c.low ?? last.low), last.low),
-          close: Number(c.close ?? last.close),
-          volume: Number(c.volume || last.volume || 100)
-        };
-      } else {
-        cleanCandles.push({
-          time: c.time,
-          open: Number(c.open),
-          high: Number(c.high),
-          low: Number(c.low),
-          close: Number(c.close),
-          volume: Number(c.volume || 100)
-        });
-      }
-    }
+    const cleanCandles = candles;
+    const prevList = prevCleanCandlesRef.current;
+    const isMobileW = typeof window !== "undefined" && window.innerWidth < 768;
+    const dynamicOffset = Math.max(labelOffset + 4, isMobileW ? 12 : 18);
+
+    const isFullReload =
+      isNewAssetOrTf ||
+      !prevList ||
+      prevList.length === 0 ||
+      cleanCandles.length < 5 ||
+      cleanCandles[0]?.time !== prevList[0]?.time ||
+      Math.abs(cleanCandles.length - prevList.length) > 2;
 
     try {
-      if (chartStyle === "candles" || chartStyle === "bars") {
-        series.setData(
-          cleanCandles.map(c => ({
-            time: c.time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close
-          }))
-        );
-      } else {
-        series.setData(cleanCandles.map(c => ({ time: c.time, value: c.close })));
-      }
+      if (isFullReload) {
+        // Initial load or switched instrument/timeframe: setData & initial viewport framing
+        if (chartStyle === "candles" || chartStyle === "bars") {
+          series.setData(
+            cleanCandles.map(c => ({
+              time: c.time,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close
+            }))
+          );
+        } else {
+          series.setData(cleanCandles.map(c => ({ time: c.time, value: c.close })));
+        }
 
-      if (volumeSeries) {
-        volumeSeries.setData(
-          cleanCandles.map(c => ({
-            time: c.time,
-            value: c.volume || 100,
-            color: c.close >= c.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
-          }))
-        );
-      }
+        if (volumeSeries) {
+          volumeSeries.setData(
+            cleanCandles.map(c => ({
+              time: c.time,
+              value: c.volume || 100,
+              color: c.close >= c.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
+            }))
+          );
+        }
 
-      // If user had dragged/scrolled the chart, restore range to avoid jarring snaps
-      if (prevLogicalRange && !isNewAssetOrTf) {
         try {
-          chart.timeScale().setVisibleLogicalRange(prevLogicalRange);
+          chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+          const visibleCount = isMobileW ? 42 : 65;
+          const fromIdx = Math.max(0, cleanCandles.length - visibleCount);
+          const toIdx = cleanCandles.length + dynamicOffset;
+          chart.priceScale("right").applyOptions({ autoScale: true });
+          chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+          try { macdChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
+          try { rsiChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
+          try { stochChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
         } catch {}
+
+        lastFittedKeyRef.current = currentKey;
+        prevCleanCandlesRef.current = cleanCandles;
+      } else {
+        // Live streaming tick on same symbol & timeframe (TradingView-style: NEVER resets viewport or interrupts user pan)
+        const lastCandle = cleanCandles[cleanCandles.length - 1];
+        if (chartStyle === "candles" || chartStyle === "bars") {
+          series.update({
+            time: lastCandle.time,
+            open: lastCandle.open,
+            high: lastCandle.high,
+            low: lastCandle.low,
+            close: lastCandle.close
+          });
+        } else {
+          series.update({ time: lastCandle.time, value: lastCandle.close });
+        }
+        if (volumeSeries) {
+          volumeSeries.update({
+            time: lastCandle.time,
+            value: lastCandle.volume || 100,
+            color: lastCandle.close >= lastCandle.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
+          });
+        }
+        prevCleanCandlesRef.current = cleanCandles;
       }
     } catch (err) {
       console.warn("Notice updating series data:", err);
     }
 
-    // 2. Set MACD data if pane is active
-    if (showMacdPane && macdChartInstanceRef.current && macdHistSeriesRef.current && candles.length >= 26) {
+    // 2. Set MACD data if pane is active (streaming update without timeScale recalculation)
+    if (showMacdPane && macdChartInstanceRef.current && macdHistSeriesRef.current && cleanCandles.length >= 26) {
       try {
-        const emaFast = calculateEMA(candles, macdFast);
-        const emaSlow = calculateEMA(candles, macdSlow);
-        const difValues = candles.map((_, i) => emaFast[i] - emaSlow[i]);
-        const deaValues = calculateEMA(candles.map((_, i) => ({ close: difValues[i] })), macdSigLen);
+        const emaFast = calculateEMA(cleanCandles, macdFast);
+        const emaSlow = calculateEMA(cleanCandles, macdSlow);
+        const difValues = cleanCandles.map((_, i) => emaFast[i] - emaSlow[i]);
+        const deaValues = calculateEMA(cleanCandles.map((_, i) => ({ close: difValues[i] })), macdSigLen);
 
-        macdHistSeriesRef.current.setData(
-          candles.map((c, i) => {
-            const hist = difValues[i] - deaValues[i];
-            return {
-              time: c.time,
-              value: Math.round(hist * 100) / 100,
-              color: hist >= 0 ? "#0ecb81" : "#f6465d"
-            };
-          })
-        );
-        macdFastSeriesRef.current?.setData(candles.map((c, i) => ({ time: c.time, value: Math.round(difValues[i] * 100) / 100 })));
-        macdSlowSeriesRef.current?.setData(candles.map((c, i) => ({ time: c.time, value: Math.round(deaValues[i] * 100) / 100 })));
+        if (isFullReload) {
+          macdHistSeriesRef.current.setData(
+            cleanCandles.map((c, i) => {
+              const hist = difValues[i] - deaValues[i];
+              return {
+                time: c.time,
+                value: Math.round(hist * 100) / 100,
+                color: hist >= 0 ? "#0ecb81" : "#f6465d"
+              };
+            })
+          );
+          macdFastSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(difValues[i] * 100) / 100 })));
+          macdSlowSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(deaValues[i] * 100) / 100 })));
+        } else {
+          const lastI = cleanCandles.length - 1;
+          const hist = difValues[lastI] - deaValues[lastI];
+          macdHistSeriesRef.current.update({
+            time: cleanCandles[lastI].time,
+            value: Math.round(hist * 100) / 100,
+            color: hist >= 0 ? "#0ecb81" : "#f6465d"
+          });
+          macdFastSeriesRef.current?.update({ time: cleanCandles[lastI].time, value: Math.round(difValues[lastI] * 100) / 100 });
+          macdSlowSeriesRef.current?.update({ time: cleanCandles[lastI].time, value: Math.round(deaValues[lastI] * 100) / 100 });
+        }
       } catch {}
     }
 
     // 2b. Set RSI data if pane is active
-    if (showRsiPane && rsiChartInstanceRef.current && rsi6SeriesRef.current && rsi14SeriesRef.current && candles.length >= 15) {
+    if (showRsiPane && rsiChartInstanceRef.current && rsi6SeriesRef.current && rsi14SeriesRef.current && cleanCandles.length >= 15) {
       try {
-        const rsi6Data = calculateRSI(candles, rsi6Len);
-        const rsi14Data = calculateRSI(candles, rsi14Len);
-        rsi6SeriesRef.current.setData(rsi6Data);
-        rsi14SeriesRef.current.setData(rsi14Data);
+        const rsi6Data = calculateRSI(cleanCandles, rsi6Len);
+        const rsi14Data = calculateRSI(cleanCandles, rsi14Len);
+        if (isFullReload) {
+          rsi6SeriesRef.current.setData(rsi6Data);
+          rsi14SeriesRef.current.setData(rsi14Data);
+        } else {
+          const last6 = rsi6Data[rsi6Data.length - 1];
+          const last14 = rsi14Data[rsi14Data.length - 1];
+          if (last6) rsi6SeriesRef.current.update(last6);
+          if (last14) rsi14SeriesRef.current.update(last14);
+        }
       } catch {}
     }
 
     // 2c. Set Stochastic data if pane is active
-    if (showStochPane && stochChartInstanceRef.current && stochKSeriesRef.current && stochDSeriesRef.current && candles.length >= 14) {
+    if (showStochPane && stochChartInstanceRef.current && stochKSeriesRef.current && stochDSeriesRef.current && cleanCandles.length >= 14) {
       try {
-        const { kData, dData } = calculateStochastic(candles, 14, 3);
-        stochKSeriesRef.current.setData(kData);
-        stochDSeriesRef.current.setData(dData);
+        const { kData, dData } = calculateStochastic(cleanCandles, 14, 3);
+        if (isFullReload) {
+          stochKSeriesRef.current.setData(kData);
+          stochDSeriesRef.current.setData(dData);
+        } else {
+          const lastK = kData[kData.length - 1];
+          const lastD = dData[dData.length - 1];
+          if (lastK) stochKSeriesRef.current.update(lastK);
+          if (lastD) stochDSeriesRef.current.update(lastD);
+        }
       } catch {}
     }
 
     // 2d. Set EMA 50, EMA 100, EMA 200 data
-    if (ema50SeriesRef.current && candles.length > 0) {
-      try {
-        const e50 = calculateEmaSeries(candles, 50);
-        ema50SeriesRef.current.setData(e50);
-      } catch {}
-    }
-    if (ema100SeriesRef.current && candles.length > 0) {
-      try {
-        const e100 = calculateEmaSeries(candles, 100);
-        ema100SeriesRef.current.setData(e100);
-      } catch {}
-    }
-    if (ema200SeriesRef.current && candles.length > 0) {
-      try {
-        const e200 = calculateEmaSeries(candles, 200);
-        ema200SeriesRef.current.setData(e200);
-      } catch {}
+    if (cleanCandles.length > 0) {
+      if (ema50SeriesRef.current) {
+        try {
+          const e50 = calculateEmaSeries(cleanCandles, 50);
+          if (isFullReload) {
+            ema50SeriesRef.current.setData(e50);
+          } else if (e50.length > 0) {
+            ema50SeriesRef.current.update(e50[e50.length - 1]);
+          }
+        } catch {}
+      }
+      if (ema100SeriesRef.current) {
+        try {
+          const e100 = calculateEmaSeries(cleanCandles, 100);
+          if (isFullReload) {
+            ema100SeriesRef.current.setData(e100);
+          } else if (e100.length > 0) {
+            ema100SeriesRef.current.update(e100[e100.length - 1]);
+          }
+        } catch {}
+      }
+      if (ema200SeriesRef.current) {
+        try {
+          const e200 = calculateEmaSeries(cleanCandles, 200);
+          if (isFullReload) {
+            ema200SeriesRef.current.setData(e200);
+          } else if (e200.length > 0) {
+            ema200SeriesRef.current.update(e200[e200.length - 1]);
+          }
+        } catch {}
+      }
     }
 
     // 3. Clear old price lines
@@ -2706,11 +2979,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
     priceLinesRef.current = [];
 
-
     // 4. Dynamic Trend Line (EMA 200 by default)
-    if (showTrendL && candles.length >= 20) {
-      const len = Math.min(trendLen, candles.length);
-      const trendValues = calculateEMA(candles, len);
+    if (showTrendL && cleanCandles.length >= 20) {
+      const len = Math.min(trendLen, cleanCandles.length);
+      const trendValues = calculateEMA(cleanCandles, len);
       if (!trendLineSeriesRef.current) {
         try {
           trendLineSeriesRef.current = chart.addSeries(LineSeries, {
@@ -2724,7 +2996,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
       if (trendLineSeriesRef.current) {
         try {
-          trendLineSeriesRef.current.setData(candles.map((c, idx) => ({ time: c.time, value: trendValues[idx] })));
+          if (isFullReload) {
+            trendLineSeriesRef.current.setData(cleanCandles.map((c, idx) => ({ time: c.time, value: trendValues[idx] })));
+          } else {
+            const lastIdxVal = cleanCandles.length - 1;
+            trendLineSeriesRef.current.update({ time: cleanCandles[lastIdxVal].time, value: trendValues[lastIdxVal] });
+          }
         } catch {}
       }
     } else if (!showTrendL && trendLineSeriesRef.current) {
@@ -2745,15 +3022,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       "1d": 86400
     };
     const tfSec = tfSecondsMap[activeTf] || 900;
-    const lastCandle = candles[candles.length - 1];
-    const lastIdx = candles.length - 1;
+    const lastIdx = cleanCandles.length - 1;
+    const lastCandle = cleanCandles[lastIdx];
 
     const zoneBoxes: ZoneBox[] = [];
 
     // Order Blocks (+OB Demand & -OB Supply) - bounded by pivot bar and future offset
-    if (showOb && candles.length >= 20) {
-      const scanLen = Math.min(35, candles.length);
-      const recent = candles.slice(-scanLen);
+    if (showOb && cleanCandles.length >= 20) {
+      const scanLen = Math.min(35, cleanCandles.length);
+      const recent = cleanCandles.slice(-scanLen);
       let minIdx = lastIdx - scanLen;
       let maxIdx = lastIdx - scanLen;
       let minPrice = Infinity;
@@ -2772,8 +3049,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         }
       }
 
-      const minCandle = candles[minIdx] || recent[0];
-      const maxCandle = candles[maxIdx] || recent[0];
+      const minCandle = cleanCandles[minIdx] || recent[0];
+      const maxCandle = cleanCandles[maxIdx] || recent[0];
 
       // Bullish OB (+OB Demand) - bounds ending at current bar
       zoneBoxes.push({
@@ -2809,15 +3086,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     // Fair Value Gaps (FVG) - 3-candle imbalance (ends at current bar)
-    if (showFvg && candles.length >= 15) {
-      for (let i = candles.length - 2; i >= Math.max(5, candles.length - 30); i--) {
-        const c1 = candles[i - 2];
-        const c3 = candles[i];
+    if (showFvg && cleanCandles.length >= 15) {
+      for (let i = cleanCandles.length - 2; i >= Math.max(5, cleanCandles.length - 30); i--) {
+        const c1 = cleanCandles[i - 2];
+        const c3 = cleanCandles[i];
         if (c3.low > c1.high) {
           zoneBoxes.push({
             id: `fvg_bull_${c3.time}`,
             type: "fvg_bull",
-            startTime: candles[i - 1].time,
+            startTime: cleanCandles[i - 1].time,
             endTime: lastCandle.time,
             startLogical: i - 1,
             endLogical: lastIdx,
@@ -2833,7 +3110,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           zoneBoxes.push({
             id: `fvg_bear_${c3.time}`,
             type: "fvg_bear",
-            startTime: candles[i - 1].time,
+            startTime: cleanCandles[i - 1].time,
             endTime: lastCandle.time,
             startLogical: i - 1,
             endLogical: lastIdx,
@@ -2849,11 +3126,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // OTE Reversal Zone (0.618 - 0.786 Fibonacci) & 0.50 EQ (Pine Script lines 2579-2585: [bar_index - line_len, bar_index + label_offset])
+    // OTE Reversal Zone (0.618 - 0.786 Fibonacci) & 0.50 EQ
     let eqData: { startTime: number; endTime: number; startLogical?: number; endLogical?: number; price: number; label: string } | null = null;
-    if (showReversal && candles.length > 20) {
+    if (showReversal && cleanCandles.length > 20) {
       const fibLen = Math.min(fibPeriod, 30);
-      const recent = candles.slice(-fibLen);
+      const recent = cleanCandles.slice(-fibLen);
       const highSw = Math.max(...recent.map(c => c.high));
       const lowSw = Math.min(...recent.map(c => c.low));
       const range = highSw - lowSw;
@@ -2865,7 +3142,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
       const oteStartIdx = Math.max(0, lastIdx - lineLen);
       const oteEndIdx = lastIdx + labelOffset;
-      const oteStartTime = candles[oteStartIdx]?.time ?? recent[0].time;
+      const oteStartTime = cleanCandles[oteStartIdx]?.time ?? recent[0].time;
       const oteEndTime = lastCandle.time + tfSec * labelOffset;
 
       zoneBoxes.push({
@@ -2893,13 +3170,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       };
     }
 
-    // S&R Liquidity Zones (Exact Pine Script box.new: [bar_index - offset, p_level + atr * 0.08, bar_index + label_offset, p_level - atr * 0.08])
-    if (showSrZones && candles.length >= 30) {
-      const atrArr = calculateATR(candles, 14);
+    // S&R Liquidity Zones (Liq LT & Liq IT)
+    if (showSrZones && cleanCandles.length >= 30) {
+      const atrArr = calculateATR(cleanCandles, 14);
       const atrVal = atrArr.length > 0 ? atrArr[atrArr.length - 1] : ((lastCandle.high - lastCandle.low) || 10);
       const srHalfH = Math.max(atrVal * 0.08, 0.4);
 
-      const ltRecent = candles.slice(-40);
+      const ltRecent = cleanCandles.slice(-40);
       const phLt = Math.max(...ltRecent.map(c => c.high));
       const plLt = Math.min(...ltRecent.map(c => c.low));
       const ltOffset = 35;
@@ -2907,7 +3184,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const srEndTime = lastCandle.time + tfSec * labelOffset;
 
       const ltStartLogical = Math.max(0, lastIdx - ltOffset);
-      const ltStartTime = candles[ltStartLogical]?.time ?? candles[0].time;
+      const ltStartTime = cleanCandles[ltStartLogical]?.time ?? cleanCandles[0].time;
 
       // Resistance (Liq LT Сопр.)
       zoneBoxes.push({
@@ -2942,7 +3219,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       });
 
       // Intermediate Pivots (IT - offset 15)
-      const itRecent = candles.slice(-18);
+      const itRecent = cleanCandles.slice(-18);
       const phIt = Math.max(...itRecent.map(c => c.high));
       const plIt = Math.min(...itRecent.map(c => c.low));
       if (Math.abs(phIt - phLt) / phLt > 0.003) {
@@ -2950,7 +3227,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         zoneBoxes.push({
           id: "sr_res_it",
           type: "sr",
-          startTime: candles[itStartLogical]?.time ?? lastCandle.time,
+          startTime: cleanCandles[itStartLogical]?.time ?? lastCandle.time,
           endTime: srEndTime,
           startLogical: itStartLogical,
           endLogical: srEndLogical,
@@ -2967,7 +3244,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         zoneBoxes.push({
           id: "sr_sup_it",
           type: "sr",
-          startTime: candles[itStartLogical]?.time ?? lastCandle.time,
+          startTime: cleanCandles[itStartLogical]?.time ?? lastCandle.time,
           endTime: srEndTime,
           startLogical: itStartLogical,
           endLogical: srEndLogical,
@@ -2981,14 +3258,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // Wave Forecast Arrow on Canvas (Exact 1:1 Pine Script port using evaluateSuperIndicator)
+    // Wave Forecast Arrow on Canvas: Anchored to setup bar where signal was formed (Pine Script v8)
     let forecastData: ForecastArrow | null = null;
     let altForecastData: ForecastArrow | null = null;
     let computedTp1 = 0;
     let computedTp2 = 0;
     let computedSl = 0;
     let computedEntry = 0;
-    let isForecastBull = true;
+
+    let setupAnchorLog = lastIdx;
+    let setupAnchorTime = lastCandle.time;
+    let setupAnchorPrice = lastCandle.close;
 
     if (indicatorOutput) {
       const fc = indicatorOutput.forecast;
@@ -2996,46 +3276,84 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       computedTp1 = fc.p2Tp1;
       computedTp2 = fc.p3Tp2;
       computedSl = fc.activeTrailingSl;
-      isForecastBull = fc.isBull;
 
       const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
 
-      // Use anchored start coordinates if fixed/locked (matching TradingView)
-      const startT = fc.startTime ?? lastCandle.time;
-      const startLog = fc.startLogical ?? lastIdx;
+      // Setup Anchor: start from the bar where signal originated (fc.startLogical or fc.startBar)
+      // In the original Pine Script: x0 = fc_start_bar, y0 = fc_start_price
+      // Lines remain anchored at this bar and only change when a target is reached, trailing SL hit, or invalidation occurs.
+      setupAnchorLog = Math.max(0, Math.min(lastIdx, fc.startLogical ?? fc.startBar ?? lastIdx));
+      setupAnchorTime = fc.startTime ?? cleanCandles[setupAnchorLog]?.time ?? lastCandle.time;
+      setupAnchorPrice = (fc.startPrice && fc.startPrice > 0) ? fc.startPrice : (cleanCandles[setupAnchorLog]?.close ?? lastCandle.close);
+
+      // Node coordinates following exact Pine Script vector projection:
+      // x1 (Entry/Pullback): if leg1Hit, anchored at leg1Idx; if pending, projects into future whitespace
+      let x1Log: number;
+      let x1Time: number;
+      if (fc.leg1Hit && fc.leg1Idx !== undefined && fc.leg1Idx <= lastIdx) {
+        x1Log = fc.leg1Idx;
+        x1Time = fc.leg1Time ?? (cleanCandles[x1Log]?.time ?? (setupAnchorTime + tfSec * Math.max(1, x1Log - setupAnchorLog)));
+      } else {
+        x1Log = Math.max(lastIdx + 3, setupAnchorLog + 3);
+        x1Time = lastCandle.time + tfSec * 3;
+      }
+
+      // x2 (TP1): if leg2Hit, anchored at leg2Idx; if pending, projects forward beyond x1
+      let x2Log: number;
+      let x2Time: number;
+      if (fc.leg2Hit && fc.leg2Idx !== undefined && fc.leg2Idx <= lastIdx) {
+        x2Log = fc.leg2Idx;
+        x2Time = fc.leg2Time ?? (cleanCandles[x2Log]?.time ?? (lastCandle.time + tfSec * 4));
+      } else {
+        x2Log = fc.leg1Hit ? Math.max(lastIdx + 7, (fc.leg1Idx ?? lastIdx) + 4) : x1Log + 7;
+        x2Time = lastCandle.time + tfSec * Math.max(7, x2Log - lastIdx);
+      }
+
+      // x3 (TP2): if leg3Hit, anchored at leg3Idx; if pending, projects into future whitespace
+      let x3Log: number;
+      let x3Time: number;
+      if (fc.leg3Hit && fc.leg3Idx !== undefined && fc.leg3Idx <= lastIdx) {
+        x3Log = fc.leg3Idx;
+        x3Time = fc.leg3Time ?? (cleanCandles[x3Log]?.time ?? (lastCandle.time + tfSec * 8));
+      } else {
+        x3Log = fc.leg2Hit ? Math.max(lastIdx + 12, (fc.leg2Idx ?? lastIdx) + 4) : x2Log + 7;
+        x3Time = lastCandle.time + tfSec * Math.max(12, x3Log - lastIdx);
+      }
 
       if (showForecast) {
-        // Wave trajectory only; ВХОД, TP1, TP2, SL labels & horizontal lines are rendered once via boundedLines below
         forecastData = {
-          startTime: startT,
-          startPrice: fc.startPrice,
-          startLogical: startLog,
-          pullbackTime: startT + tfSec * 3,
+          startTime: setupAnchorTime,
+          startPrice: setupAnchorPrice,
+          startLogical: setupAnchorLog,
+          pullbackTime: x1Time,
           pullbackPrice: fc.p1Entry,
-          pullbackLogical: startLog + 3,
-          tp1Time: startT + tfSec * 7,
+          pullbackLogical: x1Log,
+          tp1Time: x2Time,
           tp1Price: fc.p2Tp1,
-          tp1Logical: startLog + 7,
-          tp2Time: startT + tfSec * 12,
+          tp1Logical: x2Log,
+          tp2Time: x3Time,
           tp2Price: fc.p3Tp2,
-          tp2Logical: startLog + 12,
+          tp2Logical: x3Log,
           isBull: fc.isBull,
-          labelStart: fc.isBull
-            ? `🟢 Long ${fc.isLocked && fc.barsSinceStart ? `[#${fc.startBar}]` : ""}`
-            : `🔴 Short ${fc.isLocked && fc.barsSinceStart ? `[#${fc.startBar}]` : ""}`
+          labelStart: fc.isBull ? "🟢 Long" : "🔴 Short",
+          leg1Hit: fc.leg1Hit,
+          leg2Hit: fc.leg2Hit,
+          leg3Hit: fc.leg3Hit
         };
 
         if (showAltWave) {
+          const altStartLog = fc.isPlanBActive ? Math.min(lastIdx, setupAnchorLog + 2) : lastIdx;
+          const altStartTime = cleanCandles[altStartLog]?.time ?? lastCandle.time;
           altForecastData = {
-            startTime: startT,
+            startTime: altStartTime,
             startPrice: fc.activeTrailingSl,
-            startLogical: startLog,
-            tp1Time: startT + tfSec * 6,
+            startLogical: altStartLog,
+            tp1Time: lastCandle.time + tfSec * 6,
             tp1Price: fc.altTp1,
-            tp1Logical: startLog + 6,
-            tp2Time: startT + tfSec * 11,
+            tp1Logical: lastIdx + 6,
+            tp2Time: lastCandle.time + tfSec * 11,
             tp2Price: fc.altTp2,
-            tp2Logical: startLog + 11,
+            tp2Logical: lastIdx + 11,
             isBull: !fc.isBull,
             labelTp1: `План Б: ${fc.altTp1.toFixed(dec)}`,
             labelTp2: `Цель 2: ${fc.altTp2.toFixed(dec)}`
@@ -3046,9 +3364,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     // BOS Marker
     let bosData: BosMarker | null = null;
-    if (showBos && candles.length >= 16) {
-      const bosIdx = candles.length - 12;
-      const bosCandle = candles[bosIdx];
+    if (showBos && cleanCandles.length >= 16) {
+      const bosIdx = cleanCandles.length - 12;
+      const bosCandle = cleanCandles[bosIdx];
       bosData = {
         time: bosCandle.time,
         price: bosCandle.high,
@@ -3059,21 +3377,25 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     // 6. Bounded Price Lines (Entry, TP1, TP2, SL, CW, PW, Flip, Pain, Magnet, EM)
-    // Strictly bounded by [gx1, gx2] bar coordinates matching Pine Script line.new(x1, y1, x2, y2)
+    // Anchored at setup start bar (fc_start_bar) and extending past current bar into right chart margin
     const boundedLines: BoundedPriceLine[] = [];
     const gx1 = Math.max(0, lastIdx - lineLen);
-    const gx1Time = candles[gx1]?.time ?? lastCandle.time;
+    const gx1Time = cleanCandles[gx1]?.time ?? lastCandle.time;
     const gx2Base = lastIdx + labelOffset + 8;
     const gx2BaseTime = lastCandle.time + tfSec * (labelOffset + 8);
 
     const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
 
     if (showForecast && computedTp1 > 0) {
-      const fcStartLog = indicatorOutput?.forecast?.startLogical ?? Math.max(0, lastIdx - 15);
-      const lineStartLog = Math.max(0, fcStartLog);
-      const lineStartTime = candles[lineStartLog]?.time ?? gx1Time;
-      const lineEndLog = Math.max(lastIdx + Math.max(labelOffset, 8), fcStartLog + 16);
-      const lineEndTime = lastCandle.time + tfSec * Math.max(labelOffset, 8);
+      // In original Pine Script: line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, ...)
+      // where x0 = setupAnchorLog (bar where signal originated), and lineEnd extends forward into right margin
+      const lineStartLog = setupAnchorLog;
+      const lineEndLog = lastIdx + Math.max(labelOffset, 16);
+      const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
+      const lineEndTime = lastCandle.time + tfSec * Math.max(labelOffset, 16);
+
+      const fc = indicatorOutput?.forecast;
+      const trailingNote = fc?.trailingStageStr ? ` (${fc.trailingStageStr})` : "";
 
       // SL (Red dashed line)
       boundedLines.push({
@@ -3086,10 +3408,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: "#ef4444",
         lineWidth: 1.5,
         lineStyle: "dashed",
-        label: indicatorOutput?.forecast.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}`
+        label: fc?.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}${trailingNote}`
       });
 
-      // Вход (Amber dotted line)
+      // Вход (Amber dotted or solid green if hit)
       boundedLines.push({
         id: "entry_line",
         price: Number(computedEntry.toFixed(dec)),
@@ -3097,13 +3419,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         endTime: lineEndTime,
         startLogical: lineStartLog,
         endLogical: lineEndLog,
-        color: "#f59e0b",
+        color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
         lineWidth: 1.5,
-        lineStyle: "dotted",
-        label: `ВХОД: ${computedEntry.toFixed(dec)}`
+        lineStyle: fc?.leg1Hit ? "solid" : "dotted",
+        label: fc?.leg1Hit ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓` : `ВХОД: ${computedEntry.toFixed(dec)}`
       });
 
-      // TP1 (Green dotted line)
+      // TP1 (Green line)
       boundedLines.push({
         id: "tp1_line",
         price: Number(computedTp1.toFixed(dec)),
@@ -3111,13 +3433,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         endTime: lineEndTime,
         startLogical: lineStartLog,
         endLogical: lineEndLog,
-        color: "#10b981",
+        color: fc?.leg2Hit ? "#059669" : "#10b981",
         lineWidth: 1.5,
-        lineStyle: "dotted",
-        label: `TP1: ${computedTp1.toFixed(dec)}`
+        lineStyle: fc?.leg2Hit ? "solid" : "dotted",
+        label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`
       });
 
-      // TP2 (Blue dotted line)
+      // TP2 (Blue line)
       if (computedTp2 > 0) {
         boundedLines.push({
           id: "tp2_line",
@@ -3126,10 +3448,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           endTime: lineEndTime,
           startLogical: lineStartLog,
           endLogical: lineEndLog,
-          color: "#0284c7",
+          color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
           lineWidth: 1.5,
-          lineStyle: "dotted",
-          label: `TP2: ${computedTp2.toFixed(dec)}`
+          lineStyle: fc?.leg3Hit ? "solid" : "dotted",
+          label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`
         });
       }
     }
@@ -3150,7 +3472,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     if (useGex && effectiveGex) {
       if (showGexWalls) {
-        // Call Wall: "🏰 Потолок CW (День): " + callWall
         boundedLines.push({
           id: "cw_line",
           price: effectiveGex.callWall,
@@ -3164,7 +3485,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           label: `🏰 Потолок CW (День): ${effectiveGex.callWall}`
         });
 
-        // Put Wall: "🛡️ Поддержка PW (День): " + putWall
         boundedLines.push({
           id: "pw_line",
           price: effectiveGex.putWall,
@@ -3180,7 +3500,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
 
       if (showGexFlip) {
-        // Zero Flip: "⚡ Граница Гаммы (День): " + gammaFlip
         boundedLines.push({
           id: "flip_line",
           price: effectiveGex.gammaFlip,
@@ -3196,7 +3515,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
 
       if (showGexPain) {
-        // Магнит дня (Max Pain): "🎯 Магнит дня: " + maxPain
         boundedLines.push({
           id: "pain_line",
           price: effectiveGex.maxPain,
@@ -3212,7 +3530,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
 
       if (showGexSleepers) {
-        // Спящий магнит (Sleeper Magnet): "🧲 Спящий магнит (День): " + sleeperMagnet
         const sleeperPrice = effectiveGex.sleeperMagnet || Math.round(effectiveGex.spotPrice * 1.035 * 10) / 10;
         boundedLines.push({
           id: "sleeper_line",
@@ -3230,7 +3547,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
       if (showGexEm) {
         const gx1Em = Math.max(0, lastIdx - Math.min(18, lineLen));
-        const gx1EmTime = candles[gx1Em]?.time ?? lastCandle.time;
+        const gx1EmTime = cleanCandles[gx1Em]?.time ?? lastCandle.time;
         const gx2Em = gx2Base + 38;
         const gx2EmTime = lastCandle.time + tfSec * (labelOffset + 46);
 
@@ -3285,7 +3602,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // 8b. GEX profile removed from chart (viewable in full detail in GEX Analytics tab)
     // Update native canvas primitive with zones, forecast, bounded lines, and bar countdown
     zonesPrimitiveRef.current?.setData({
       zones: zoneBoxes,
@@ -3298,32 +3614,32 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       currentPriceCountdown: lastCandle ? {
         price: lastCandle.close,
         text: barCountdown.formatted,
-        isBull: (lastCandle.close >= (candles[candles.length - 2]?.close ?? lastCandle.close))
+        isBull: (lastCandle.close >= (cleanCandles[cleanCandles.length - 2]?.close ?? lastCandle.close))
       } : null
     });
 
     // 9. Signals & ML Markers
-    if (showSignals && candles.length > 20) {
+    if (showSignals && cleanCandles.length > 20) {
       const markers: any[] = [];
-      const emaShort = calculateEMA(candles, 9);
-      const emaMed = calculateEMA(candles, 21);
-      for (let i = 12; i < candles.length; i++) {
+      const emaShort = calculateEMA(cleanCandles, 9);
+      const emaMed = calculateEMA(cleanCandles, 21);
+      for (let i = 12; i < cleanCandles.length; i++) {
         const prevBull = emaShort[i - 1] <= emaMed[i - 1];
         const currBull = emaShort[i] > emaMed[i];
         const prevBear = emaShort[i - 1] >= emaMed[i - 1];
         const currBear = emaShort[i] < emaMed[i];
 
-        if (prevBull && currBull && candles[i].close > candles[i].open) {
+        if (prevBull && currBull && cleanCandles[i].close > cleanCandles[i].open) {
           markers.push({
-            time: candles[i].time,
+            time: cleanCandles[i].time,
             position: "belowBar",
             color: "#fbbf24",
             shape: "triangleUp",
             text: "LONG"
           });
-        } else if (prevBear && currBear && candles[i].close < candles[i].open) {
+        } else if (prevBear && currBear && cleanCandles[i].close < cleanCandles[i].open) {
           markers.push({
-            time: candles[i].time,
+            time: cleanCandles[i].time,
             position: "aboveBar",
             color: "#ef4444",
             shape: "triangleDown",
@@ -3338,26 +3654,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // 10. Viewport: Clean standard right offset without GEX profile padding
-    const isMobileW = typeof window !== "undefined" && window.innerWidth < 768;
-    const dynamicOffset = Math.max(labelOffset + 4, isMobileW ? 12 : 18);
-    try {
-      chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
-    } catch {}
-
-    if (lastFittedKeyRef.current !== currentKey) {
-      try {
-        const visibleCount = isMobileW ? 42 : 65;
-        const fromIdx = Math.max(0, candles.length - visibleCount);
-        const toIdx = candles.length + dynamicOffset;
-        chart.priceScale("right").applyOptions({ autoScale: true });
-        chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
-      } catch {}
-      lastFittedKeyRef.current = currentKey;
-    }
+    // 10. Ensure fitted key reference is in sync
+    lastFittedKeyRef.current = currentKey;
   }, [
     activeTab,
     candles,
+    candlesKey,
+    activeAsset,
+    activeTf,
     chartStyle,
     useGex,
     showGexWalls,
@@ -3670,7 +3974,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <button
                     key={tf}
                     onClick={() => {
-                      setActiveTf(tf);
+                      handleSelectTimeframe(tf);
                       setIsMobileTfOpen(false);
                     }}
                     className={`w-full px-2 py-1.5 rounded text-left font-mono text-xs font-bold transition cursor-pointer flex items-center justify-between ${
@@ -4092,7 +4396,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <button
                           key={item.id}
                           onClick={() => {
-                            setActiveAsset(item.id);
+                            handleSelectAsset(item.id);
                             setIsAssetDropdownOpen(false);
                           }}
                           className={`w-full grid grid-cols-12 gap-2 items-center px-2.5 py-2 rounded-lg text-left transition cursor-pointer border ${
@@ -4369,7 +4673,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
                     <button
                       key={tf}
-                      onClick={() => setActiveTf(tf)}
+                      onClick={() => handleSelectTimeframe(tf)}
                       className={`px-1.5 py-0.5 rounded text-[10.5px] font-mono font-bold transition cursor-pointer ${
                         activeTf === tf ? "bg-cyan-600 text-white shadow-sm" : "text-gray-400 hover:text-white"
                       }`}
@@ -4474,123 +4778,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   style={{ touchAction: "none" }}
                 />
 
-                {/* 📊 TRADINGVIEW-STYLE CANDLE OHLC HOVER INFO BAR (WITH MOSCOW TIME) */}
-                {(() => {
-                  const displayCandle = hoveredCandle || latestCandle;
-                  if (!displayCandle) return null;
-                  const isHover = !!hoveredCandle;
-                  const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
-                  const o = displayCandle.open ?? displayCandle.close;
-                  const c = displayCandle.close;
-                  const h = displayCandle.high ?? Math.max(o, c);
-                  const l = displayCandle.low ?? Math.min(o, c);
-                  const chg = c - o;
-                  const chgPct = o !== 0 ? (chg / o) * 100 : 0;
-                  const isBull = c >= o;
-                  const toneClass = isBull ? "text-emerald-400" : "text-rose-400";
-
-                  // Moscow Time (UTC+3) formatting
-                  const mskTimeStr = new Intl.DateTimeFormat("ru-RU", {
-                    timeZone: "Europe/Moscow",
-                    day: "2-digit",
-                    month: "2-digit",
-                    year: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: false
-                  }).format(new Date(displayCandle.time * 1000)).replace(",", "") + " МСК";
-
-                  return (
-                    <div className="absolute top-1.5 left-2 z-15 pointer-events-none flex items-center gap-1 sm:gap-2 text-[9.5px] sm:text-[10.5px] font-mono bg-[#0c101d]/90 backdrop-blur-xs px-2 py-0.5 sm:py-1 rounded-lg border border-gray-800 select-none shadow-md flex-wrap max-w-[94%]">
-                      <div className="flex items-center gap-1 font-bold">
-                        <span className="text-white">{activeAsset}</span>
-                        <span className="text-cyan-400 bg-cyan-950/80 px-1 py-0.2 rounded text-[9px] border border-cyan-800/60">{activeTf}</span>
-                        {marketStatus.isPremarket ? (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold flex items-center gap-1">
-                            <span className="w-1 h-1 rounded-full bg-amber-300 animate-ping" />
-                            <span>{marketStatus.statusBadge || "Премаркет"}</span>
-                          </span>
-                        ) : marketStatus.isClearing ? (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold">
-                            {marketStatus.statusBadge || "Клиринг"}
-                          </span>
-                        ) : !marketStatus.isOpen ? (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/90 text-slate-300 border border-slate-700 font-sans font-bold">
-                            {marketStatus.statusBadge || "⏸ Сейчас нет торгов"}
-                          </span>
-                        ) : (
-                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-sans font-bold">
-                            {marketStatus.statusBadge || "Торги онлайн"}
-                          </span>
-                        )}
-                        {isHover && (
-                          <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                            Свеча
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
-                        <span className="text-gray-400">О:<span className={toneClass}>{o.toFixed(dec)}</span></span>
-                        <span className="text-gray-400">В:<span className={toneClass}>{h.toFixed(dec)}</span></span>
-                        <span className="text-gray-400">Н:<span className={toneClass}>{l.toFixed(dec)}</span></span>
-                        <span className="text-gray-400">З:<span className={toneClass}>{c.toFixed(dec)}</span></span>
-
-                        <span className={`font-bold ${toneClass}`}>
-                          {chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)
-                        </span>
-
-                        {displayCandle.volume ? (
-                          <span className="text-gray-400 hidden md:inline">
-                            Объём: <span className="text-gray-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
-                          </span>
-                        ) : null}
-
-                        <span className="text-cyan-300 text-[9px] sm:text-[10px] font-mono font-bold flex items-center gap-1 border-l border-gray-700/80 pl-1.5">
-                          <Clock className="h-2.5 w-2.5 text-cyan-400 animate-pulse" />
-                          <span>Бар: {barCountdown.formatted}</span>
-                        </span>
-
-                        <span className="text-cyan-300/90 text-[9px] sm:text-[10px] flex items-center gap-1 border-l border-gray-700/80 pl-1.5 hidden sm:flex">
-                          <span>{mskTimeStr}</span>
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* ⏱ TradingView-Style Bar Close Countdown Badge on Price Scale (docked directly under current price) */}
-                {priceCoordY !== null && priceCoordY >= 5 && priceCoordY <= ((chartWrapperRef.current?.clientHeight || 600) - 20) && (
-                  <div
-                    className="absolute z-20 pointer-events-none select-none flex justify-center"
-                    style={{
-                      top: `${priceCoordY + 13}px`,
-                      right: "2px",
-                      width: marketStatus.isOpen ? "58px" : "80px"
-                    }}
-                    title={marketStatus.isOpen ? `Отсчёт времени закрытия бара ${activeTf}: ${barCountdown.formatted}` : marketStatus.statusText}
-                  >
-                    {marketStatus.isOpen ? (
-                      <div className="bg-[#0f141f]/95 border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
-                        <span>{barCountdown.formatted}</span>
-                      </div>
-                    ) : marketStatus.isPremarket ? (
-                      <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
-                        <span className="w-1 h-1 rounded-full bg-amber-400 animate-ping" />
-                        <span>Премаркет</span>
-                      </div>
-                    ) : marketStatus.isClearing ? (
-                      <div className="bg-[#1c180b]/95 border border-yellow-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-yellow-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
-                        <span>⏸ Клиринг</span>
-                      </div>
-                    ) : (
-                      <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
-                        <span>⏸ {marketStatus.statusBadge || "Стоп"}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* 📊 TRADINGVIEW-STYLE OHLC HOVER BAR & PRICE SCALE COUNTDOWN (ISOLATED AT 120 FPS) */}
+                <ChartOverlays
+                  chart={chartInstanceRef.current}
+                  series={seriesInstanceRef.current}
+                  chartWrapperRef={chartWrapperRef}
+                  activeAsset={activeAsset}
+                  activeTf={activeTf}
+                  marketStatus={marketStatus}
+                  barCountdownFormatted={barCountdown.formatted}
+                  candles={candles}
+                />
 
                 {/* 🖱️ Floating Chart Navigation Pill (Desktop & Mobile Touch) */}
                 <div className="absolute bottom-2.5 left-2.5 z-20 flex items-center gap-1 bg-[#0c101d]/95 backdrop-blur-md px-2 py-1 rounded-xl border border-gray-700/80 text-xs shadow-xl select-none">

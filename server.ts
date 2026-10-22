@@ -3511,6 +3511,16 @@ const oandaHistoricalSeriesMap = new Map<string, {
   updatedAt: number;
 }>();
 
+const oandaScannerCache = {
+  data: null as any,
+  updatedAt: 0
+};
+
+const moexCandlesCacheMap = new Map<string, {
+  data: any;
+  updatedAt: number;
+}>();
+
 export interface MarketSessionStatus {
   isOpen: boolean;
   isPremarket: boolean;
@@ -3778,6 +3788,12 @@ app.get("/api/market/candles", async (req, res) => {
     rawSymbol.includes("GNZ") ||
     rawSymbol.includes("GLD")
   ) {
+    const moexCacheKey = `${rawSymbol}_${interval}`;
+    const cachedMoex = moexCandlesCacheMap.get(moexCacheKey);
+    if (cachedMoex && Date.now() - cachedMoex.updatedAt < 3000) {
+      return res.json(cachedMoex.data);
+    }
+
     const moexStatus = getMoexTradingStatus();
     let moexData;
     try {
@@ -4130,7 +4146,7 @@ app.get("/api/market/candles", async (req, res) => {
             ? `МосБиржа MOEX FORTS (${activeSecId} ${contract.quarterLabel} - Мини фьючерс 0.1 oz) ${statusTag}`
             : `МосБиржа MOEX FORTS (${activeSecId} ${contract.quarterLabel} - Стандартный фьючерс 1 oz) ${statusTag}`;
 
-          return res.json({
+          const moexPayload = {
             success: true,
             symbol: symbolLabel,
             source: sourceTitle,
@@ -4154,7 +4170,9 @@ app.get("/api/market/candles", async (req, res) => {
             allQuarterly: moexData?.allQuarterly || [],
             interval,
             candles
-          });
+          };
+          moexCandlesCacheMap.set(moexCacheKey, { data: moexPayload, updatedAt: Date.now() });
+          return res.json(moexPayload);
         }
       }
     } catch (err: any) {
@@ -4208,7 +4226,7 @@ app.get("/api/market/candles", async (req, res) => {
     const statusTag = moexStatus.isOpen ? "[Торги идут]" : "[Сейчас нет торгов]";
     const sourceTitle = `МосБиржа MOEX FORTS (${activeSecId} ${contract.shortName}) ${statusTag}`;
 
-    return res.json({
+    const fallbackMoexPayload = {
       success: true,
       symbol: symbolLabel,
       source: sourceTitle,
@@ -4232,7 +4250,9 @@ app.get("/api/market/candles", async (req, res) => {
       allQuarterly: moexData?.allQuarterly || [],
       interval,
       candles
-    });
+    };
+    moexCandlesCacheMap.set(moexCacheKey, { data: fallbackMoexPayload, updatedAt: Date.now() });
+    return res.json(fallbackMoexPayload);
   }
 
   // -------------------------------------------------------------
@@ -4265,12 +4285,20 @@ app.get("/api/market/candles", async (req, res) => {
     let ema50Level = 0;
 
     try {
-      const resOanda = await fetch(
-        `https://scanner.tradingview.com/symbol?symbol=OANDA:XAUUSD&fields=${encodeURIComponent(oandaFields.join(","))}`,
-        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(3500) }
-      );
-      if (resOanda.ok) {
-        const j = await resOanda.json();
+      const nowMs = Date.now();
+      let j = (oandaScannerCache.data && nowMs - oandaScannerCache.updatedAt < 2000) ? oandaScannerCache.data : null;
+      if (!j) {
+        const resOanda = await fetch(
+          `https://scanner.tradingview.com/symbol?symbol=OANDA:XAUUSD&fields=${encodeURIComponent(oandaFields.join(","))}`,
+          { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(2800) }
+        );
+        if (resOanda.ok) {
+          j = await resOanda.json();
+          oandaScannerCache.data = j;
+          oandaScannerCache.updatedAt = nowMs;
+        }
+      }
+      if (j) {
         const liveMid = (typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0)
           ? (j.bid + j.ask) / 2
           : 0;
@@ -4318,12 +4346,8 @@ app.get("/api/market/candles", async (req, res) => {
     const oandaCacheKey = `OANDA_XAUUSD_${interval}`;
     let seriesState = oandaHistoricalSeriesMap.get(oandaCacheKey);
 
-    // Refresh historical OHLC structure every 60s or when cache is empty/stale so chart always shows real market structure calibrated 1:1 to OANDA:XAUUSD
-    const needsHistoryRefresh =
-      !seriesState ||
-      seriesState.candles.length < 40 ||
-      Math.abs(seriesState.lastSpotPrice - oandaSpotPrice) > 1.2 ||
-      (oandaStatus.isOpen && Date.now() - seriesState.updatedAt > 60000);
+    // Only fetch full historical OHLC on cold start when cache is empty to avoid blocking client requests
+    const needsHistoryRefresh = !seriesState || seriesState.candles.length < 20;
 
     if (needsHistoryRefresh) {
       let realCalibratedBars: any[] = [];
@@ -4336,7 +4360,7 @@ app.get("/api/market/candles", async (req, res) => {
           interval === "1h" ? "60m" :
           interval === "4h" ? "60m" : "1d";
         const yRange =
-          interval === "1m" ? "1d" :
+          interval === "1m" ? "2d" :
           interval === "5m" ? "5d" :
           interval === "15m" ? "5d" :
           interval === "30m" ? "1mo" :
@@ -4346,7 +4370,7 @@ app.get("/api/market/candles", async (req, res) => {
         const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${yInterval}&range=${yRange}`;
         const yRes = await fetch(yUrl, {
           headers: { "User-Agent": "Mozilla/5.0" },
-          signal: AbortSignal.timeout(4500)
+          signal: AbortSignal.timeout(2500)
         });
         if (yRes.ok) {
           const yJson = await yRes.json();
@@ -4416,6 +4440,20 @@ app.get("/api/market/candles", async (req, res) => {
                 volume: Math.max(120, Math.round(b.volume))
               };
             });
+
+            // If history ends before current forming bucket, append forming bucket immediately
+            const lastBar = realCalibratedBars[realCalibratedBars.length - 1];
+            if (lastBar && lastBar.time < currentBucketTime && oandaStatus.isOpen) {
+              const finalOpen = tfOpen > 0 ? Math.round(tfOpen * 100) / 100 : lastBar.close;
+              realCalibratedBars.push({
+                time: currentBucketTime,
+                open: finalOpen,
+                high: Math.round(Math.max(finalOpen, oandaSpotPrice, tfHigh > 0 ? tfHigh : oandaSpotPrice) * 100) / 100,
+                low: Math.round(Math.min(finalOpen, oandaSpotPrice, tfLow > 0 ? tfLow : oandaSpotPrice) * 100) / 100,
+                close: oandaSpotPrice,
+                volume: tfVolume > 0 ? Math.round(tfVolume) : 420
+              });
+            }
           }
         }
       } catch (err: any) {

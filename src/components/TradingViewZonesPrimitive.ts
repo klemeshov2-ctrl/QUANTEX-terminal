@@ -45,6 +45,9 @@ export interface ForecastArrow {
   labelTp2?: string;
   slPrice?: number;
   labelSl?: string;
+  leg1Hit?: boolean;
+  leg2Hit?: boolean;
+  leg3Hit?: boolean;
 }
 
 export interface BosMarker {
@@ -508,10 +511,14 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             ctx.fillText(fc.labelStart, xStart - 6, yStart);
           }
 
-          // Leg 1: (x0, y0) -> (x1, y1) Pullback line (line_fc_0)
-          ctx.strokeStyle = "#f59e0b";
-          ctx.lineWidth = 2.0;
-          ctx.setLineDash([4, 2.5]);
+          // Leg 1: (x0, y0) -> (x1, y1) Pullback / Entry line (line_fc_0)
+          ctx.strokeStyle = fc.leg1Hit ? "#10b981" : "#f59e0b";
+          ctx.lineWidth = fc.leg1Hit ? 2.2 : 2.0;
+          if (!fc.leg1Hit) {
+            ctx.setLineDash([4, 2.5]);
+          } else {
+            ctx.setLineDash([]);
+          }
           ctx.beginPath();
           ctx.moveTo(xStart, yStart);
           ctx.lineTo(xPullback, yPullback);
@@ -519,20 +526,20 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           ctx.setLineDash([]);
 
           // Node 1: Entry / Pullback node circle
-          ctx.fillStyle = "#f59e0b";
+          ctx.fillStyle = fc.leg1Hit ? "#10b981" : "#f59e0b";
           ctx.beginPath();
-          ctx.arc(xPullback, yPullback, 4, 0, Math.PI * 2);
+          ctx.arc(xPullback, yPullback, fc.leg1Hit ? 4.5 : 4, 0, Math.PI * 2);
           ctx.fill();
 
           if (!hasBoundedForecastLines && fc.labelPullback) {
             drawBadge(
               ctx,
-              fc.labelPullback,
+              fc.leg1Hit ? `${fc.labelPullback} ✓` : fc.labelPullback,
               xPullback + 6,
               yPullback + (fc.isBull ? 8 : -8),
               "rgba(15, 23, 42, 0.92)",
-              "#f59e0b",
-              "#fbbf24",
+              fc.leg1Hit ? "#10b981" : "#f59e0b",
+              fc.leg1Hit ? "#34d399" : "#fbbf24",
               mediaW,
               "left",
               9.5
@@ -540,23 +547,29 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           }
 
           // Leg 2: (x1, y1) -> (x2, y2) Impulse line to TP1 (line_fc_1)
-          ctx.strokeStyle = fc.isBull ? "#089981" : "#f23645";
-          ctx.lineWidth = 2.4;
+          ctx.strokeStyle = fc.leg2Hit ? (fc.isBull ? "#059669" : "#dc2626") : (fc.isBull ? "#089981" : "#f23645");
+          ctx.lineWidth = fc.leg2Hit ? 2.6 : 2.4;
+          if (!fc.leg1Hit && !fc.leg2Hit) {
+            ctx.setLineDash([5, 3]);
+          } else {
+            ctx.setLineDash([]);
+          }
           ctx.beginPath();
           ctx.moveTo(xPullback, yPullback);
           ctx.lineTo(xTp1, yTp1);
           ctx.stroke();
+          ctx.setLineDash([]);
 
           // Node 2: TP1 circle
-          ctx.fillStyle = fc.isBull ? "#089981" : "#f23645";
+          ctx.fillStyle = fc.leg2Hit ? "#10b981" : (fc.isBull ? "#089981" : "#f23645");
           ctx.beginPath();
-          ctx.arc(xTp1, yTp1, 4, 0, Math.PI * 2);
+          ctx.arc(xTp1, yTp1, fc.leg2Hit ? 5 : 4, 0, Math.PI * 2);
           ctx.fill();
 
           if (!hasBoundedForecastLines && fc.labelTp1) {
             drawBadge(
               ctx,
-              fc.labelTp1,
+              fc.leg2Hit ? `${fc.labelTp1} ✓` : fc.labelTp1,
               xTp1 + 6,
               yTp1 + (fc.isBull ? -8 : 8),
               "rgba(15, 23, 42, 0.92)",
@@ -569,17 +582,23 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           }
 
           // Leg 3: (x2, y2) -> (x3, y3) Impulse line to TP2 (line_fc_2)
-          ctx.strokeStyle = "#0284c7";
-          ctx.lineWidth = 2.4;
+          ctx.strokeStyle = fc.leg3Hit ? "#059669" : "#0284c7";
+          ctx.lineWidth = fc.leg3Hit ? 2.6 : 2.4;
+          if (!fc.leg2Hit && !fc.leg3Hit) {
+            ctx.setLineDash([5, 3]);
+          } else {
+            ctx.setLineDash([]);
+          }
           ctx.beginPath();
           ctx.moveTo(xTp1, yTp1);
           ctx.lineTo(xTp2, yTp2);
           ctx.stroke();
+          ctx.setLineDash([]);
 
           // Node 3: Arrowhead at TP2
           const angle = Math.atan2(yTp2 - yTp1, xTp2 - xTp1);
           const arrowLen = 9;
-          ctx.fillStyle = "#0284c7";
+          ctx.fillStyle = fc.leg3Hit ? "#10b981" : "#0284c7";
           ctx.beginPath();
           ctx.moveTo(xTp2, yTp2);
           ctx.lineTo(
@@ -887,14 +906,18 @@ export class TradingViewZonesPrimitive implements ISeriesPrimitive<Time> {
     ];
   }
 
+  private _requestUpdate: (() => void) | null = null;
+
   attached(param: SeriesAttachedParameter<Time>): void {
     this._chart = param.chart;
     this._series = param.series;
+    this._requestUpdate = (param as any)?.requestUpdate || null;
   }
 
   detached(): void {
     this._chart = null;
     this._series = null;
+    this._requestUpdate = null;
   }
 
   get chart(): IChartApi | null {
@@ -915,11 +938,14 @@ export class TradingViewZonesPrimitive implements ISeriesPrimitive<Time> {
   }
 
   updateAllViews() {
-    if (this._series) {
-      (this._series as any).applyOptions?.({});
-    }
-    if (this._chart) {
-      this._chart.timeScale().applyOptions({});
+    if (this._requestUpdate) {
+      try {
+        this._requestUpdate();
+      } catch {}
+    } else if (this._series) {
+      try {
+        (this._series as any).applyOptions?.({});
+      } catch {}
     }
   }
 
