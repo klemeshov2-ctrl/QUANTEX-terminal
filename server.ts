@@ -7,6 +7,7 @@ import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { exec } from "child_process";
 import { promisify } from "util";
+import WebSocket from "ws";
 import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts } from "./server/gexEngine";
 
 dotenv.config();
@@ -306,7 +307,22 @@ export interface LivePineCandle {
 }
 
 export async function fetchCalibratedPineCandles(targetSpotPrice: number): Promise<LivePineCandle[]> {
-  // Strictly calibrated to OANDA:XAUUSD Spot without mixing PAXGUSDT
+  // 1. Primary: Native real-time OANDA:XAUUSD 15m stream directly from TradingView
+  try {
+    const tvBars = await ensureTvLiveStream("OANDA:XAUUSD", "15m", 80);
+    if (tvBars && tvBars.length >= 20) {
+      return tvBars.slice(-60).map((b) => ({
+        time: b.time * 1000,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume
+      }));
+    }
+  } catch {}
+
+  // 2. Fallback: Calibrated to OANDA:XAUUSD Spot without mixing PAXGUSDT
   try {
     const yUrl = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=15m&range=5d";
     const yRes = await fetch(yUrl, {
@@ -3513,8 +3529,206 @@ const oandaHistoricalSeriesMap = new Map<string, {
 
 const oandaScannerCache = {
   data: null as any,
-  updatedAt: 0
+  updatedAt: 0,
+  fetching: false
 };
+
+interface TvStreamBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface TvLiveStreamState {
+  ws: WebSocket | null;
+  barsMap: Map<number, TvStreamBar>;
+  lastMessageAt: number;
+  lastRequestedAt: number;
+  isConnecting: boolean;
+  waiters: Array<(bars: TvStreamBar[]) => void>;
+}
+
+const tvLiveStreamsMap = new Map<string, TvLiveStreamState>();
+
+function mapIntervalToTvResolution(interval: string): string {
+  switch (interval) {
+    case "1m": return "1";
+    case "5m": return "5";
+    case "15m": return "15";
+    case "30m": return "30";
+    case "1h": return "60";
+    case "4h": return "240";
+    case "1d": return "1D";
+    default: return "15";
+  }
+}
+
+function getSortedTvBars(state: TvLiveStreamState): TvStreamBar[] {
+  return Array.from(state.barsMap.values()).sort((a, b) => a.time - b.time);
+}
+
+export async function ensureTvLiveStream(tvSymbol: string, interval: string, count = 240): Promise<TvStreamBar[]> {
+  const tvRes = mapIntervalToTvResolution(interval);
+  const streamKey = `${tvSymbol}_${tvRes}`;
+  const now = Date.now();
+
+  let state = tvLiveStreamsMap.get(streamKey);
+  if (!state) {
+    state = {
+      ws: null,
+      barsMap: new Map<number, TvStreamBar>(),
+      lastMessageAt: 0,
+      lastRequestedAt: now,
+      isConnecting: false,
+      waiters: []
+    };
+    tvLiveStreamsMap.set(streamKey, state);
+  }
+  state.lastRequestedAt = now;
+
+  const isWsAlive = state.ws && state.ws.readyState === WebSocket.OPEN && (now - state.lastMessageAt < 35000);
+  if (isWsAlive && state.barsMap.size >= 20) {
+    return getSortedTvBars(state);
+  }
+
+  if (!state.isConnecting) {
+    state.isConnecting = true;
+    try {
+      if (state.ws) {
+        try { state.ws.close(); } catch {}
+        state.ws = null;
+      }
+      const ws = new WebSocket("wss://data.tradingview.com/socket.io/websocket?from=chart%2F", {
+        headers: {
+          Origin: "https://www.tradingview.com",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+      });
+      state.ws = ws;
+
+      const session = "cs_" + Math.random().toString(36).slice(2, 10);
+      const pack = (m: string, p: any[]) => {
+        const s = JSON.stringify({ m, p });
+        return `~m~${s.length}~m~${s}`;
+      };
+
+      ws.on("open", () => {
+        try {
+          ws.send(pack("set_auth_token", ["unauthorized_user_token"]));
+          ws.send(pack("chart_create_session", [session, ""]));
+          ws.send(pack("resolve_symbol", [session, "sds_sym_1", `={"adjustment":"splits","symbol":"${tvSymbol}"}`]));
+          ws.send(pack("create_series", [session, "sds_1", "s1", "sds_sym_1", tvRes, Math.max(count, 240), ""]));
+        } catch {}
+      });
+
+      let buf = "";
+      ws.on("message", (data) => {
+        if (!state) return;
+        state.lastMessageAt = Date.now();
+        buf += data.toString();
+
+        while (buf.startsWith("~m~")) {
+          const nextTilde = buf.indexOf("~m~", 3);
+          if (nextTilde === -1) break;
+          const len = parseInt(buf.slice(3, nextTilde), 10);
+          const bodyStart = nextTilde + 3;
+          if (buf.length < bodyStart + len) break;
+          const payload = buf.slice(bodyStart, bodyStart + len);
+          buf = buf.slice(bodyStart + len);
+
+          if (payload.startsWith("~h~")) {
+            try {
+              ws.send(`~m~${payload.length}~m~${payload}`);
+            } catch {}
+            continue;
+          }
+
+          try {
+            const msg = JSON.parse(payload);
+            if (msg.m === "timescale_update" || msg.m === "du") {
+              const series = msg.p?.[1]?.sds_1?.s;
+              if (Array.isArray(series) && series.length > 0) {
+                for (const item of series) {
+                  const v = item?.v;
+                  if (!Array.isArray(v) || v.length < 5) continue;
+                  const t = Math.floor(Number(v[0]));
+                  const o = Math.round(Number(v[1]) * 100) / 100;
+                  const h = Math.round(Number(v[2]) * 100) / 100;
+                  const l = Math.round(Number(v[3]) * 100) / 100;
+                  const c = Math.round(Number(v[4]) * 100) / 100;
+                  const vol = Math.max(1, Math.round(Number(v[5]) || 100));
+                  if (t > 0 && o > 0 && c > 0) {
+                    state.barsMap.set(t, {
+                      time: t,
+                      open: o,
+                      high: Math.max(o, c, h),
+                      low: Math.min(o, c, l),
+                      close: c,
+                      volume: vol
+                    });
+                  }
+                }
+                // Trim oldest bars only if map exceeds 600 bars so client window stays stable
+                if (state.barsMap.size > 600) {
+                  const sortedKeys = Array.from(state.barsMap.keys()).sort((a, b) => a - b);
+                  const toDelete = sortedKeys.slice(0, state.barsMap.size - 600);
+                  for (const k of toDelete) state.barsMap.delete(k);
+                }
+
+                if (state.waiters.length > 0 && state.barsMap.size >= 10) {
+                  const sorted = getSortedTvBars(state);
+                  const pending = state.waiters.splice(0, state.waiters.length);
+                  for (const w of pending) w(sorted);
+                }
+              }
+            }
+          } catch {}
+        }
+      });
+
+      const handleDisconnect = () => {
+        if (!state) return;
+        state.isConnecting = false;
+        state.ws = null;
+        if (state.waiters.length > 0) {
+          const sorted = getSortedTvBars(state);
+          const pending = state.waiters.splice(0, state.waiters.length);
+          for (const w of pending) w(sorted);
+        }
+      };
+
+      ws.on("close", handleDisconnect);
+      ws.on("error", handleDisconnect);
+      ws.on("open", () => {
+        if (state) state.isConnecting = false;
+      });
+    } catch {
+      state.isConnecting = false;
+    }
+  }
+
+  // If we already have cached bars in state.barsMap while reconnecting, wait briefly (up to 1200ms) or return cached
+  return new Promise<TvStreamBar[]>((resolve) => {
+    const timer = setTimeout(() => {
+      if (state) {
+        const idx = state.waiters.indexOf(onReady);
+        if (idx !== -1) state.waiters.splice(idx, 1);
+        resolve(getSortedTvBars(state));
+      } else {
+        resolve([]);
+      }
+    }, state && state.barsMap.size >= 20 ? 600 : 2500);
+
+    const onReady = (bars: TvStreamBar[]) => {
+      clearTimeout(timer);
+      resolve(bars);
+    };
+    state!.waiters.push(onReady);
+  });
+}
 
 const moexCandlesCacheMap = new Map<string, {
   data: any;
@@ -4263,294 +4477,148 @@ app.get("/api/market/candles", async (req, res) => {
 
   if (isOandaExplicit) {
     const oandaStatus = getOandaSpotTradingStatus();
-    const tvTfSuffix = interval === "1m" ? "|1" : interval === "5m" ? "|5" : interval === "15m" ? "|15" : interval === "30m" ? "|30" : interval === "1h" ? "|60" : interval === "4h" ? "|240" : "";
-    const oandaFields = [
-      "close", "open", "high", "low", "change", "volume", "bid", "ask", "rtc",
-      `open${tvTfSuffix}`, `high${tvTfSuffix}`, `low${tvTfSuffix}`, `close${tvTfSuffix}`, `volume${tvTfSuffix}`,
-      `EMA20${tvTfSuffix}`, `EMA50${tvTfSuffix}`, `EMA200${tvTfSuffix}`
-    ];
+    const oandaCacheKey = `OANDA_XAUUSD_${interval}`;
 
-    let oandaSpotPrice = 4195.00;
-    let oandaBid = 4194.75;
-    let oandaAsk = 4195.25;
-    let oandaVolume = 589821;
-    let oandaHigh = 4201.30;
-    let oandaLow = 4165.70;
-    let oandaOpen = 4183.60;
-    let oandaChange = 0.28;
-    let tfOpen = 0;
-    let tfHigh = 0;
-    let tfLow = 0;
-    let tfVolume = 0;
-    let ema50Level = 0;
-
+    // 1. Get native 1:1 OANDA:XAUUSD OHLCV bars directly from TradingView real-time chart WebSocket stream
+    let liveTvBars: TvStreamBar[] = [];
     try {
-      const nowMs = Date.now();
-      let j = (oandaScannerCache.data && nowMs - oandaScannerCache.updatedAt < 2000) ? oandaScannerCache.data : null;
-      if (!j) {
+      liveTvBars = await ensureTvLiveStream("OANDA:XAUUSD", interval, Math.max(limit, 240));
+    } catch {}
+
+    // 2. Refresh OANDA daily summary metrics (bid/ask/high/low/change) in background or on cold start
+    const refreshOandaScanner = async () => {
+      if (oandaScannerCache.fetching) return;
+      oandaScannerCache.fetching = true;
+      try {
+        const oandaFields = ["close", "open", "high", "low", "change", "volume", "bid", "ask", "rtc", "EMA50|15"];
         const resOanda = await fetch(
           `https://scanner.tradingview.com/symbol?symbol=OANDA:XAUUSD&fields=${encodeURIComponent(oandaFields.join(","))}`,
-          { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(2800) }
+          { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(2200) }
         );
         if (resOanda.ok) {
-          j = await resOanda.json();
-          oandaScannerCache.data = j;
-          oandaScannerCache.updatedAt = nowMs;
+          oandaScannerCache.data = await resOanda.json();
+          oandaScannerCache.updatedAt = Date.now();
         }
+      } catch {} finally {
+        oandaScannerCache.fetching = false;
       }
-      if (j) {
-        const liveMid = (typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0)
-          ? (j.bid + j.ask) / 2
-          : 0;
-        // When OANDA market is closed (weekend / break), strictly lock to OANDA official close (j.close) so price never drifts
-        const rawP = oandaStatus.isOpen
-          ? Number(j.rtc || j.close || liveMid || 0)
-          : Number(j.close || j.rtc || liveMid || 0);
-        if (rawP > 0) {
-          oandaSpotPrice = Math.round(rawP * 100) / 100;
-          oandaBid = Number(j.bid) > 0 ? Math.round(Number(j.bid) * 100) / 100 : Math.round((oandaSpotPrice - 0.25) * 100) / 100;
-          oandaAsk = Number(j.ask) > 0 ? Math.round(Number(j.ask) * 100) / 100 : Math.round((oandaSpotPrice + 0.25) * 100) / 100;
-          oandaVolume = Number(j.volume) || 589821;
-          oandaHigh = Number(j.high) || oandaSpotPrice + 12;
-          oandaLow = Number(j.low) || oandaSpotPrice - 14;
-          oandaOpen = Number(j.open) || oandaSpotPrice - 5;
-          oandaChange = Number(j.change) || 0;
-          tfOpen = Number(j[`open${tvTfSuffix}`]) || 0;
-          tfHigh = Number(j[`high${tvTfSuffix}`]) || 0;
-          tfLow = Number(j[`low${tvTfSuffix}`]) || 0;
-          tfVolume = Number(j[`volume${tvTfSuffix}`]) || 0;
-          ema50Level = Number(j[`EMA50${tvTfSuffix}`]) || oandaOpen;
-        }
-      }
-    } catch (e: any) {
-      console.warn("[OANDA:XAUUSD Spot Feed] fetch notice:", e.message);
+    };
+
+    const nowMs = Date.now();
+    if (!oandaScannerCache.data) {
+      await refreshOandaScanner();
+    } else if (nowMs - oandaScannerCache.updatedAt > 3000) {
+      refreshOandaScanner().catch(() => {});
     }
 
-    // Build / maintain pure OANDA:XAUUSD Spot candlesticks (0% PAXG, 0% futures)
-    const nowSec = Math.floor(Date.now() / 1000);
-    // When OANDA is closed on weekends, freeze the anchor timestamp at Friday 20:45 UTC so candles stay 100% static!
-    let effectiveNowSec = nowSec;
-    if (!oandaStatus.isOpen) {
-      const d = new Date();
-      const utcDay = d.getUTCDay();
-      if (utcDay === 6) {
-        effectiveNowSec = Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - 1, 20, 45, 0) / 1000);
-      } else if (utcDay === 0) {
-        effectiveNowSec = Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - 2, 20, 45, 0) / 1000);
-      } else if (utcDay === 5 && d.getUTCHours() >= 21) {
-        effectiveNowSec = Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 20, 45, 0) / 1000);
+    const j = oandaScannerCache.data;
+    const latestTvBar = liveTvBars.length > 0 ? liveTvBars[liveTvBars.length - 1] : null;
+
+    let oandaSpotPrice = latestTvBar ? latestTvBar.close : 4035.00;
+    if (!latestTvBar && j) {
+      const liveMid = (typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0)
+        ? (j.bid + j.ask) / 2
+        : 0;
+      const rawP = oandaStatus.isOpen
+        ? Number(j.rtc || j.close || liveMid || 0)
+        : Number(j.close || j.rtc || liveMid || 0);
+      if (rawP > 0) {
+        oandaSpotPrice = Math.round(rawP * 100) / 100;
       }
     }
 
-    const currentBucketTime = Math.floor(effectiveNowSec / intervalSeconds) * intervalSeconds;
-    const oandaCacheKey = `OANDA_XAUUSD_${interval}`;
+    const oandaBid = (j && Number(j.bid) > 0 && Math.abs(Number(j.bid) - oandaSpotPrice) < 3)
+      ? Math.round(Number(j.bid) * 100) / 100
+      : Math.round((oandaSpotPrice - 0.20) * 100) / 100;
+    const oandaAsk = (j && Number(j.ask) > 0 && Math.abs(Number(j.ask) - oandaSpotPrice) < 3)
+      ? Math.round(Number(j.ask) * 100) / 100
+      : Math.round((oandaSpotPrice + 0.20) * 100) / 100;
+    const oandaVolume = Number(j?.volume) || 589821;
+    const oandaHigh = Math.max(oandaSpotPrice, Number(j?.high) || oandaSpotPrice + 12);
+    const oandaLow = Math.min(oandaSpotPrice, Number(j?.low) || oandaSpotPrice - 14);
+    const oandaOpen = Number(j?.open) || oandaSpotPrice - 5;
+    const oandaChange = Number(j?.change) || 0;
+    const ema50Level = Number(j?.["EMA50|15"]) || oandaOpen;
+
     let seriesState = oandaHistoricalSeriesMap.get(oandaCacheKey);
 
-    // Only fetch full historical OHLC on cold start when cache is empty to avoid blocking client requests
-    const needsHistoryRefresh = !seriesState || seriesState.candles.length < 20;
+    if (liveTvBars.length >= 20) {
+      seriesState = {
+        candles: liveTvBars,
+        lastSpotPrice: oandaSpotPrice,
+        updatedAt: nowMs
+      };
+      oandaHistoricalSeriesMap.set(oandaCacheKey, seriesState);
+    } else if (!seriesState || seriesState.candles.length < 20) {
+      // Fallback generator only if TradingView WebSocket is unreachable
+      const nowSec = Math.floor(Date.now() / 1000);
+      const currentBucketTime = Math.floor(nowSec / intervalSeconds) * intervalSeconds;
+      const startSec = currentBucketTime - (limit - 1) * intervalSeconds;
+      const daySpan = Math.max(12, oandaHigh - oandaLow);
+      const stepVol = Math.max(1.2, daySpan * 0.06);
+      const anchorStart = ema50Level > 0 ? ema50Level : oandaOpen;
 
-    if (needsHistoryRefresh) {
-      let realCalibratedBars: any[] = [];
-      try {
-        const yInterval =
-          interval === "1m" ? "1m" :
-          interval === "5m" ? "5m" :
-          interval === "15m" ? "15m" :
-          interval === "30m" ? "30m" :
-          interval === "1h" ? "60m" :
-          interval === "4h" ? "60m" : "1d";
-        const yRange =
-          interval === "1m" ? "2d" :
-          interval === "5m" ? "5d" :
-          interval === "15m" ? "5d" :
-          interval === "30m" ? "1mo" :
-          interval === "1h" ? "1mo" :
-          interval === "4h" ? "3mo" : "1y";
+      const generated: any[] = [];
+      let prevC = Math.round((anchorStart - stepVol * 1.5) * 100) / 100;
 
-        const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=${yInterval}&range=${yRange}`;
-        const yRes = await fetch(yUrl, {
-          headers: { "User-Agent": "Mozilla/5.0" },
-          signal: AbortSignal.timeout(2500)
-        });
-        if (yRes.ok) {
-          const yJson = await yRes.json();
-          const result = yJson?.chart?.result?.[0];
-          const timestamps: number[] = result?.timestamp || [];
-          const quote = result?.indicators?.quote?.[0] || {};
-          const bucketMap = new Map<number, { time: number; open: number; high: number; low: number; close: number; volume: number }>();
+      for (let i = 0; i < limit - 1; i++) {
+        const bTime = startSec + i * intervalSeconds;
+        const seed = Math.floor(bTime / intervalSeconds);
+        const progress = i / (limit - 1);
+        const targetCurve = anchorStart + (oandaSpotPrice - anchorStart) * progress + Math.sin(seed * 0.19) * stepVol * 1.4;
+        const open = prevC;
+        const close = Math.round((open + (targetCurve - open) * 0.35 + Math.cos(seed * 0.53) * stepVol * 0.45) * 100) / 100;
+        const wickUp = Math.abs(Math.sin(seed * 1.17)) * stepVol * 0.65;
+        const wickDn = Math.abs(Math.cos(seed * 1.43)) * stepVol * 0.65;
+        const high = Math.round((Math.max(open, close) + wickUp) * 100) / 100;
+        const low = Math.round((Math.min(open, close) - wickDn) * 100) / 100;
+        const volume = Math.round(320 + Math.abs(Math.sin(seed * 0.7)) * 680);
 
-          for (let i = 0; i < timestamps.length; i++) {
-            const t = timestamps[i];
-            const o = quote.open?.[i];
-            const h = quote.high?.[i];
-            const l = quote.low?.[i];
-            const c = quote.close?.[i];
-            const v = quote.volume?.[i] || 380;
-            if (t && typeof o === "number" && typeof h === "number" && typeof l === "number" && typeof c === "number" && c > 0) {
-              const bTime = Math.floor(t / intervalSeconds) * intervalSeconds;
-              const existing = bucketMap.get(bTime);
-              if (!existing) {
-                bucketMap.set(bTime, { time: bTime, open: o, high: h, low: l, close: c, volume: v });
-              } else {
-                existing.high = Math.max(existing.high, h);
-                existing.low = Math.min(existing.low, l);
-                existing.close = c;
-                existing.volume += v;
-              }
-            }
-          }
-
-          const rawBars = Array.from(bucketMap.values())
-            .sort((a, b) => a.time - b.time)
-            .slice(-limit);
-
-          if (rawBars.length >= 20) {
-            const prevRawClose = rawBars.length >= 2 ? rawBars[rawBars.length - 2].close : rawBars[rawBars.length - 1].close;
-            const targetAnchor = tfOpen > 0 ? tfOpen : oandaSpotPrice;
-            const basisShift = targetAnchor - prevRawClose;
-
-            realCalibratedBars = rawBars.map((b, idx) => {
-              const isLast = idx === rawBars.length - 1;
-              const shiftedOpen = Math.round((b.open + basisShift) * 100) / 100;
-              const shiftedClose = Math.round((b.close + basisShift) * 100) / 100;
-              const shiftedHigh = Math.round((b.high + basisShift) * 100) / 100;
-              const shiftedLow = Math.round((b.low + basisShift) * 100) / 100;
-
-              if (isLast) {
-                const finalOpen = tfOpen > 0 ? Math.round(tfOpen * 100) / 100 : shiftedOpen;
-                const finalClose = oandaSpotPrice;
-                const finalHigh = Math.round(Math.max(finalOpen, finalClose, tfHigh > 0 ? tfHigh : shiftedHigh) * 100) / 100;
-                const finalLow = Math.round(Math.min(finalOpen, finalClose, tfLow > 0 ? tfLow : shiftedLow) * 100) / 100;
-                return {
-                  time: b.time,
-                  open: finalOpen,
-                  high: finalHigh,
-                  low: finalLow,
-                  close: finalClose,
-                  volume: tfVolume > 0 ? Math.round(tfVolume) : Math.max(240, Math.round(b.volume))
-                };
-              }
-
-              return {
-                time: b.time,
-                open: shiftedOpen,
-                high: Math.max(shiftedOpen, shiftedClose, shiftedHigh),
-                low: Math.min(shiftedOpen, shiftedClose, shiftedLow),
-                close: shiftedClose,
-                volume: Math.max(120, Math.round(b.volume))
-              };
-            });
-
-            // If history ends before current forming bucket, append forming bucket immediately
-            const lastBar = realCalibratedBars[realCalibratedBars.length - 1];
-            if (lastBar && lastBar.time < currentBucketTime && oandaStatus.isOpen) {
-              const finalOpen = tfOpen > 0 ? Math.round(tfOpen * 100) / 100 : lastBar.close;
-              realCalibratedBars.push({
-                time: currentBucketTime,
-                open: finalOpen,
-                high: Math.round(Math.max(finalOpen, oandaSpotPrice, tfHigh > 0 ? tfHigh : oandaSpotPrice) * 100) / 100,
-                low: Math.round(Math.min(finalOpen, oandaSpotPrice, tfLow > 0 ? tfLow : oandaSpotPrice) * 100) / 100,
-                close: oandaSpotPrice,
-                volume: tfVolume > 0 ? Math.round(tfVolume) : 420
-              });
-            }
-          }
-        }
-      } catch (err: any) {
-        console.warn("[OANDA:XAUUSD Calibrated History] fallback notice:", err.message);
+        generated.push({ time: bTime, open, high, low, close, volume });
+        prevC = close;
       }
 
-      if (realCalibratedBars.length >= 20) {
-        seriesState = {
-          candles: realCalibratedBars,
-          lastSpotPrice: oandaSpotPrice,
-          updatedAt: Date.now()
-        };
-        oandaHistoricalSeriesMap.set(oandaCacheKey, seriesState);
-      } else if (!seriesState || seriesState.candles.length === 0) {
-        const startSec = currentBucketTime - (limit - 1) * intervalSeconds;
-        const daySpan = Math.max(12, oandaHigh - oandaLow);
-        const stepVol = Math.max(1.2, daySpan * 0.06);
-        const anchorStart = ema50Level > 0 ? ema50Level : oandaOpen;
+      generated.push({
+        time: currentBucketTime,
+        open: prevC,
+        high: Math.max(prevC, oandaSpotPrice),
+        low: Math.min(prevC, oandaSpotPrice),
+        close: oandaSpotPrice,
+        volume: 640
+      });
 
-        const generated: any[] = [];
-        let prevC = Math.round((anchorStart - stepVol * 1.5) * 100) / 100;
-
-        for (let i = 0; i < limit - 1; i++) {
-          const bTime = startSec + i * intervalSeconds;
-          const seed = Math.floor(bTime / intervalSeconds);
-          const progress = i / (limit - 1);
-          const targetCurve = anchorStart + (oandaSpotPrice - anchorStart) * progress + Math.sin(seed * 0.19) * stepVol * 1.4;
-          const open = prevC;
-          const close = i === limit - 2 && tfOpen > 0
-            ? Math.round(tfOpen * 100) / 100
-            : Math.round((open + (targetCurve - open) * 0.35 + Math.cos(seed * 0.53) * stepVol * 0.45) * 100) / 100;
-          const wickUp = Math.abs(Math.sin(seed * 1.17)) * stepVol * 0.65;
-          const wickDn = Math.abs(Math.cos(seed * 1.43)) * stepVol * 0.65;
-          const high = Math.round((Math.max(open, close) + wickUp) * 100) / 100;
-          const low = Math.round((Math.min(open, close) - wickDn) * 100) / 100;
-          const volume = Math.round(320 + Math.abs(Math.sin(seed * 0.7)) * 680);
-
-          generated.push({ time: bTime, open, high, low, close, volume });
-          prevC = close;
-        }
-
-        const lastOpen = tfOpen > 0 ? Math.round(tfOpen * 100) / 100 : prevC;
-        const lastHigh = Math.round(Math.max(lastOpen, oandaSpotPrice, tfHigh > 0 ? tfHigh : oandaSpotPrice) * 100) / 100;
-        const lastLow = Math.round(Math.min(lastOpen, oandaSpotPrice, tfLow > 0 ? tfLow : oandaSpotPrice) * 100) / 100;
-
-        generated.push({
-          time: currentBucketTime,
-          open: lastOpen,
-          high: lastHigh,
-          low: lastLow,
-          close: oandaSpotPrice,
-          volume: tfVolume > 0 ? Math.round(tfVolume) : 640
-        });
-
-        seriesState = {
-          candles: generated,
-          lastSpotPrice: oandaSpotPrice,
-          updatedAt: Date.now()
-        };
-        oandaHistoricalSeriesMap.set(oandaCacheKey, seriesState);
-      }
+      seriesState = {
+        candles: generated,
+        lastSpotPrice: oandaSpotPrice,
+        updatedAt: nowMs
+      };
+      oandaHistoricalSeriesMap.set(oandaCacheKey, seriesState);
     } else if (oandaStatus.isOpen) {
-      // Live trading session: update or roll the forming OANDA:XAUUSD candle with real OANDA ticks
+      // Pure tick update on fallback series without corrupting open/high/low from lagged screener fields
+      const nowSec = Math.floor(Date.now() / 1000);
+      const currentBucketTime = Math.floor(nowSec / intervalSeconds) * intervalSeconds;
       const list = seriesState.candles;
       const lastBar = list[list.length - 1];
       if (lastBar.time < currentBucketTime) {
-        const newOpen = tfOpen > 0 ? Math.round(tfOpen * 100) / 100 : lastBar.close;
+        const newOpen = lastBar.close;
         list.push({
           time: currentBucketTime,
           open: newOpen,
-          high: Math.max(newOpen, oandaSpotPrice, tfHigh > 0 ? tfHigh : oandaSpotPrice),
-          low: Math.min(newOpen, oandaSpotPrice, tfLow > 0 ? tfLow : oandaSpotPrice),
+          high: Math.max(newOpen, oandaSpotPrice),
+          low: Math.min(newOpen, oandaSpotPrice),
           close: oandaSpotPrice,
-          volume: tfVolume > 0 ? Math.round(tfVolume) : 420
+          volume: 120
         });
-        if (list.length > limit) list.shift();
       } else {
-        if (tfOpen > 0) lastBar.open = Math.round(tfOpen * 100) / 100;
         lastBar.close = oandaSpotPrice;
-        lastBar.high = Math.round(Math.max(lastBar.high, lastBar.open, oandaSpotPrice, tfHigh > 0 ? tfHigh : oandaSpotPrice) * 100) / 100;
-        lastBar.low = Math.round(Math.min(lastBar.low, lastBar.open, oandaSpotPrice, tfLow > 0 ? tfLow : oandaSpotPrice) * 100) / 100;
-        if (tfVolume > 0) lastBar.volume = Math.round(tfVolume);
+        lastBar.high = Math.round(Math.max(lastBar.high, lastBar.open, oandaSpotPrice) * 100) / 100;
+        lastBar.low = Math.round(Math.min(lastBar.low, lastBar.open, oandaSpotPrice) * 100) / 100;
       }
       seriesState.lastSpotPrice = oandaSpotPrice;
-    } else {
-      // Market is CLOSED (weekends / daily break): keep price and candles 100% static at OANDA close
-      const list = seriesState.candles;
-      const lastBar = list[list.length - 1];
-      if (lastBar) {
-        lastBar.close = oandaSpotPrice;
-        lastBar.high = Math.max(lastBar.high, oandaSpotPrice);
-        lastBar.low = Math.min(lastBar.low, oandaSpotPrice);
-      }
     }
 
     const sourceLabel = oandaStatus.isOpen
-      ? `OANDA:XAUUSD Spot (Только OANDA Spot • Live $${oandaSpotPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} • Bid/Ask: $${oandaBid.toFixed(2)} / $${oandaAsk.toFixed(2)})`
+      ? `OANDA:XAUUSD Spot (Прямой поток TradingView • Live $${oandaSpotPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} • Bid/Ask: $${oandaBid.toFixed(2)} / $${oandaAsk.toFixed(2)})`
       : `OANDA:XAUUSD Spot (Только OANDA Spot • Сейчас нет торгов • Цена закрытия: $${oandaSpotPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })})`;
 
     return res.json({
@@ -4565,7 +4633,7 @@ app.get("/api/market/candles", async (req, res) => {
       sessionType: oandaStatus.sessionType,
       statusBadge: oandaStatus.statusBadge,
       interval,
-      candles: seriesState.candles.slice(-limit),
+      candles: seriesState.candles.slice(-Math.max(limit, 200)),
       oandaData: {
         price: oandaSpotPrice,
         bid: oandaBid,
@@ -6293,6 +6361,86 @@ app.post("/api/settings/import", (req, res) => {
 app.post("/api/server/cache/clear", (req, res) => {
   addServerLog("INFO", "Кэш котировок и уровней GEX успешно сброшен");
   res.json({ success: true, message: "Кэш успешно очищен" });
+});
+
+// --- PERSISTENT INDICATOR FORECAST SETUPS MEMORY (ALL ASSETS & TIMEFRAMES) ---
+const ACTIVE_SETUPS_FILE = path.join(DATA_DIR, "active-setups.json");
+let activeIndicatorSetups: Record<string, any> = {};
+
+function loadActiveIndicatorSetups() {
+  try {
+    if (fs.existsSync(ACTIVE_SETUPS_FILE)) {
+      const raw = fs.readFileSync(ACTIVE_SETUPS_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        activeIndicatorSetups = parsed;
+      }
+    }
+  } catch (err: any) {
+    console.warn("Notice loading active-setups.json:", err.message);
+  }
+}
+
+let saveSetupsTimer: ReturnType<typeof setTimeout> | null = null;
+function persistActiveIndicatorSetups() {
+  if (saveSetupsTimer) clearTimeout(saveSetupsTimer);
+  saveSetupsTimer = setTimeout(() => {
+    try {
+      fs.writeFileSync(ACTIVE_SETUPS_FILE, JSON.stringify(activeIndicatorSetups, null, 2), "utf-8");
+    } catch (err: any) {
+      console.warn("Notice writing active-setups.json:", err.message);
+    }
+  }, 300);
+}
+
+loadActiveIndicatorSetups();
+
+app.get("/api/indicator/setups", (_req, res) => {
+  res.json({
+    success: true,
+    setups: activeIndicatorSetups
+  });
+});
+
+app.post("/api/indicator/setups", (req, res) => {
+  try {
+    const { key, item, setups } = req.body || {};
+    if (key && item && typeof item === "object") {
+      activeIndicatorSetups[String(key)] = item;
+      persistActiveIndicatorSetups();
+    } else if (setups && typeof setups === "object") {
+      activeIndicatorSetups = {
+        ...activeIndicatorSetups,
+        ...setups
+      };
+      persistActiveIndicatorSetups();
+    }
+    res.json({ success: true, count: Object.keys(activeIndicatorSetups).length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/indicator/setups", (req, res) => {
+  try {
+    const key = req.query.key as string | undefined;
+    const symbol = req.query.symbol as string | undefined;
+    if (key) {
+      delete activeIndicatorSetups[key];
+    } else if (symbol) {
+      for (const k of Object.keys(activeIndicatorSetups)) {
+        if (k.startsWith(`${symbol}_`)) {
+          delete activeIndicatorSetups[k];
+        }
+      }
+    } else {
+      activeIndicatorSetups = {};
+    }
+    persistActiveIndicatorSetups();
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Trigger DeepSeek Analysis Manually or via Macro Event

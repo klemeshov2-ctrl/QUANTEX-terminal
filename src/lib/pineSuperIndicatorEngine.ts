@@ -346,7 +346,7 @@ export interface SuperIndicatorOutput {
 // 1) Target TP2/TP3 hit, 2) SL broken (Plan B), 3) Timeout (12-16 bars), 4) Major structure breakout
 // ============================================================================
 
-interface AnchoredForecastItem {
+export interface AnchoredForecastItem {
   key: string;
   forecast: ForecastState;
   anchorCandleTime: number;
@@ -355,18 +355,145 @@ interface AnchoredForecastItem {
   createdAt: number;
 }
 
+const LOCAL_STORAGE_SETUPS_KEY = "quantex_anchored_forecasts_v3";
 const anchoredForecastCache = new Map<string, AnchoredForecastItem>();
+const lastSyncedSignatureMap = new Map<string, string>();
+
+// 1. Immediate synchronous hydration from localStorage so page reload (F5) has all setups before first render
+function hydrateSetupsFromLocalStorage(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STORAGE_SETUPS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      for (const [k, val] of Object.entries(parsed)) {
+        const item = val as AnchoredForecastItem;
+        if (item && item.forecast && typeof item.anchorCandleTime === "number") {
+          anchoredForecastCache.set(k, item);
+        }
+      }
+    }
+  } catch {}
+}
+
+hydrateSetupsFromLocalStorage();
+
+function saveSetupsToLocalStorage(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const obj: Record<string, AnchoredForecastItem> = {};
+    for (const [k, v] of anchoredForecastCache.entries()) {
+      obj[k] = v;
+    }
+    window.localStorage.setItem(LOCAL_STORAGE_SETUPS_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
+function syncSetupToServer(key: string, item: AnchoredForecastItem): void {
+  if (typeof window === "undefined") return;
+  const fc = item.forecast;
+  const sig = `${item.anchorCandleTime}_${fc.p1Entry}_${fc.p2Tp1}_${fc.p3Tp2}_${fc.leg1Hit}_${fc.leg2Hit}_${fc.leg3Hit}_${fc.trailingStageIdx}_${fc.isPlanBActive}`;
+  if (lastSyncedSignatureMap.get(key) === sig) return;
+  lastSyncedSignatureMap.set(key, sig);
+
+  saveSetupsToLocalStorage();
+  fetch("/api/indicator/setups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, item })
+  }).catch(() => {});
+}
+
+// 2. Asynchronous hydration from Server disk storage (for cross-session / cross-device continuity)
+export async function hydrateSetupsFromServer(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch("/api/indicator/setups");
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (data && data.setups && typeof data.setups === "object") {
+      let updated = false;
+      for (const [k, val] of Object.entries(data.setups)) {
+        const serverItem = val as AnchoredForecastItem;
+        if (!serverItem || !serverItem.forecast || typeof serverItem.anchorCandleTime !== "number") continue;
+        const localItem = anchoredForecastCache.get(k);
+        // Adopt server setup if local doesn't exist or server setup has a newer anchor/progress
+        if (
+          !localItem ||
+          serverItem.anchorCandleTime > localItem.anchorCandleTime ||
+          (serverItem.anchorCandleTime === localItem.anchorCandleTime &&
+            (Number(Boolean(serverItem.forecast.leg3Hit)) > Number(Boolean(localItem.forecast.leg3Hit)) ||
+              Number(Boolean(serverItem.forecast.leg2Hit)) > Number(Boolean(localItem.forecast.leg2Hit)) ||
+              Number(Boolean(serverItem.forecast.leg1Hit)) > Number(Boolean(localItem.forecast.leg1Hit))))
+        ) {
+          anchoredForecastCache.set(k, serverItem);
+          updated = true;
+        }
+      }
+      if (updated) {
+        saveSetupsToLocalStorage();
+      }
+      return updated;
+    }
+  } catch {}
+  return false;
+}
+
+if (typeof window !== "undefined") {
+  hydrateSetupsFromServer();
+}
 
 export function resetIndicatorForecast(symbol?: string, tf?: string): void {
   if (symbol && tf) {
-    anchoredForecastCache.delete(`${symbol}_${tf}`);
+    const key = `${symbol}_${tf}`;
+    anchoredForecastCache.delete(key);
+    lastSyncedSignatureMap.delete(key);
+    saveSetupsToLocalStorage();
+    if (typeof window !== "undefined") {
+      fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+    }
   } else if (symbol) {
-    for (const key of anchoredForecastCache.keys()) {
-      if (key.startsWith(`${symbol}_`)) anchoredForecastCache.delete(key);
+    for (const key of Array.from(anchoredForecastCache.keys())) {
+      if (key.startsWith(`${symbol}_`)) {
+        anchoredForecastCache.delete(key);
+        lastSyncedSignatureMap.delete(key);
+      }
+    }
+    saveSetupsToLocalStorage();
+    if (typeof window !== "undefined") {
+      fetch(`/api/indicator/setups?symbol=${encodeURIComponent(symbol)}`, { method: "DELETE" }).catch(() => {});
     }
   } else {
     anchoredForecastCache.clear();
+    lastSyncedSignatureMap.clear();
+    saveSetupsToLocalStorage();
+    if (typeof window !== "undefined") {
+      fetch(`/api/indicator/setups`, { method: "DELETE" }).catch(() => {});
+    }
   }
+}
+
+function roundPriceForAsset(val: number, refPrice: number): number {
+  const factor = refPrice < 10 ? 10000 : 100;
+  return Math.round(val * factor) / factor;
+}
+
+function findCandleIndexByTime(candles: Candle[], targetTime: number | undefined, tfSec: number): number {
+  if (!candles || candles.length === 0 || !targetTime) return -1;
+  const exact = candles.findIndex((c) => c.time === targetTime);
+  if (exact !== -1) return exact;
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  const maxTol = Math.max(60, tfSec * 0.9);
+  for (let i = 0; i < candles.length; i++) {
+    const diff = Math.abs(candles[i].time - targetTime);
+    if (diff < bestDiff && diff <= maxTol) {
+      bestDiff = diff;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }
 
 // ============================================================================
@@ -1341,223 +1468,328 @@ export function evaluateSuperIndicator(
   const p3Tp2 = target_p3;
 
   // TradingView Stateful Forecast Anchoring Algorithm (var fc_start_bar, var fc_p1...)
+  // Persists across page refreshes (localStorage + Server) and replays historical bars so it never resets to the last candle on reload
   const cacheKey = `${symbol}_${tf}`;
+  const isFallbackCandles = Boolean((candles[0] as any)?._isFallback);
   const existingItem = anchoredForecastCache.get(cacheKey);
   let finalForecast: ForecastState | null = null;
+  let completedAtBarIdx: number | undefined = undefined;
 
-  if (existingItem) {
-    const anchorIdx = candles.findIndex(c => c.time === existingItem.anchorCandleTime);
-    let shouldTriggerNewForecast = false;
-    let triggerReason = "";
+  // Helper to construct a fresh ForecastState anchored at any historical bar index `barIdx`
+  const createSetupAtBar = (barIdx: number): { item: AnchoredForecastItem; forecast: ForecastState } => {
+    const bIdx = Math.max(0, Math.min(n - 1, barIdx));
+    const bCandle = candles[bIdx];
+    const bClose = bCandle.close;
+    const bAtr = atrs[bIdx] || atrVal;
+    const bEma200 = ema200[bIdx] || bClose;
+    const bDelta = deltas[bIdx] || 0;
 
-    if (anchorIdx < 0) {
-      shouldTriggerNewForecast = true;
-      triggerReason = "История сдвинулась";
-    } else {
-      const barsPassed = (n - 1) - anchorIdx;
-      const prev = existingItem.forecast;
-
-      // Track price extremes since anchor bar
-      for (let bi = anchorIdx; bi < n; bi++) {
-        if (candles[bi].high > existingItem.highestPriceSinceStart) {
-          existingItem.highestPriceSinceStart = candles[bi].high;
-        }
-        if (candles[bi].low < existingItem.lowestPriceSinceStart) {
-          existingItem.lowestPriceSinceStart = candles[bi].low;
-        }
-      }
-
-      // Check whether target or entry was hit on any bar since start, recording the exact hit bar index & time
-      let leg1Hit = prev.leg1Hit;
-      let leg1Idx = prev.leg1Idx;
-      let leg1Time = prev.leg1Time;
-      let leg2Hit = prev.leg2Hit;
-      let leg2Idx = prev.leg2Idx;
-      let leg2Time = prev.leg2Time;
-      let leg3Hit = prev.leg3Hit;
-      let leg3Idx = prev.leg3Idx;
-      let leg3Time = prev.leg3Time;
-
-      for (let bi = anchorIdx; bi < n; bi++) {
-        const cb = candles[bi];
-        if (prev.isBull) {
-          if (!leg1Hit && cb.low <= prev.p1Entry) {
-            leg1Hit = true;
-            leg1Idx = bi;
-            leg1Time = cb.time;
-          }
-          if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1) {
-            leg2Hit = true;
-            leg2Idx = bi;
-            leg2Time = cb.time;
-          }
-          if (leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2) {
-            leg3Hit = true;
-            leg3Idx = bi;
-            leg3Time = cb.time;
-          }
-        } else {
-          if (!leg1Hit && cb.high >= prev.p1Entry) {
-            leg1Hit = true;
-            leg1Idx = bi;
-            leg1Time = cb.time;
-          }
-          if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1) {
-            leg2Hit = true;
-            leg2Idx = bi;
-            leg2Time = cb.time;
-          }
-          if (leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2) {
-            leg3Hit = true;
-            leg3Idx = bi;
-            leg3Time = cb.time;
-          }
-        }
-      }
-
-      // Active trailing stop progression
-      let activeTrailingSl = prev.activeTrailingSl;
-      let trailingStageStr = prev.trailingStageStr;
-      let trailingStageIdx = prev.trailingStageIdx;
-
-      const currentProfit = prev.isBull ? close - prev.p1Entry : prev.p1Entry - close;
-      const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
-
-      if (currentProfit >= distToTp1) {
-        activeTrailingSl = prev.isBull
-          ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
-          : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
-        trailingStageStr = "💰 Защита 50%";
-        trailingStageIdx = 2;
-      } else if (currentProfit >= distToTp1 * 0.70) {
-        activeTrailingSl = prev.isBull ? prev.p1Entry + atrVal * 0.15 : prev.p1Entry - atrVal * 0.15;
-        trailingStageStr = "🔒 BE+0.15";
-        trailingStageIdx = 1;
-      }
-
-      // =========================================================================
-      // PINE SCRIPT v6 STATE REASONS TO RESET FORECAST:
-      // A forecast stays locked at fc_start_bar and ONLY changes if there's a reason:
-      // =========================================================================
-      const entryWaitBars = tfSec <= 300 ? 8 : tfSec <= 1800 ? 7 : 6;
-      const slBroken = prev.isBull ? close < prev.invalidLevelSl : close > prev.invalidLevelSl;
-      const trailingHit = prev.isBull ? close < activeTrailingSl : close > activeTrailingSl;
-      const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? (n - 1 - leg2Idx) : 0;
-
-      // 1. Invalidation: Stop loss hit (Plan B activation)
-      if (slBroken) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Слом SL (${prev.invalidLevelSl.toFixed(1)}) — активация Плана Б`;
-      }
-      // 2. Final TP2 hit and completed
-      else if (leg3Hit && typeof leg3Idx === "number" && (n - 1 - leg3Idx >= 3)) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Цель TP2 (${prev.p3Tp2.toFixed(1)}) достигнута`;
-      }
-      // 3. Trailing SL hit after taking TP1 (trade successfully concluded in profit)
-      else if (leg2Hit && trailingHit && trailingStageIdx > 0) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Взят TP1 (${prev.p2Tp1.toFixed(1)}) и сработал трейлинг-стоп`;
-      }
-      // 4. Stale timeout without entry (Pine: entry_wait_bars passed without touching entry)
-      else if (!leg1Hit && barsPassed >= entryWaitBars) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Таймаут входа (${barsPassed} баров без отката к уровню)`;
-      }
-      // 5. Stale after TP1 without reaching TP2 (> 25 bars)
-      else if (leg2Hit && !leg3Hit && barsSinceTp1 >= 25) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Таймаут движения к TP2 (${barsSinceTp1} баров)`;
-      }
-      // 6. Maximum overall cycle completion (40 bars)
-      else if (barsPassed >= 40) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Волновой цикл завершен (${barsPassed} баров)`;
-      }
-      // 7. Structural reversal: high-confidence opposite sweep or opposite BOS with high delta
-      else if ((prev.isBull && isHighSweep && !isLowSweep) || (!prev.isBull && isLowSweep && !isHighSweep)) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Снятие ликвидности в противоположную сторону (${prev.isBull ? "High Sweep" : "Low Sweep"})`;
-      }
-      else if (isBos && (isBullishBreak !== prev.isBull) && isExtremeDelta) {
-        shouldTriggerNewForecast = true;
-        triggerReason = `Структурный разворот (${isBullishBreak ? "BOS ↑" : "BOS ↓"})`;
-      }
-
-      if (!shouldTriggerNewForecast) {
-        // PRESERVE ANCHORED FORECAST LEVELS
-        finalForecast = {
-          ...prev,
-          startBar: anchorIdx,
-          startLogical: anchorIdx,
-          startTime: existingItem.anchorCandleTime,
-          startPrice: existingItem.forecast.startPrice,
-          barsSinceStart: barsPassed,
-          isLocked: true,
-          statusReason: `Фиксирован (бар #${anchorIdx}, ${barsPassed} баров назад)`,
-          leg1Hit,
-          leg1Idx,
-          leg1Time,
-          leg2Hit,
-          leg2Idx,
-          leg2Time,
-          leg3Hit,
-          leg3Idx,
-          leg3Time,
-          activeTrailingSl: Math.round(activeTrailingSl * 100) / 100,
-          trailingStageStr,
-          trailingStageIdx
-        };
-        existingItem.forecast = finalForecast;
-      }
+    // Direction at barIdx: if at latest bar use current isBull, otherwise evaluate trend structure at barIdx
+    let bIsBull = isBull;
+    if (bIdx < n - 1) {
+      const lookbackIdx = Math.max(0, bIdx - p.it);
+      const localMomUp = bClose >= closes[lookbackIdx];
+      bIsBull = bClose >= bEma200 ? (localMomUp || bDelta >= 0) : (localMomUp && bClose > bEma200 * 0.998);
     }
-  }
 
-  if (!finalForecast) {
-    const candidateForecast: ForecastState = {
-      isBull,
-      probability: Math.round(isBull ? (deltaCurrent > 0 ? 74 : 66) : (deltaCurrent < 0 ? 74 : 66)),
-      startBar: n - 1,
-      startLogical: n - 1,
-      startTime: lastCandle.time,
-      barsSinceStart: 0,
+    let bP1: number;
+    let bP2: number;
+    let bP3: number;
+    let bSl: number;
+
+    if (bIdx === n - 1) {
+      bP1 = p1Entry;
+      bP2 = p2Tp1;
+      bP3 = p3Tp2;
+      bSl = invalidLevelSl;
+    } else {
+      const pullDist = bAtr * (tfSec < 86400 ? 0.42 : 0.35);
+      bP1 = bIsBull ? bClose - pullDist : bClose + pullDist;
+
+      // Snap entry to nearby unmitigated OB/FVG formed at or before bIdx if available
+      if (bIsBull) {
+        for (let i = bullObBoxes.length - 1; i >= 0; i--) {
+          const ob = bullObBoxes[i];
+          if (ob.left <= bIdx && ob.top < bClose && ob.top >= bClose - bAtr * max_pullback_atr) {
+            bP1 = Math.max((ob.top + ob.bottom) / 2, bClose - bAtr * max_pullback_atr);
+            break;
+          }
+        }
+        const cand2 = bClose + bAtr * 1.35 * tpMult;
+        bP2 = Math.max(bP1 + bAtr * min_tp1_atr, Math.min(bClose + bAtr * max_tp1_atr * tpMult, cand2));
+        const cand3 = bClose + bAtr * 2.2 * tpMult;
+        bP3 = Math.max(bP2 + bAtr * min_tp2_atr, Math.min(bClose + bAtr * max_tp2_atr * tpMult, cand3));
+      } else {
+        for (let i = bearObBoxes.length - 1; i >= 0; i--) {
+          const ob = bearObBoxes[i];
+          if (ob.left <= bIdx && ob.bottom > bClose && ob.bottom <= bClose + bAtr * max_pullback_atr) {
+            bP1 = Math.min((ob.top + ob.bottom) / 2, bClose + bAtr * max_pullback_atr);
+            break;
+          }
+        }
+        const cand2 = bClose - bAtr * 1.35 * tpMult;
+        bP2 = Math.min(bP1 - bAtr * min_tp1_atr, Math.max(bClose - bAtr * max_tp1_atr * tpMult, cand2));
+        const cand3 = bClose - bAtr * 2.2 * tpMult;
+        bP3 = Math.min(bP2 - bAtr * min_tp2_atr, Math.max(bClose - bAtr * max_tp2_atr * tpMult, cand3));
+      }
+
+      bP2 = f_avoid_round(bP2, bIsBull, bAtr);
+      bP3 = f_avoid_round(bP3, bIsBull, bAtr);
+
+      bSl = bIsBull ? bP1 - bAtr * 0.85 : bP1 + bAtr * 0.85;
+      const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
+      if (bIsBull && winSlice.length > 0) {
+        const ll = Math.min(...winSlice.map((c) => c.low));
+        if (ll < bP1 && ll >= bP1 - bAtr * 1.25) bSl = ll - bAtr * 0.15;
+      } else if (!bIsBull && winSlice.length > 0) {
+        const hh = Math.max(...winSlice.map((c) => c.high));
+        if (hh > bP1 && hh <= bP1 + bAtr * 1.25) bSl = hh + bAtr * 0.15;
+      }
+      bSl = f_avoid_round_sl(bSl, bIsBull, bAtr);
+    }
+
+    const bP5 = bIsBull ? bP3 + bAtr * 1.1 : bP3 - bAtr * 1.1;
+    const bAlt1 = bIsBull ? bSl - bAtr * 1.5 : bSl + bAtr * 1.5;
+    const bAlt2 = bIsBull ? bSl - bAtr * 3.0 : bSl + bAtr * 3.0;
+    const bAlt3 = bIsBull ? bAlt2 - bAtr * 1.2 : bAlt2 + bAtr * 1.2;
+    const bEntryHitOnStart = bIsBull ? bCandle.low <= bP1 : bCandle.high >= bP1;
+
+    const fcState: ForecastState = {
+      isBull: bIsBull,
+      probability: Math.round(bIsBull ? (bDelta > 0 ? 74 : 66) : (bDelta < 0 ? 74 : 66)),
+      startBar: bIdx,
+      startLogical: bIdx,
+      startTime: bCandle.time,
+      barsSinceStart: (n - 1) - bIdx,
       isLocked: true,
-      statusReason: "Новый прогноз зафиксирован",
-      startPrice: close,
-      p1Entry: Math.round(p1Entry * 100) / 100,
-      p2Tp1: Math.round(p2Tp1 * 100) / 100,
-      p3Tp2: Math.round(p3Tp2 * 100) / 100,
-      p5Tp3: Math.round(p5Tp3 * 100) / 100,
-      invalidLevelSl: Math.round(invalidLevelSl * 100) / 100,
-      activeTrailingSl: Math.round(invalidLevelSl * 100) / 100,
+      statusReason: `Фиксирован (бар #${bIdx})`,
+      startPrice: roundPriceForAsset(bClose, bClose),
+      p1Entry: roundPriceForAsset(bP1, bClose),
+      p2Tp1: roundPriceForAsset(bP2, bClose),
+      p3Tp2: roundPriceForAsset(bP3, bClose),
+      p5Tp3: roundPriceForAsset(bP5, bClose),
+      invalidLevelSl: roundPriceForAsset(bSl, bClose),
+      activeTrailingSl: roundPriceForAsset(bSl, bClose),
       trailingStageStr: "🛡️ Начальный SL",
       trailingStageIdx: 0,
-      leg1Hit: isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry,
-      leg1Idx: (isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry) ? n - 1 : undefined,
-      leg1Time: (isBull ? lastCandle.low <= p1Entry : lastCandle.high >= p1Entry) ? lastCandle.time : undefined,
+      leg1Hit: bEntryHitOnStart,
+      leg1Idx: bEntryHitOnStart ? bIdx : undefined,
+      leg1Time: bEntryHitOnStart ? bCandle.time : undefined,
       leg2Hit: false,
       leg3Hit: false,
       leg4Hit: false,
       leg5Hit: false,
-      isPlanBActive,
+      isPlanBActive: false,
       isWickSweep: isHighSweep || isLowSweep,
-      altTp1: Math.round(altTp1 * 100) / 100,
-      altTp2: Math.round(altTp2 * 100) / 100,
-      altTp3: Math.round((isBull ? altTp2 + atrVal * 1.2 : altTp2 - atrVal * 1.2) * 100) / 100,
+      altTp1: roundPriceForAsset(bAlt1, bClose),
+      altTp2: roundPriceForAsset(bAlt2, bClose),
+      altTp3: roundPriceForAsset(bAlt3, bClose),
       isHighRunaway: noPullbackProb >= 65,
       noPullbackProb
     };
 
-    anchoredForecastCache.set(cacheKey, {
+    const item: AnchoredForecastItem = {
       key: cacheKey,
-      forecast: candidateForecast,
-      anchorCandleTime: lastCandle.time,
-      highestPriceSinceStart: lastCandle.high,
-      lowestPriceSinceStart: lastCandle.low,
+      forecast: fcState,
+      anchorCandleTime: bCandle.time,
+      highestPriceSinceStart: bCandle.high,
+      lowestPriceSinceStart: bCandle.low,
       createdAt: Date.now()
-    });
+    };
 
-    finalForecast = candidateForecast;
+    return { item, forecast: fcState };
+  };
+
+  // Helper to evaluate a locked setup from its `anchorIdx` up to `targetEndIdx`
+  const evaluateSetupRange = (
+    item: AnchoredForecastItem,
+    anchorIdx: number,
+    targetEndIdx: number
+  ): { expiredAtBar: number | null; updatedForecast: ForecastState } => {
+    const prev = item.forecast;
+    const entryWaitBars = tfSec <= 300 ? 12 : tfSec <= 1800 ? 10 : 8;
+
+    let leg1Hit = Boolean(prev.leg1Hit);
+    let leg1Idx = prev.leg1Time ? findCandleIndexByTime(candles, prev.leg1Time, tfSec) : prev.leg1Idx;
+    if (leg1Idx === undefined || leg1Idx < anchorIdx) {
+      leg1Hit = false;
+      leg1Idx = undefined;
+    }
+    let leg1Time = leg1Hit && leg1Idx !== undefined ? candles[leg1Idx]?.time ?? prev.leg1Time : undefined;
+
+    let leg2Hit = Boolean(prev.leg2Hit);
+    let leg2Idx = prev.leg2Time ? findCandleIndexByTime(candles, prev.leg2Time, tfSec) : prev.leg2Idx;
+    if (!leg1Hit || leg2Idx === undefined || leg2Idx < anchorIdx) {
+      leg2Hit = false;
+      leg2Idx = undefined;
+    }
+    let leg2Time = leg2Hit && leg2Idx !== undefined ? candles[leg2Idx]?.time ?? prev.leg2Time : undefined;
+
+    let leg3Hit = Boolean(prev.leg3Hit);
+    let leg3Idx = prev.leg3Time ? findCandleIndexByTime(candles, prev.leg3Time, tfSec) : prev.leg3Idx;
+    if (!leg2Hit || leg3Idx === undefined || leg3Idx < anchorIdx) {
+      leg3Hit = false;
+      leg3Idx = undefined;
+    }
+    let leg3Time = leg3Hit && leg3Idx !== undefined ? candles[leg3Idx]?.time ?? prev.leg3Time : undefined;
+
+    let activeTrailingSl = prev.invalidLevelSl;
+    let trailingStageStr = "🛡️ Начальный SL";
+    let trailingStageIdx = 0;
+    let expiredAtBar: number | null = null;
+
+    const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
+
+    for (let bi = anchorIdx; bi <= targetEndIdx; bi++) {
+      const cb = candles[bi];
+      if (cb.high > item.highestPriceSinceStart) item.highestPriceSinceStart = cb.high;
+      if (cb.low < item.lowestPriceSinceStart) item.lowestPriceSinceStart = cb.low;
+
+      if (prev.isBull) {
+        if (!leg1Hit && cb.low <= prev.p1Entry) {
+          leg1Hit = true;
+          leg1Idx = bi;
+          leg1Time = cb.time;
+        }
+        if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1) {
+          leg2Hit = true;
+          leg2Idx = bi;
+          leg2Time = cb.time;
+        }
+        if (leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2) {
+          leg3Hit = true;
+          leg3Idx = bi;
+          leg3Time = cb.time;
+        }
+      } else {
+        if (!leg1Hit && cb.high >= prev.p1Entry) {
+          leg1Hit = true;
+          leg1Idx = bi;
+          leg1Time = cb.time;
+        }
+        if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1) {
+          leg2Hit = true;
+          leg2Idx = bi;
+          leg2Time = cb.time;
+        }
+        if (leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2) {
+          leg3Hit = true;
+          leg3Idx = bi;
+          leg3Time = cb.time;
+        }
+      }
+
+      // Update trailing stop stage if entry was taken
+      if (leg1Hit && distToTp1 > 0) {
+        const bestExtreme = prev.isBull ? cb.high - prev.p1Entry : prev.p1Entry - cb.low;
+        if (leg2Hit || bestExtreme >= distToTp1) {
+          activeTrailingSl = prev.isBull
+            ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.5
+            : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.5;
+          trailingStageStr = "💰 Защита 50%";
+          trailingStageIdx = 2;
+        } else if (bestExtreme >= distToTp1 * 0.7) {
+          const bAtr = atrs[bi] || atrVal;
+          activeTrailingSl = prev.isBull ? prev.p1Entry + bAtr * 0.15 : prev.p1Entry - bAtr * 0.15;
+          trailingStageStr = "🔒 BE+0.15";
+          trailingStageIdx = 1;
+        }
+      }
+
+      const barsPassedAtBi = bi - anchorIdx;
+      const slBrokenAtBi = prev.isBull ? cb.close < prev.invalidLevelSl : cb.close > prev.invalidLevelSl;
+      const trailingHitAtBi =
+        leg2Hit && trailingStageIdx > 0 && (prev.isBull ? cb.close < activeTrailingSl : cb.close > activeTrailingSl);
+      const runawayWithoutEntry =
+        !leg1Hit && barsPassedAtBi >= 2 && (prev.isBull ? cb.high >= prev.p2Tp1 : cb.low <= prev.p2Tp1);
+      const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? bi - leg2Idx : 0;
+
+      if (
+        slBrokenAtBi ||
+        (leg3Hit && typeof leg3Idx === "number" && bi - leg3Idx >= 3) ||
+        trailingHitAtBi ||
+        runawayWithoutEntry ||
+        (!leg1Hit && barsPassedAtBi >= entryWaitBars) ||
+        (leg2Hit && !leg3Hit && barsSinceTp1 >= 28) ||
+        barsPassedAtBi >= 45
+      ) {
+        expiredAtBar = bi;
+        break;
+      }
+    }
+
+    const barsPassed = targetEndIdx - anchorIdx;
+    const updatedForecast: ForecastState = {
+      ...prev,
+      startBar: anchorIdx,
+      startLogical: anchorIdx,
+      startTime: candles[anchorIdx]?.time ?? item.anchorCandleTime,
+      startPrice: prev.startPrice,
+      barsSinceStart: barsPassed,
+      isLocked: true,
+      statusReason: `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
+      leg1Hit,
+      leg1Idx,
+      leg1Time,
+      leg2Hit,
+      leg2Idx,
+      leg2Time,
+      leg3Hit,
+      leg3Idx,
+      leg3Time,
+      activeTrailingSl: roundPriceForAsset(activeTrailingSl, close),
+      trailingStageStr,
+      trailingStageIdx
+    };
+
+    return { expiredAtBar, updatedForecast };
+  };
+
+  if (existingItem) {
+    // If rendering temporary fallback candles before server response arrives, return cached forecast untouched
+    if (isFallbackCandles) {
+      finalForecast = existingItem.forecast;
+    } else {
+      const priceDiffRatio = Math.abs(existingItem.forecast.startPrice - close) / Math.max(0.0001, close);
+      const anchorIdx = priceDiffRatio < 0.25 ? findCandleIndexByTime(candles, existingItem.anchorCandleTime, tfSec) : -1;
+
+      if (anchorIdx >= 0) {
+        const { expiredAtBar, updatedForecast } = evaluateSetupRange(existingItem, anchorIdx, n - 1);
+        if (expiredAtBar === null) {
+          finalForecast = updatedForecast;
+          existingItem.forecast = updatedForecast;
+          syncSetupToServer(cacheKey, existingItem);
+        } else {
+          completedAtBarIdx = expiredAtBar;
+        }
+      }
+    }
+  }
+
+  // If no valid active setup in memory (or previous setup finished at `completedAtBarIdx`),
+  // replay historical bars forward up to `n - 1` so the setup is anchored at the actual historical bar where it began!
+  if (!finalForecast) {
+    const defaultLookbackStart = Math.max(25, n - Math.min(36, Math.max(10, n - 25)));
+    let walkBar = completedAtBarIdx !== undefined ? Math.min(n - 1, completedAtBarIdx) : defaultLookbackStart;
+    let currentCandidate = createSetupAtBar(walkBar);
+
+    while (walkBar < n - 1) {
+      const { expiredAtBar, updatedForecast } = evaluateSetupRange(currentCandidate.item, walkBar, n - 1);
+      if (expiredAtBar === null) {
+        currentCandidate.forecast = updatedForecast;
+        currentCandidate.item.forecast = updatedForecast;
+        break;
+      }
+      walkBar = Math.min(n - 1, Math.max(walkBar + 1, expiredAtBar));
+      currentCandidate = createSetupAtBar(walkBar);
+    }
+
+    finalForecast = currentCandidate.forecast;
+
+    if (!isFallbackCandles) {
+      anchoredForecastCache.set(cacheKey, currentCandidate.item);
+      syncSetupToServer(cacheKey, currentCandidate.item);
+    }
   }
 
   const forecast: ForecastState = finalForecast;

@@ -342,7 +342,7 @@ function generateFallbackCandles(symbol: AssetSymbol, interval: Timeframe = "15m
     const high = Math.round((Math.max(open, close) + Math.random() * volatility * 0.75) * 100) / 100;
     const low = Math.round((Math.min(open, close) - Math.random() * volatility * 0.75) * 100) / 100;
     const volume = Math.round(50 + Math.random() * 80);
-    candles.push({ time: t, open, high, low, close, volume });
+    candles.push({ time: t, open, high, low, close, volume, _isFallback: true });
     current = close;
   }
   return candles;
@@ -361,7 +361,8 @@ import {
 import {
   evaluateSuperIndicator,
   SuperIndicatorOutput,
-  resetIndicatorForecast
+  resetIndicatorForecast,
+  hydrateSetupsFromServer
 } from "../lib/pineSuperIndicatorEngine";
 
 interface ChartOverlaysProps {
@@ -480,25 +481,25 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
     }).format(new Date(displayCandle.time * 1000)).replace(",", "") + " МСК";
 
     ohlcBlock = (
-      <div className="absolute top-1.5 left-2 z-15 pointer-events-none flex items-center gap-1 sm:gap-2 text-[9.5px] sm:text-[10.5px] font-mono bg-[#0c101d]/90 backdrop-blur-xs px-2 py-0.5 sm:py-1 rounded-lg border border-gray-800 select-none shadow-md flex-wrap max-w-[94%]">
+      <div className="absolute top-1.5 left-1.5 sm:left-2 z-15 pointer-events-none flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-mono bg-[#080c16]/96 px-2 py-0.5 sm:py-1 rounded-lg border border-slate-800/90 select-none shadow-lg flex-wrap max-w-[calc(100%-64px)] sm:max-w-[94%]">
         <div className="flex items-center gap-1 font-bold">
-          <span className="text-white">{activeAsset}</span>
-          <span className="text-cyan-400 bg-cyan-950/80 px-1 py-0.2 rounded text-[9px] border border-cyan-800/60">{activeTf}</span>
+          <span className="text-white tracking-tight">{activeAsset}</span>
+          <span className="text-cyan-300 bg-cyan-950/90 px-1 py-0.2 rounded text-[9.5px] border border-cyan-700/60">{activeTf}</span>
           {marketStatus.isPremarket ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold flex items-center gap-1">
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold hidden sm:flex items-center gap-1">
               <span className="w-1 h-1 rounded-full bg-amber-300 animate-ping" />
               <span>{marketStatus.statusBadge || "Премаркет"}</span>
             </span>
           ) : marketStatus.isClearing ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold">
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold hidden sm:inline">
               {marketStatus.statusBadge || "Клиринг"}
             </span>
           ) : !marketStatus.isOpen ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/90 text-slate-300 border border-slate-700 font-sans font-bold">
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/95 text-slate-300 border border-slate-700 font-sans font-bold hidden sm:inline">
               {marketStatus.statusBadge || "⏸ Сейчас нет торгов"}
             </span>
           ) : (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-sans font-bold">
+            <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-800/60 font-sans font-bold hidden sm:inline">
               {marketStatus.statusBadge || "Торги онлайн"}
             </span>
           )}
@@ -508,24 +509,24 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
-          <span className="text-gray-400">О:<span className={toneClass}>{o.toFixed(dec)}</span></span>
-          <span className="text-gray-400">В:<span className={toneClass}>{h.toFixed(dec)}</span></span>
-          <span className="text-gray-400">Н:<span className={toneClass}>{l.toFixed(dec)}</span></span>
-          <span className="text-gray-400">З:<span className={toneClass}>{c.toFixed(dec)}</span></span>
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+          <span className="text-slate-400">О:<span className={`font-semibold ml-0.5 ${toneClass}`}>{o.toFixed(dec)}</span></span>
+          <span className="text-slate-400">В:<span className={`font-semibold ml-0.5 ${toneClass}`}>{h.toFixed(dec)}</span></span>
+          <span className="text-slate-400">Н:<span className={`font-semibold ml-0.5 ${toneClass}`}>{l.toFixed(dec)}</span></span>
+          <span className="text-slate-400">З:<span className={`font-bold ml-0.5 ${toneClass}`}>{c.toFixed(dec)}</span></span>
           <span className={`font-bold ${toneClass}`}>
             {chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)
           </span>
           {displayCandle.volume ? (
-            <span className="text-gray-400 hidden md:inline">
-              Объём: <span className="text-gray-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
+            <span className="text-slate-400 hidden lg:inline">
+              Объём: <span className="text-slate-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
             </span>
           ) : null}
-          <span className="text-cyan-300 text-[9px] sm:text-[10px] font-mono font-bold flex items-center gap-1 border-l border-gray-700/80 pl-1.5">
+          <span className="text-cyan-300 text-[9.5px] sm:text-[10.5px] font-mono font-bold hidden sm:flex items-center gap-1 border-l border-slate-700/80 pl-1.5">
             <Clock className="h-2.5 w-2.5 text-cyan-400 animate-pulse" />
             <span>Бар: {barCountdownFormatted}</span>
           </span>
-          <span className="text-cyan-300/90 text-[9px] sm:text-[10px] flex items-center gap-1 border-l border-gray-700/80 pl-1.5 hidden sm:flex">
+          <span className="text-cyan-300/90 text-[9.5px] sm:text-[10.5px] hidden md:flex items-center gap-1 border-l border-slate-700/80 pl-1.5">
             <span>{mskTimeStr}</span>
           </span>
         </div>
@@ -543,28 +544,28 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
         <div
           className="absolute z-20 pointer-events-none select-none flex justify-center"
           style={{
-            top: `${priceCoordY + 13}px`,
+            top: `${Math.round(priceCoordY + 13)}px`,
             right: "2px",
-            width: marketStatus.isOpen ? "58px" : "80px"
+            width: marketStatus.isOpen ? "60px" : "80px"
           }}
           title={marketStatus.isOpen ? `Отсчёт времени закрытия бара ${activeTf}: ${barCountdownFormatted}` : marketStatus.statusText}
         >
           {marketStatus.isOpen ? (
-            <div className="bg-[#0f141f]/95 border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+            <div className="bg-[#090d16] border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 w-full text-center">
               <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
               <span>{barCountdownFormatted}</span>
             </div>
           ) : marketStatus.isPremarket ? (
-            <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+            <div className="bg-[#181209] border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9.5px] font-sans font-bold text-amber-300 flex items-center justify-center gap-1 w-full text-center">
               <span className="w-1 h-1 rounded-full bg-amber-400 animate-ping" />
               <span>Премаркет</span>
             </div>
           ) : marketStatus.isClearing ? (
-            <div className="bg-[#1c180b]/95 border border-yellow-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-yellow-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+            <div className="bg-[#181509] border border-yellow-500/80 shadow-lg px-1 py-0.5 rounded text-[9.5px] font-sans font-bold text-yellow-300 flex items-center justify-center gap-0.5 w-full text-center">
               <span>⏸ Клиринг</span>
             </div>
           ) : (
-            <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+            <div className="bg-[#181209] border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9.5px] font-sans font-bold text-amber-300 flex items-center justify-center gap-0.5 w-full text-center">
               <span>⏸ {marketStatus.statusBadge || "Стоп"}</span>
             </div>
           )}
@@ -926,8 +927,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     candlesRef.current = candles;
   }, [candles]);
 
-  // Autonomous AI Analyst Docked Panel State (Right side of the chart, always open by default)
-  const [isAiPanelCollapsed, setIsAiPanelCollapsed] = useState<boolean>(false);
+  // Autonomous AI Analyst Docked Panel State (Collapsed by default on mobile/tablets so the chart gets 100% width)
+  const [isAiPanelCollapsed, setIsAiPanelCollapsed] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 1024 : false
+  );
   const [isHudMinimized, setIsHudMinimized] = useState<boolean>(() =>
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
@@ -940,7 +943,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     } catch {}
     if (typeof window !== "undefined") {
-      if (window.innerWidth < 768) return 280;
+      if (window.innerWidth < 768) return Math.min(340, window.innerWidth - 28);
       if (window.innerWidth < 1280) return 340;
     }
     return 380;
@@ -1502,6 +1505,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   const priceLinesRef = useRef<any[]>([]);
   const zonesPrimitiveRef = useRef<TradingViewZonesPrimitive | null>(null);
+  const seriesMarkersRef = useRef<any>(null);
+  const prevChartStyleRef = useRef<string>(chartStyle);
   const lastFittedKeyRef = useRef<string>("");
   const prevCleanCandlesRef = useRef<any[]>([]);
 
@@ -1510,7 +1515,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const mySeq = ++fetchSeqRef.current;
     try {
       setIsLoadingCandles(true);
-      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=160`);
+      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=200`);
       if (res.ok) {
         const data = await res.json();
         // Discard stale out-of-order responses if user switched asset or timeframe
@@ -1544,8 +1549,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             }
           }
           const key = `${symbol}_${interval}`;
-          clientCandlesCacheRef.current.set(key, cleanBars);
-          setCandles(cleanBars);
+          const prevCached = clientCandlesCacheRef.current.get(key);
+          let finalBars = cleanBars;
+          if (!prevCached) {
+            // First real server response for this symbol+timeframe (replacing initial fallback candles)
+            lastFittedKeyRef.current = "";
+          } else if (
+            prevCached.length > 0 &&
+            cleanBars.length > 0 &&
+            prevCached[prevCached.length - 1].time >= cleanBars[0].time
+          ) {
+            // Preserve intra-bar high/low wick extremes on the live forming candle so wicks never shrink or flicker between polls
+            const prevLast = prevCached[prevCached.length - 1];
+            const newLast = cleanBars[cleanBars.length - 1];
+            if (prevLast && newLast && prevLast.time === newLast.time) {
+              cleanBars[cleanBars.length - 1] = {
+                ...newLast,
+                high: Math.max(newLast.high, prevLast.high),
+                low: Math.min(newLast.low, prevLast.low)
+              };
+            }
+            // Merge older session bars so cleanCandles[0].time stays anchored and never shifts on new candle rollovers
+            const olderPrefix = prevCached.filter((b: any) => b.time < cleanBars[0].time);
+            if (olderPrefix.length > 0 && olderPrefix.length + cleanBars.length <= 600) {
+              finalBars = [...olderPrefix, ...cleanBars];
+            }
+          }
+          clientCandlesCacheRef.current.set(key, finalBars);
+          setCandles(finalBars);
           setCandlesKey(key);
           setLastUpdatedMsk(new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК");
         }
@@ -1786,6 +1817,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // Initial Data Load & Auto-Refresh Interval
   useEffect(() => {
+    hydrateSetupsFromServer().then((updated) => {
+      if (updated) {
+        setCandles((prev) => (prev && prev.length > 0 ? [...prev] : prev));
+      }
+    });
     fetchCandles(activeAsset, activeTf);
     fetchDayGexReport(activeAsset);
     fetchGexReport(activeAsset, gexHorizonRef.current);
@@ -1799,16 +1835,18 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const interval = setInterval(() => {
       tickCount += 1;
       fetchCandles(activeAsset, activeTf);
-      fetchMoexContracts();
       if (tickCount % 3 === 0) {
+        fetchMoexContracts();
+      }
+      if (tickCount % 8 === 0) {
         fetchDayGexReport(activeAsset);
         fetchGexReport(activeAsset, gexHorizonRef.current);
       }
-      if (tickCount % 6 === 0) {
+      if (tickCount % 16 === 0) {
         fetchMarketNews();
         fetchCalendar();
       }
-    }, 4000);
+    }, 1500);
 
     return () => clearInterval(interval);
   }, [activeAsset, activeTf]);
@@ -2018,21 +2056,32 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     let chart: IChartApi;
     try {
       chart = createChart(container, {
-        width,
-        height,
+        width: Math.floor(width),
+        height: Math.floor(height),
         layout: {
           background: { type: ColorType.Solid, color: curThemePal.chartBg },
-          textColor: "#9ca3af",
+          textColor: "#cbd5e1",
+          fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
           fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 11 : 12
         },
         grid: {
-          vertLines: { color: curThemePal.chartGrid },
-          horzLines: { color: curThemePal.chartGrid }
+          vertLines: { color: "rgba(30, 41, 59, 0.45)" },
+          horzLines: { color: "rgba(30, 41, 59, 0.45)" }
         },
         crosshair: {
           mode: 1,
-          vertLine: { color: "rgba(120, 123, 134, 0.6)", width: 1, style: 3 },
-          horzLine: { color: "rgba(120, 123, 134, 0.6)", width: 1, style: 3 }
+          vertLine: {
+            color: "rgba(148, 163, 184, 0.65)",
+            width: 1,
+            style: 3,
+            labelBackgroundColor: "#0f172a"
+          },
+          horzLine: {
+            color: "rgba(148, 163, 184, 0.65)",
+            width: 1,
+            style: 3,
+            labelBackgroundColor: "#0f172a"
+          }
         },
         localization: {
           locale: "ru-RU",
@@ -2052,7 +2101,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           }
         },
         rightPriceScale: {
-          borderColor: "#2a2e39",
+          borderColor: "#1e293b",
           scaleMargins: { top: 0.10, bottom: 0.14 },
           entireTextOnly: false,
           ticksVisible: true,
@@ -2060,12 +2109,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           autoScale: true
         },
         timeScale: {
-          borderColor: "#2a2e39",
+          borderColor: "#1e293b",
           timeVisible: true,
           secondsVisible: false,
           rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
-          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 11 : 9,
-          minBarSpacing: 2,
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
+          minBarSpacing: 2.5,
           fixLeftEdge: false,
           fixRightEdge: false,
           tickMarkFormatter: (time: any) => {
@@ -2112,35 +2161,33 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       return;
     }
 
-    // Main Series
+    // Main Series (High-Contrast TradingView Pro Palette)
     let series: any;
     if (chartStyle === "bars") {
       series = chart.addSeries(BarSeries, {
-        upColor: "#089981",
-        downColor: "#f23645"
+        upColor: "#00c896",
+        downColor: "#ff3b5c"
       });
     } else if (chartStyle === "area") {
       series = chart.addSeries(AreaSeries, {
         topColor: "rgba(14, 165, 233, 0.35)",
         bottomColor: "rgba(14, 165, 233, 0.0)",
-        lineColor: "#0ea5e9",
-        lineWidth: 1
+        lineColor: "#38bdf8",
+        lineWidth: 2
       });
     } else if (chartStyle === "line") {
       series = chart.addSeries(LineSeries, {
-        color: "#2962ff",
-        lineWidth: 1
+        color: "#38bdf8",
+        lineWidth: 2
       });
     } else {
       series = chart.addSeries(CandlestickSeries, {
-        upColor: "#089981",
-        downColor: "#f23645",
-        borderVisible: true,
-        borderColor: "#2a2e39",
-        borderUpColor: "#089981",
-        borderDownColor: "#f23645",
-        wickUpColor: "#089981",
-        wickDownColor: "#f23645"
+        upColor: "#00c896",
+        downColor: "#ff3b5c",
+        borderVisible: false,
+        wickVisible: true,
+        wickUpColor: "#00e6ac",
+        wickDownColor: "#ff526f"
       });
     }
 
@@ -2178,7 +2225,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
     const ema200Series = chart.addSeries(LineSeries, {
       color: "#ec4899",
-      lineWidth: 2,
+      lineWidth: 1,
       title: "EMA 200",
       visible: showEma200
     });
@@ -2189,6 +2236,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     chartInstanceRef.current = chart;
     seriesInstanceRef.current = series;
+    seriesMarkersRef.current = null;
+    prevChartStyleRef.current = chartStyle;
     volumeSeriesRef.current = volumeSeries;
     trendLineSeriesRef.current = null;
     priceLinesRef.current = [];
@@ -2236,6 +2285,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       } catch {}
       lastFittedKeyRef.current = "";
       prevCleanCandlesRef.current = [];
+      seriesMarkersRef.current = null;
       if (zonesPrimitiveRef.current && seriesInstanceRef.current) {
         try {
           seriesInstanceRef.current.detachPrimitive(zonesPrimitiveRef.current);
@@ -2362,7 +2412,31 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         timeScale: {
           borderColor: "#1e293b",
           visible: true,
-          timeVisible: true
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return d.toLocaleTimeString("ru-RU", {
+              timeZone: "Europe/Moscow",
+              hour: "2-digit",
+              minute: "2-digit"
+            });
+          }
+        },
+        localization: {
+          locale: "ru-RU",
+          timeFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return (
+              d.toLocaleString("ru-RU", {
+                timeZone: "Europe/Moscow",
+                day: "2-digit",
+                month: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit"
+              }) + " МСК"
+            );
+          }
         },
         rightPriceScale: {
           borderColor: "#1e293b",
@@ -2385,12 +2459,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
     const fastSeries = macdChart.addSeries(LineSeries, {
       color: "#facc15",
-      lineWidth: 2,
+      lineWidth: 1,
       title: "MACD DIF"
     });
     const slowSeries = macdChart.addSeries(LineSeries, {
       color: "#ec4899",
-      lineWidth: 2,
+      lineWidth: 1,
       title: "MACD DEA"
     });
 
@@ -2463,7 +2537,31 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         timeScale: {
           borderColor: "#1e293b",
           visible: true,
-          timeVisible: true
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return d.toLocaleTimeString("ru-RU", {
+              timeZone: "Europe/Moscow",
+              hour: "2-digit",
+              minute: "2-digit"
+            });
+          }
+        },
+        localization: {
+          locale: "ru-RU",
+          timeFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return (
+              d.toLocaleString("ru-RU", {
+                timeZone: "Europe/Moscow",
+                day: "2-digit",
+                month: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit"
+              }) + " МСК"
+            );
+          }
         },
         rightPriceScale: {
           borderColor: "#1e293b",
@@ -2488,7 +2586,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
     const rsi14Series = rsiChart.addSeries(LineSeries, {
       color: "#38bdf8",
-      lineWidth: 2,
+      lineWidth: 1,
       title: "RSI 14"
     });
 
@@ -2558,7 +2656,31 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         timeScale: {
           borderColor: "#1e293b",
           visible: true,
-          timeVisible: true
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return d.toLocaleTimeString("ru-RU", {
+              timeZone: "Europe/Moscow",
+              hour: "2-digit",
+              minute: "2-digit"
+            });
+          }
+        },
+        localization: {
+          locale: "ru-RU",
+          timeFormatter: (time: number) => {
+            const d = new Date(time * 1000);
+            return (
+              d.toLocaleString("ru-RU", {
+                timeZone: "Europe/Moscow",
+                day: "2-digit",
+                month: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit"
+              }) + " МСК"
+            );
+          }
         },
         rightPriceScale: {
           borderColor: "#1e293b",
@@ -2578,7 +2700,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     const kSeries = stochChart.addSeries(LineSeries, {
       color: "#3b82f6",
-      lineWidth: 2,
+      lineWidth: 1,
       title: "%K"
     });
     const dSeries = stochChart.addSeries(LineSeries, {
@@ -2724,11 +2846,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     } catch {}
   }, [showEma50, showEma100, showEma200]);
 
-  // 3. Handle Chart Style change smoothly without destroying main chart
+  // 3. Handle Chart Style change smoothly without destroying main chart on mount
   useEffect(() => {
     const chart = chartInstanceRef.current;
     if (!chart || activeTab !== "chart") return;
+    if (prevChartStyleRef.current === chartStyle && seriesInstanceRef.current) return;
+    prevChartStyleRef.current = chartStyle;
 
+    seriesMarkersRef.current = null;
     if (seriesInstanceRef.current) {
       if (zonesPrimitiveRef.current) {
         try {
@@ -2745,14 +2870,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     let series: any;
     if (chartStyle === "bars") {
       series = chart.addSeries(BarSeries, {
-        upColor: "#10b981",
-        downColor: "#f43f5e"
+        upColor: "#00c896",
+        downColor: "#ff3b5c"
       });
     } else if (chartStyle === "area") {
       series = chart.addSeries(AreaSeries, {
-        topColor: "rgba(14, 165, 233, 0.4)",
+        topColor: "rgba(14, 165, 233, 0.35)",
         bottomColor: "rgba(14, 165, 233, 0.0)",
-        lineColor: "#0ea5e9",
+        lineColor: "#38bdf8",
         lineWidth: 2
       });
     } else if (chartStyle === "line") {
@@ -2762,14 +2887,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       });
     } else {
       series = chart.addSeries(CandlestickSeries, {
-        upColor: "#089981",
-        downColor: "#f23645",
-        borderVisible: true,
-        borderColor: "#2a2e39",
-        borderUpColor: "#089981",
-        borderDownColor: "#f23645",
-        wickUpColor: "#089981",
-        wickDownColor: "#f23645"
+        upColor: "#00c896",
+        downColor: "#ff3b5c",
+        borderVisible: false,
+        wickVisible: true,
+        wickUpColor: "#00e6ac",
+        wickDownColor: "#ff526f"
       });
     }
     try {
@@ -2783,7 +2906,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     priceLinesRef.current = [];
     lastFittedKeyRef.current = "";
     prevCleanCandlesRef.current = [];
-  }, [chartStyle]);
+  }, [chartStyle, activeTab]);
 
   // 4. Update Market Data, MACD, Trend Lines, GEX Levels, Zones, and Forecast Lines
   useEffect(() => {
@@ -2798,41 +2921,60 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const currentKey = `${activeAsset}_${activeTf}_${chartStyle}`;
     const isNewAssetOrTf = lastFittedKeyRef.current !== currentKey;
 
-    // Configure dynamic precision & minMove for every asset
-    const assetDec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
-    const assetMinMove = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 1 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 0.1 : 0.01;
-
-    try {
-      series.applyOptions({
-        priceFormat: {
-          type: "price",
-          precision: assetDec,
-          minMove: assetMinMove
-        }
-      });
-      if (isNewAssetOrTf) {
+    // Configure dynamic precision & minMove ONLY when switching asset/timeframe/style (prevents series option churn mid-pan)
+    if (isNewAssetOrTf) {
+      const assetDec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+      const assetMinMove = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 1 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 0.1 : 0.01;
+      try {
+        series.applyOptions({
+          priceFormat: {
+            type: "price",
+            precision: assetDec,
+            minMove: assetMinMove
+          }
+        });
         chart.priceScale("right").applyOptions({
           autoScale: true
         });
-      }
-    } catch {}
+      } catch {}
+    }
 
     const cleanCandles = candles;
     const prevList = prevCleanCandlesRef.current;
     const isMobileW = typeof window !== "undefined" && window.innerWidth < 768;
     const dynamicOffset = Math.max(labelOffset + 4, isMobileW ? 12 : 18);
 
-    const isFullReload =
+    const shouldResetViewport =
       isNewAssetOrTf ||
       !prevList ||
       prevList.length === 0 ||
-      cleanCandles.length < 5 ||
-      cleanCandles[0]?.time !== prevList[0]?.time ||
-      Math.abs(cleanCandles.length - prevList.length) > 2;
+      cleanCandles.length < 5;
+
+    const didOldestBarShift =
+      !shouldResetViewport &&
+      (cleanCandles[0]?.time !== prevList[0]?.time ||
+        Math.abs(cleanCandles.length - prevList.length) > 10);
+
+    const isFullReload = shouldResetViewport || didOldestBarShift;
+
+    // Find index from which to stream incremental updates (covers both forming candle and candle rollover)
+    let startUpdIdx = Math.max(0, cleanCandles.length - 1);
+    if (!isFullReload && prevList.length > 0) {
+      const prevLastTime = prevList[prevList.length - 1].time;
+      const foundIdx = cleanCandles.findIndex((c: any) => c.time >= prevLastTime);
+      if (foundIdx !== -1) {
+        startUpdIdx = foundIdx;
+      } else {
+        startUpdIdx = Math.max(0, cleanCandles.length - 2);
+      }
+    }
 
     try {
       if (isFullReload) {
-        // Initial load or switched instrument/timeframe: setData & initial viewport framing
+        const savedLogicalRange = !shouldResetViewport
+          ? chart.timeScale().getVisibleLogicalRange()
+          : null;
+
         if (chartStyle === "candles" || chartStyle === "bars") {
           series.setData(
             cleanCandles.map(c => ({
@@ -2857,40 +2999,52 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           );
         }
 
-        try {
-          chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
-          const visibleCount = isMobileW ? 42 : 65;
-          const fromIdx = Math.max(0, cleanCandles.length - visibleCount);
-          const toIdx = cleanCandles.length + dynamicOffset;
-          chart.priceScale("right").applyOptions({ autoScale: true });
-          chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
-          try { macdChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
-          try { rsiChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
-          try { stochChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
-        } catch {}
+        if (shouldResetViewport) {
+          try {
+            chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+            const visibleCount = isMobileW ? 42 : 65;
+            const fromIdx = Math.max(0, cleanCandles.length - visibleCount);
+            const toIdx = cleanCandles.length + dynamicOffset;
+            chart.priceScale("right").applyOptions({ autoScale: true });
+            chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+            try { macdChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
+            try { rsiChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
+            try { stochChartInstanceRef.current?.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx }); } catch {}
+          } catch {}
+        } else if (savedLogicalRange) {
+          try {
+            chart.timeScale().setVisibleLogicalRange(savedLogicalRange);
+            try { macdChartInstanceRef.current?.timeScale().setVisibleLogicalRange(savedLogicalRange); } catch {}
+            try { rsiChartInstanceRef.current?.timeScale().setVisibleLogicalRange(savedLogicalRange); } catch {}
+            try { stochChartInstanceRef.current?.timeScale().setVisibleLogicalRange(savedLogicalRange); } catch {}
+          } catch {}
+        }
 
         lastFittedKeyRef.current = currentKey;
         prevCleanCandlesRef.current = cleanCandles;
       } else {
-        // Live streaming tick on same symbol & timeframe (TradingView-style: NEVER resets viewport or interrupts user pan)
-        const lastCandle = cleanCandles[cleanCandles.length - 1];
-        if (chartStyle === "candles" || chartStyle === "bars") {
-          series.update({
-            time: lastCandle.time,
-            open: lastCandle.open,
-            high: lastCandle.high,
-            low: lastCandle.low,
-            close: lastCandle.close
-          });
-        } else {
-          series.update({ time: lastCandle.time, value: lastCandle.close });
-        }
-        if (volumeSeries) {
-          volumeSeries.update({
-            time: lastCandle.time,
-            value: lastCandle.volume || 100,
-            color: lastCandle.close >= lastCandle.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
-          });
+        // Live streaming tick OR candle close + rollover on same symbol & timeframe
+        // Updates both the just-closed bar and the newly opened bar WITHOUT resetting viewport or zoom!
+        for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
+          const bar = cleanCandles[idx];
+          if (chartStyle === "candles" || chartStyle === "bars") {
+            series.update({
+              time: bar.time,
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close
+            });
+          } else {
+            series.update({ time: bar.time, value: bar.close });
+          }
+          if (volumeSeries) {
+            volumeSeries.update({
+              time: bar.time,
+              value: bar.volume || 100,
+              color: bar.close >= bar.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
+            });
+          }
         }
         prevCleanCandlesRef.current = cleanCandles;
       }
@@ -2920,15 +3074,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           macdFastSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(difValues[i] * 100) / 100 })));
           macdSlowSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(deaValues[i] * 100) / 100 })));
         } else {
-          const lastI = cleanCandles.length - 1;
-          const hist = difValues[lastI] - deaValues[lastI];
-          macdHistSeriesRef.current.update({
-            time: cleanCandles[lastI].time,
-            value: Math.round(hist * 100) / 100,
-            color: hist >= 0 ? "#0ecb81" : "#f6465d"
-          });
-          macdFastSeriesRef.current?.update({ time: cleanCandles[lastI].time, value: Math.round(difValues[lastI] * 100) / 100 });
-          macdSlowSeriesRef.current?.update({ time: cleanCandles[lastI].time, value: Math.round(deaValues[lastI] * 100) / 100 });
+          for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
+            const hist = difValues[idx] - deaValues[idx];
+            macdHistSeriesRef.current.update({
+              time: cleanCandles[idx].time,
+              value: Math.round(hist * 100) / 100,
+              color: hist >= 0 ? "#0ecb81" : "#f6465d"
+            });
+            macdFastSeriesRef.current?.update({ time: cleanCandles[idx].time, value: Math.round(difValues[idx] * 100) / 100 });
+            macdSlowSeriesRef.current?.update({ time: cleanCandles[idx].time, value: Math.round(deaValues[idx] * 100) / 100 });
+          }
         }
       } catch {}
     }
@@ -2942,10 +3097,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           rsi6SeriesRef.current.setData(rsi6Data);
           rsi14SeriesRef.current.setData(rsi14Data);
         } else {
-          const last6 = rsi6Data[rsi6Data.length - 1];
-          const last14 = rsi14Data[rsi14Data.length - 1];
-          if (last6) rsi6SeriesRef.current.update(last6);
-          if (last14) rsi14SeriesRef.current.update(last14);
+          const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
+          for (const pt of rsi6Data) {
+            if (pt.time >= minTime) rsi6SeriesRef.current.update(pt);
+          }
+          for (const pt of rsi14Data) {
+            if (pt.time >= minTime) rsi14SeriesRef.current.update(pt);
+          }
         }
       } catch {}
     }
@@ -2958,23 +3116,29 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           stochKSeriesRef.current.setData(kData);
           stochDSeriesRef.current.setData(dData);
         } else {
-          const lastK = kData[kData.length - 1];
-          const lastD = dData[dData.length - 1];
-          if (lastK) stochKSeriesRef.current.update(lastK);
-          if (lastD) stochDSeriesRef.current.update(lastD);
+          const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
+          for (const pt of kData) {
+            if (pt.time >= minTime) stochKSeriesRef.current.update(pt);
+          }
+          for (const pt of dData) {
+            if (pt.time >= minTime) stochDSeriesRef.current.update(pt);
+          }
         }
       } catch {}
     }
 
     // 2d. Set EMA 50, EMA 100, EMA 200 data
     if (cleanCandles.length > 0) {
+      const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
       if (ema50SeriesRef.current) {
         try {
           const e50 = calculateEmaSeries(cleanCandles, 50);
           if (isFullReload) {
             ema50SeriesRef.current.setData(e50);
-          } else if (e50.length > 0) {
-            ema50SeriesRef.current.update(e50[e50.length - 1]);
+          } else {
+            for (const pt of e50) {
+              if (pt.time >= minTime) ema50SeriesRef.current.update(pt);
+            }
           }
         } catch {}
       }
@@ -2983,8 +3147,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           const e100 = calculateEmaSeries(cleanCandles, 100);
           if (isFullReload) {
             ema100SeriesRef.current.setData(e100);
-          } else if (e100.length > 0) {
-            ema100SeriesRef.current.update(e100[e100.length - 1]);
+          } else {
+            for (const pt of e100) {
+              if (pt.time >= minTime) ema100SeriesRef.current.update(pt);
+            }
           }
         } catch {}
       }
@@ -2993,8 +3159,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           const e200 = calculateEmaSeries(cleanCandles, 200);
           if (isFullReload) {
             ema200SeriesRef.current.setData(e200);
-          } else if (e200.length > 0) {
-            ema200SeriesRef.current.update(e200[e200.length - 1]);
+          } else {
+            for (const pt of e200) {
+              if (pt.time >= minTime) ema200SeriesRef.current.update(pt);
+            }
           }
         } catch {}
       }
@@ -3028,8 +3196,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           if (isFullReload) {
             trendLineSeriesRef.current.setData(cleanCandles.map((c, idx) => ({ time: c.time, value: trendValues[idx] })));
           } else {
-            const lastIdxVal = cleanCandles.length - 1;
-            trendLineSeriesRef.current.update({ time: cleanCandles[lastIdxVal].time, value: trendValues[lastIdxVal] });
+            for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
+              trendLineSeriesRef.current.update({ time: cleanCandles[idx].time, value: trendValues[idx] });
+            }
           }
         } catch {}
       }
@@ -3435,7 +3604,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         startLogical: lineStartLog,
         endLogical: lineEndLog,
         color: "#ef4444",
-        lineWidth: 1.5,
+        lineWidth: 1,
         lineStyle: "dashed",
         label: fc?.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}${trailingNote}`
       });
@@ -3449,7 +3618,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         startLogical: lineStartLog,
         endLogical: lineEndLog,
         color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
-        lineWidth: 1.5,
+        lineWidth: 1,
         lineStyle: fc?.leg1Hit ? "solid" : "dotted",
         label: fc?.leg1Hit ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓` : `ВХОД: ${computedEntry.toFixed(dec)}`
       });
@@ -3463,7 +3632,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         startLogical: lineStartLog,
         endLogical: lineEndLog,
         color: fc?.leg2Hit ? "#059669" : "#10b981",
-        lineWidth: 1.5,
+        lineWidth: 1,
         lineStyle: fc?.leg2Hit ? "solid" : "dotted",
         label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`
       });
@@ -3478,7 +3647,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: lineStartLog,
           endLogical: lineEndLog,
           color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
-          lineWidth: 1.5,
+          lineWidth: 1,
           lineStyle: fc?.leg3Hit ? "solid" : "dotted",
           label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`
         });
@@ -3509,7 +3678,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: gx1,
           endLogical: gx2Base,
           color: "#10b981",
-          lineWidth: 2,
+          lineWidth: 1,
           lineStyle: "solid",
           label: `🏰 Потолок CW: ${effectiveGex.callWall}`
         });
@@ -3522,7 +3691,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: gx1,
           endLogical: gx2Base,
           color: "#ef4444",
-          lineWidth: 2,
+          lineWidth: 1,
           lineStyle: "solid",
           label: `🛡️ Поддержка PW: ${effectiveGex.putWall}`
         });
@@ -3537,7 +3706,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: gx1,
           endLogical: gx2Base,
           color: "#a855f7",
-          lineWidth: 2,
+          lineWidth: 1,
           lineStyle: "dashed",
           label: `⚡ Граница Гаммы: ${effectiveGex.gammaFlip}`
         });
@@ -3552,7 +3721,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: gx1,
           endLogical: gx2Base,
           color: "#06b6d4",
-          lineWidth: 1.5,
+          lineWidth: 1,
           lineStyle: "dotted",
           label: `🎯 Магнит дня: ${effectiveGex.maxPain}`
         });
@@ -3568,7 +3737,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           startLogical: gx1,
           endLogical: gx2Base,
           color: "#f59e0b",
-          lineWidth: 1.5,
+          lineWidth: 1,
           lineStyle: "dashed",
           label: `🧲 Спящий магнит: ${sleeperPrice}`
         });
@@ -3647,7 +3816,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       } : null
     });
 
-    // 9. Signals & ML Markers
+    // 9. Signals & ML Markers (reuse single plugin instance instead of leaking primitives on every tick)
     if (showSignals && cleanCandles.length > 20) {
       const markers: any[] = [];
       const emaShort = calculateEMA(cleanCandles, 9);
@@ -3676,11 +3845,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           });
         }
       }
-      if (markers.length > 0) {
-        try {
-          createSeriesMarkers(series, markers);
-        } catch {}
-      }
+      try {
+        if (!seriesMarkersRef.current) {
+          seriesMarkersRef.current = createSeriesMarkers(series, markers);
+        } else {
+          seriesMarkersRef.current.setMarkers(markers);
+        }
+      } catch {}
+    } else if (seriesMarkersRef.current) {
+      try {
+        seriesMarkersRef.current.setMarkers([]);
+      } catch {}
     }
 
     // 10. Ensure fitted key reference is in sync
@@ -4691,7 +4866,52 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         {/* ======================================================== */}
         {activeTab === "chart" && (
           <div className="flex-1 flex flex-col min-h-0 h-full relative">
-            {/* Chart Sub-Bar: Timeframes, Types, Overlays (Visible on desktop; mobile uses compact top-bar) */}
+            {/* 📱 MOBILE 1-TAP QUICK BAR: Direct Timeframe Pills + Indicators + AI Toggle (Visible on mobile < md) */}
+            <div
+              className="md:hidden border-b px-1.5 py-1 flex items-center justify-between gap-1 shrink-0 select-none overflow-x-auto no-scrollbar"
+              style={{ backgroundColor: curPalette.surfaceAlt, borderColor: curPalette.border }}
+            >
+              <div className="flex items-center gap-0.5 bg-[#060911] p-0.5 rounded-lg border border-slate-800 shrink-0">
+                {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
+                  <button
+                    key={tf}
+                    onClick={() => handleSelectTimeframe(tf)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold transition cursor-pointer ${
+                      activeTf === tf
+                        ? "bg-cyan-600 text-white shadow-xs"
+                        : "text-slate-400 active:text-white"
+                    }`}
+                  >
+                    {tf.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => setIsIndicatorsModalOpen(true)}
+                  className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 cursor-pointer"
+                  title="Индикаторы и уровни"
+                >
+                  <Sliders className="h-3 w-3 text-cyan-400" />
+                  <span>Индик.</span>
+                </button>
+                <button
+                  onClick={() => setIsAiPanelCollapsed(!isAiPanelCollapsed)}
+                  className={`px-2 py-0.5 rounded-md text-[10.5px] font-bold flex items-center gap-1 border cursor-pointer ${
+                    !isAiPanelCollapsed
+                      ? "bg-purple-600 text-white border-purple-400"
+                      : "bg-slate-900 text-slate-300 border-slate-700"
+                  }`}
+                  title="Открыть / скрыть панель ИИ-Аналитика"
+                >
+                  <Bot className="h-3 w-3 text-cyan-400" />
+                  <span>ИИ</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Chart Sub-Bar: Timeframes, Types, Overlays (Visible on desktop >= md) */}
             <div
               className="hidden md:flex border-b px-2 sm:px-3 py-1 items-center justify-between gap-1.5 shrink-0 transition-colors duration-200"
               style={{ backgroundColor: curPalette.surfaceAlt, borderColor: curPalette.border }}
@@ -4818,55 +5038,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   barCountdownFormatted={barCountdown.formatted}
                   candles={candles}
                 />
-
-                {/* 🖱️ Floating Chart Navigation Pill (Desktop & Mobile Touch) */}
-                <div className="absolute bottom-2.5 left-2.5 z-20 flex items-center gap-1 bg-[#0c101d]/95 backdrop-blur-md px-2 py-1 rounded-xl border border-gray-700/80 text-xs shadow-xl select-none">
-                  <button
-                    onClick={handlePanLeft}
-                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
-                    title="Прокрутить влево (◀)"
-                  >
-                    <ChevronLeft className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-                  </button>
-                  <button
-                    onClick={handlePanRight}
-                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
-                    title="Прокрутить вправо (▶)"
-                  >
-                    <ChevronRight className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-                  </button>
-                  <div className="w-[1px] h-4 bg-gray-700/60 mx-0.5" />
-                  <button
-                    onClick={handleZoomIn}
-                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
-                    title="Приблизить (+)"
-                  >
-                    <ZoomIn className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-                  </button>
-                  <button
-                    onClick={handleZoomOut}
-                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
-                    title="Отдалить (-)"
-                  >
-                    <ZoomOut className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-                  </button>
-                  <div className="w-[1px] h-4 bg-gray-700/60 mx-0.5" />
-                  <button
-                    onClick={handleResetChart}
-                    className="px-1.5 py-1 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-amber-500/20 text-gray-200 hover:text-amber-300 transition cursor-pointer flex items-center gap-1 text-[11px]"
-                    title="Авто-масштаб / Центрировать"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5 sm:h-3 sm:w-3" />
-                    <span className="font-mono font-bold">Авто</span>
-                  </button>
-                  <button
-                    onClick={handleScrollToRealtime}
-                    className="px-2 py-1 sm:px-1.5 sm:py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[11px] sm:text-[10px] font-mono font-bold transition cursor-pointer"
-                    title="Перейти к текущей котировке"
-                  >
-                    Live ⇥
-                  </button>
-                </div>
               </div>
 
               {/* MACD Sub-Pane (Binance style with resizable height) */}
@@ -5064,7 +5235,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 isHudMinimized ? (
                   <div
                     onClick={() => setIsHudMinimized(false)}
-                    className="absolute top-10 left-2 z-30 flex items-center gap-2 bg-[#0f172a]/95 border border-cyan-500/50 rounded-xl px-2.5 py-1.5 text-[11px] font-mono shadow-xl backdrop-blur-md cursor-pointer hover:border-cyan-400 select-none transition-all max-w-[calc(100vw-130px)]"
+                    className="absolute top-12 sm:top-10 left-1.5 sm:left-2 z-30 flex items-center gap-1.5 bg-[#0a0f1d]/95 border border-cyan-500/40 rounded-lg px-2 py-1 text-[10px] sm:text-[11px] font-mono shadow-lg backdrop-blur-md cursor-pointer hover:border-cyan-400 select-none transition-all max-w-[calc(100vw-110px)]"
                     title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
                   >
                     <GripHorizontal className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
@@ -5377,12 +5548,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               )}
             </div>
 
-            {/* 🎚️ Vertical Split Drag Resizer between Chart and AI Analyst */}
+            {/* 🎚️ Vertical Split Drag Resizer between Chart and AI Analyst (Desktop only) */}
             {!isAiPanelCollapsed && (
               <div
                 onMouseDown={handleStartResizeAi}
                 onTouchStart={handleStartResizeAi}
-                className={`w-1.5 h-full cursor-col-resize hover:bg-cyan-500/50 active:bg-cyan-400 transition-colors z-20 shrink-0 relative flex items-center justify-center select-none bg-gray-900 border-l border-r border-gray-800 ${
+                className={`hidden md:flex w-1.5 h-full cursor-col-resize hover:bg-cyan-500/50 active:bg-cyan-400 transition-colors z-20 shrink-0 relative items-center justify-center select-none bg-gray-900 border-l border-r border-gray-800 ${
                   isDraggingAiWidth ? "bg-cyan-500 shadow-md shadow-cyan-500/50" : ""
                 }`}
                 title="Зажмите и тяните влево/вправо для изменения ширины панели ИИ-Аналитика"
@@ -5391,12 +5562,24 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               </div>
             )}
 
-            {/* 🤖 AUTONOMOUS AI ANALYST (DOCKED PERMANENTLY RIGHT OF CHART, NEVER OVERLAPPING) */}
+            {/* Mobile Backdrop when AI Analyst Drawer is Open */}
+            {!isAiPanelCollapsed && (
+              <div
+                onClick={() => setIsAiPanelCollapsed(true)}
+                className="md:hidden fixed inset-0 bg-black/60 z-40"
+              />
+            )}
+
+            {/* 🤖 AUTONOMOUS AI ANALYST (Full-width chart on mobile with slide-over drawer; docked on desktop) */}
             <div
-              className="flex h-full shrink-0 relative z-10"
+              className={`${
+                isAiPanelCollapsed
+                  ? "hidden md:flex h-full shrink-0 relative z-10"
+                  : "fixed inset-y-0 right-0 z-50 md:static md:z-10 flex h-full shrink-0 shadow-2xl md:shadow-none"
+              }`}
               style={{
                 width: isAiPanelCollapsed ? "48px" : `${aiPanelWidth}px`,
-                maxWidth: isAiPanelCollapsed ? "48px" : "calc(100vw - 80px)"
+                maxWidth: isAiPanelCollapsed ? "48px" : "calc(100vw - 24px)"
               }}
             >
               <AutonomousAiAnalystPanel
