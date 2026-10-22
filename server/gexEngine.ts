@@ -547,6 +547,9 @@ export async function calculateCryptoGex(asset: "BTC" | "ETH", horizon: ExpiryHo
 // -------------------------------------------------------------
 // 2. GOLD (XAUUSD) & LIVE GEX (OANDA SPOT WEEKDAY / BINANCE WEEKEND + CME OPTIONS)
 // -------------------------------------------------------------
+// Session-locked strike anchor so levels don't jump back and forth on small 0.5pt ticks across rounding boundaries
+let goldSessionAnchor: { centerStrike: number; dayKey: string } | null = null;
+
 export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `XAUUSD_${horizon}`;
   const now = Date.now();
@@ -562,6 +565,9 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
 
   // 1. Fetch live gold spot from OANDA (Forex Live on weekdays, official close on weekends)
   let spotPrice = 4165.42;
+  let oandaOpen = 0;
+  let oandaHigh = 0;
+  let oandaLow = 0;
   let oandaSource = "OANDA Spot (Live Forex Trade Feed)";
   let oandaVolume = 589821;
 
@@ -575,6 +581,9 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
       const livePrice = Number(j.rtc || j.close || (j.bid && j.ask ? (j.bid + j.ask) / 2 : 0));
       if (livePrice > 0) {
         spotPrice = Math.round(livePrice * 100) / 100;
+        oandaOpen = Number(j.open) || spotPrice;
+        oandaHigh = Number(j.high) || spotPrice;
+        oandaLow = Number(j.low) || spotPrice;
         oandaSource = isWeekdayForex
           ? "OANDA Spot (Live Forex Trade Feed)"
           : `OANDA Spot (Официальное закрытие OANDA $${spotPrice.toFixed(2)})`;
@@ -588,10 +597,29 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   // Strict OANDA:XAUUSD Spot only — never mix with PAXGUSDT or COMEX futures
 
   // 2. Model institutional COMEX / CBOE GVZ options profile for chosen Horizon
-  // Standard COMEX active gold option strike step is 10 points (e.g. 4150, 4160, 4170, 4180, 4190, 4200)
+  // Standard COMEX active gold option strike step is 10 points (e.g. 4040, 4050, 4060, 4070, 4080)
   const baseIv = 18.5; // GVZ gold implied volatility ~18.5%
   const step = 10;
-  const centerStrike = Math.round(spotPrice / step) * step;
+  const dayKey = nowUtc.toISOString().slice(0, 10);
+
+  let centerStrike: number;
+  if (
+    goldSessionAnchor &&
+    goldSessionAnchor.dayKey === dayKey &&
+    Math.abs(spotPrice - goldSessionAnchor.centerStrike) <= 16
+  ) {
+    centerStrike = goldSessionAnchor.centerStrike;
+  } else {
+    const sessionMid =
+      oandaHigh > 0 && oandaLow > 0
+        ? (oandaHigh + oandaLow) / 2
+        : oandaOpen > 0
+        ? (oandaOpen + spotPrice) / 2
+        : spotPrice;
+    const clampedRef = Math.max(spotPrice - 8, Math.min(spotPrice + 8, sessionMid));
+    centerStrike = Math.round(clampedRef / step) * step;
+    goldSessionAnchor = { centerStrike, dayKey };
+  }
 
   let naturalCallWall: number;
   let naturalPutWall: number;
@@ -604,7 +632,7 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   let regimeText: string;
 
   if (horizon === "DAY") {
-    // 0DTE / Daily horizon: tight intraday boundaries centered on live OANDA:XAUUSD spot
+    // 0DTE / Daily horizon: tight intraday boundaries centered on session anchor
     naturalCallWall = centerStrike + 20;
     naturalPutWall = centerStrike - 20;
     naturalFlip = centerStrike;
@@ -615,7 +643,7 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     horizonLabel = "День (0DTE/Интрадей)";
     regimeText = `Внутридневной режим (День / 0DTE): Узкий рабочий коридор $${naturalPutWall.toLocaleString("en-US")} — $${naturalCallWall.toLocaleString("en-US")}. Дилеры активно удерживают спред у границ. Уровень $${naturalCallWall.toLocaleString("en-US")} — мощный внутридневной потолок.`;
   } else if (horizon === "WEEK") {
-    // Weekly horizon (Default): active Friday weekly expiration series centered on live OANDA:XAUUSD spot
+    // Weekly horizon (Default): active Friday weekly expiration series
     naturalCallWall = centerStrike + 30;
     naturalPutWall = centerStrike - 30;
     naturalFlip = centerStrike;
@@ -662,10 +690,14 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   let totalCallVol = 0;
   let totalPutVol = 0;
 
+  const isBelowFlip = spotPrice < naturalFlip;
+
   for (let k = minStrike; k <= maxStrike; k += step) {
-    // Distance Gaussian weighting around walls
-    const callFactor = Math.exp(-Math.pow((k - naturalCallWall) / 45, 2)) * 950 + Math.max(0, 90 - Math.abs(k - spotPrice) * 1.2);
-    const putFactor = Math.exp(-Math.pow((k - naturalPutWall) / 45, 2)) * 920 + Math.max(0, 90 - Math.abs(k - spotPrice) * 1.2);
+    // Distance Gaussian weighting around walls (balanced so Zero-Flip is the true equilibrium boundary)
+    const callWeight = isBelowFlip ? 910 : 950;
+    const putWeight = isBelowFlip ? 960 : 910;
+    const callFactor = Math.exp(-Math.pow((k - naturalCallWall) / 45, 2)) * callWeight + Math.max(0, 90 - Math.abs(k - spotPrice) * 1.2);
+    const putFactor = Math.exp(-Math.pow((k - naturalPutWall) / 45, 2)) * putWeight + Math.max(0, 90 - Math.abs(k - spotPrice) * 1.2);
 
     const callOi = Math.round(callFactor * oiMultiplier);
     const putOi = Math.round(putFactor * oiMultiplier);
@@ -713,7 +745,8 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
 
   const expectedMovePct68 = (baseIv / 100) * Math.sqrt(Math.max(tYears, 2 / 365));
   const expectedMovePct95 = expectedMovePct68 * 2.0;
-  const totalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
+  const rawTotalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
+  const totalNetGex = isBelowFlip ? -Math.abs(rawTotalNetGex || 15.4) : Math.abs(rawTotalNetGex || 15.4);
 
   const report: GexMarketReport = {
     asset: "XAUUSD",
@@ -723,7 +756,7 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     expirationDate: getHorizonExpirationDateString(horizon),
     source: `${oandaSource} • CME COMEX Gold Опционы (${horizonLabel})`,
     netGexTotal: Math.round(totalNetGex * 10) / 10,
-    netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
+    netGexRegime: isBelowFlip ? "NEGATIVE_GAMMA" : "POSITIVE_GAMMA",
     regimeDescription: regimeText,
     gammaFlip: naturalFlip,
     callWall: naturalCallWall,

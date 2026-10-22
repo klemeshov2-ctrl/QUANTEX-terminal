@@ -15,6 +15,7 @@ import {
   CheckCircle2
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData, getHorizonExpirationDateString } from "../../server/gexEngine";
+import { auditSingleGexLevel } from "../lib/pineSuperIndicatorEngine";
 
 // ============================================================================
 // 📊 PROPS FOR UNIFIED ADVANCED GEX MODULES
@@ -126,11 +127,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       return [];
     }
 
-    const latestTime = sourceCandles[sourceCandles.length - 1].time;
-    const filtered = sourceCandles.filter((c) => c.time >= latestTime - windowSec);
-    const activeCandles = filtered.length >= 10 ? filtered : sourceCandles;
-
-    const levelsToAudit = [
+    const levelsToAudit: Array<{
+      id: string;
+      name: string;
+      price: number;
+      type: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET";
+      role: string;
+    }> = [
       {
         id: "call_wall",
         name: "Потолок (Call Wall)",
@@ -161,63 +164,30 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       }
     ];
 
+    const periodName = periodLabel === "week" ? "за неделю (7 дней)" : "за 24 часа";
+
     return levelsToAudit.map((lvl) => {
-      const tol = lvl.price * 0.0012; // 0.12% tolerance
-      let touches = 0;
-      let bounces = 0;
-      let breakouts = 0;
-      let wasInsideZone = false;
+      const audit = auditSingleGexLevel(sourceCandles, lvl.price, lvl.type, windowSec);
+      const { touches, bounces, breakouts, hitRatePct, isTested, closestExtreme, distToExtreme } = audit;
 
-      activeCandles.forEach((c) => {
-        const isTouch = c.high >= lvl.price - tol && c.low <= lvl.price + tol;
+      const isStrong = !isTested || bounces >= breakouts;
 
-        if (isTouch) {
-          if (!wasInsideZone) {
-            touches += 1;
-            wasInsideZone = true;
-
-            if (lvl.type === "RESISTANCE") {
-              if (c.close > lvl.price + tol) {
-                breakouts += 1;
-              } else {
-                bounces += 1;
-              }
-            } else if (lvl.type === "SUPPORT") {
-              if (c.close < lvl.price - tol) {
-                breakouts += 1;
-              } else {
-                bounces += 1;
-              }
-            } else {
-              if (Math.abs(c.close - lvl.price) <= tol * 1.5) {
-                bounces += 1;
-              } else {
-                breakouts += 1;
-              }
-            }
-          }
-        } else {
-          wasInsideZone = false;
-        }
-      });
-
-      const safeTouches = Math.max(touches, 1);
-      const safeBounces = touches === 0 ? (periodLabel === "week" ? 6 : 3) : bounces;
-      const safeBreaks = touches === 0 ? (periodLabel === "week" ? 2 : 1) : breakouts;
-      const hitRatePct = Math.round((safeBounces / (safeBounces + safeBreaks)) * 100);
-
-      const isStrong = safeBounces >= safeBreaks;
-      const periodName = periodLabel === "week" ? "за неделю (7 дней)" : "за 24 часа";
-      const simpleVerdict = isStrong
-        ? `Уровень $${lvl.price} прочный ${periodName}. Держал ${safeBounces} ${safeBounces === 1 ? "раз" : "раза"}, пробили ${safeBreaks}. Высокая вероятность отскока.`
-        : `Уровень $${lvl.price} слабый ${periodName}. Держал ${safeBounces} ${safeBounces === 1 ? "раз" : "раза"}, пробили ${safeBreaks}. Риск пробоя.`;
+      let simpleVerdict = "";
+      if (!isTested) {
+        simpleVerdict = `Цена не доходила до уровня $${lvl.price} ${periodName} (ближайший экстремум на графике $${closestExtreme.toFixed(1)}, запас $${distToExtreme.toFixed(1)}). Ликвидность стены не тронута.`;
+      } else if (isStrong) {
+        simpleVerdict = `Уровень $${lvl.price} прочный ${periodName}. Касаний: ${touches}, удержал цену: ${bounces}, пробоев: ${breakouts} (${hitRatePct}% удержаний). Высокая вероятность отработки.`;
+      } else {
+        simpleVerdict = `Уровень $${lvl.price} пробивался ${periodName}. Касаний: ${touches}, удержал: ${bounces}, пробили: ${breakouts} (${hitRatePct}% удержаний). Ликвидность частично снята, повышенный риск пробоя.`;
+      }
 
       return {
         ...lvl,
-        touches: touches === 0 ? (periodLabel === "week" ? 8 : 4) : touches,
-        bounces: safeBounces,
-        breakouts: safeBreaks,
+        touches,
+        bounces,
+        breakouts,
         hitRatePct,
+        isTested,
         isStrong,
         simpleVerdict
       };
@@ -745,25 +715,33 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                 <div
                   key={stat.id}
                   className={`p-3 rounded-xl border transition-all ${
-                    stat.isStrong
+                    !stat.isTested
+                      ? "bg-[#0b101b] border-cyan-500/25 hover:border-cyan-500/45"
+                      : stat.isStrong
                       ? "bg-[#0c121d] border-emerald-500/30 hover:border-emerald-500/50"
                       : "bg-[#140c11] border-rose-500/30 hover:border-rose-500/50"
                   }`}
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-white text-xs">{stat.name}</span>
                       <span className="font-mono text-xs font-extrabold text-amber-300 bg-gray-900 border border-gray-800 px-1.5 py-0.2 rounded">
                         ${stat.price}
                       </span>
                       <span
                         className={`text-[10px] font-bold px-2 py-0.2 rounded-full border ${
-                          stat.isStrong
+                          !stat.isTested
+                            ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
+                            : stat.isStrong
                             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
                             : "bg-rose-500/15 text-rose-300 border-rose-500/40"
                         }`}
                       >
-                        {stat.isStrong ? "🛡️ Прочный уровень" : "⚠️ Слабый уровень"}
+                        {!stat.isTested
+                          ? "🛡️ Не тестировался (Свежий)"
+                          : stat.isStrong
+                          ? "🛡️ Прочный уровень"
+                          : "⚠️ Слабый / Пробивался"}
                       </span>
                     </div>
 
@@ -778,7 +756,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                         Пробили: <strong>{stat.breakouts}</strong>
                       </span>
                       <span className="text-cyan-300 bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 font-bold">
-                        {stat.hitRatePct}%
+                        {stat.isTested ? `${stat.hitRatePct}%` : "Свежий"}
                       </span>
                     </div>
                   </div>

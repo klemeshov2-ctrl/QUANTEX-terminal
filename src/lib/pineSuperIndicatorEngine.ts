@@ -49,6 +49,16 @@ export interface BoxItem {
   isDashed: boolean;
 }
 
+export interface LevelAuditResult {
+  touches: number;
+  bounces: number;
+  breakouts: number;
+  hitRatePct: number;
+  isTested: boolean;
+  closestExtreme: number;
+  distToExtreme: number;
+}
+
 export interface GexReportCalculated {
   spotPrice: number;
   callWall: number;
@@ -68,11 +78,149 @@ export interface GexReportCalculated {
   putGex: number[];
   netGex: number[];
   totGex: number[];
+  isDumping?: boolean;
   audit: {
     total: number;
     cwRate: number;
+    cwTouches?: number;
+    cwBounces?: number;
     pwRate: number;
+    pwTouches?: number;
+    pwBounces?: number;
     flipRate: number;
+    flipTouches?: number;
+    flipBounces?: number;
+    painRate?: number;
+    painTouches?: number;
+    painBounces?: number;
+  };
+}
+
+/**
+ * Shared institutional GEX Level Hit Rate auditor used by BOTH the Chart HUD and the GEX Analytics tab
+ * so level touch/bounce/breakout counts are 100% identical across all views.
+ */
+export function auditSingleGexLevel(
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number }>,
+  levelPrice: number,
+  levelType: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET",
+  windowSec: number = 86400
+): LevelAuditResult {
+  if (!candles || candles.length === 0 || !levelPrice || levelPrice <= 0) {
+    return { touches: 0, bounces: 0, breakouts: 0, hitRatePct: 0, isTested: false, closestExtreme: 0, distToExtreme: 0 };
+  }
+
+  const latestTime = candles[candles.length - 1].time;
+  const filtered = windowSec > 0 ? candles.filter((c) => c.time >= latestTime - windowSec) : candles;
+  const activeCandles = filtered.length >= 6 ? filtered : candles;
+
+  const avgRange =
+    activeCandles.reduce((acc, c) => acc + Math.max(0.0001, c.high - c.low), 0) /
+    Math.max(1, activeCandles.length);
+
+  // Touch band and breakout threshold scaled to asset price and candle ATR
+  const touchTol = Math.max(levelPrice * 0.00035, Math.min(levelPrice * 0.0010, avgRange * 0.35));
+  const breakTol = Math.max(levelPrice * 0.00045, Math.min(levelPrice * 0.0012, avgRange * 0.42));
+
+  let touches = 0;
+  let bounces = 0;
+  let breakouts = 0;
+
+  const maxHigh = Math.max(...activeCandles.map((c) => c.high));
+  const minLow = Math.min(...activeCandles.map((c) => c.low));
+  const lastClose = activeCandles[activeCandles.length - 1].close;
+  const closestExtreme = levelPrice >= lastClose ? maxHigh : minLow;
+  const distToExtreme = Math.abs(levelPrice - closestExtreme);
+
+  let i = 0;
+  while (i < activeCandles.length) {
+    const c = activeCandles[i];
+    const isTouch = c.high >= levelPrice - touchTol && c.low <= levelPrice + touchTol;
+
+    if (!isTouch) {
+      i++;
+      continue;
+    }
+
+    touches += 1;
+
+    // Determine direction of approach from preceding bars (up to 3 bars prior)
+    let prePrice = c.open;
+    for (let b = i - 1; b >= Math.max(0, i - 3); b--) {
+      if (Math.abs(activeCandles[b].close - levelPrice) > touchTol * 0.5) {
+        prePrice = activeCandles[b].close;
+        break;
+      }
+    }
+    const approachedFromAbove = prePrice >= levelPrice;
+
+    // Group contiguous candles hovering inside the touch band (up to 3 bars) to evaluate outcome
+    let endClusterIdx = i;
+    while (
+      endClusterIdx + 1 < activeCandles.length &&
+      endClusterIdx - i < 2 &&
+      activeCandles[endClusterIdx].close >= levelPrice - breakTol &&
+      activeCandles[endClusterIdx].close <= levelPrice + breakTol &&
+      activeCandles[endClusterIdx + 1].high >= levelPrice - touchTol &&
+      activeCandles[endClusterIdx + 1].low <= levelPrice + touchTol
+    ) {
+      endClusterIdx++;
+    }
+
+    const evalIdx = Math.min(activeCandles.length - 1, endClusterIdx + 1);
+    const clusterClose = activeCandles[endClusterIdx].close;
+    const followClose = activeCandles[evalIdx].close;
+
+    let isBreakout = false;
+    if (levelType === "RESISTANCE") {
+      isBreakout =
+        clusterClose > levelPrice + breakTol ||
+        (clusterClose > levelPrice && followClose > levelPrice + breakTol);
+    } else if (levelType === "SUPPORT") {
+      isBreakout =
+        clusterClose < levelPrice - breakTol ||
+        (clusterClose < levelPrice && followClose < levelPrice - breakTol);
+    } else {
+      // FLIP or MAGNET (two-way pivot level)
+      if (approachedFromAbove) {
+        isBreakout =
+          clusterClose < levelPrice - breakTol ||
+          (clusterClose < levelPrice && followClose < levelPrice - breakTol);
+      } else {
+        isBreakout =
+          clusterClose > levelPrice + breakTol ||
+          (clusterClose > levelPrice && followClose > levelPrice + breakTol);
+      }
+    }
+
+    if (isBreakout) {
+      breakouts += 1;
+    } else {
+      bounces += 1;
+    }
+
+    // Advance past this interaction cluster so consecutive bars at the level aren't double-counted
+    i = endClusterIdx + 1;
+    while (
+      i < activeCandles.length &&
+      activeCandles[i].high >= levelPrice - touchTol * 0.8 &&
+      activeCandles[i].low <= levelPrice + touchTol * 0.8
+    ) {
+      i++;
+    }
+  }
+
+  const isTested = touches > 0;
+  const hitRatePct = isTested ? Math.round((bounces / touches) * 100) : 0;
+
+  return {
+    touches,
+    bounces,
+    breakouts,
+    hitRatePct,
+    isTested,
+    closestExtreme,
+    distToExtreme
   };
 }
 
@@ -935,6 +1083,29 @@ export function evaluateSuperIndicator(
     }
   }
 
+  // Real-time audit of GEX levels against actual candle history (synchronized 1:1 with GEX Analytics Hit Rate)
+  const cwAudit = auditSingleGexLevel(candles, callWall, "RESISTANCE", 86400);
+  const pwAudit = auditSingleGexLevel(candles, putWall, "SUPPORT", 86400);
+  const flipAudit = auditSingleGexLevel(candles, gammaFlip, "FLIP", 86400);
+  const painAudit = auditSingleGexLevel(candles, maxPain, "MAGNET", 86400);
+  const totalGexTouches = cwAudit.touches + pwAudit.touches + flipAudit.touches + painAudit.touches;
+
+  // Detect active dump / momentum sell-off (matching Thermometer in GEX Analytics)
+  let isDumping = false;
+  if (candles.length >= 8) {
+    const recentSlice = candles.slice(-12);
+    const firstP = recentSlice[0].open || recentSlice[0].close;
+    const recentChgPct = firstP > 0 ? ((close - firstP) / firstP) * 100 : 0;
+    const daySlice = candles.slice(-Math.min(candles.length, 96));
+    const dayOpenP = daySlice[0].open || daySlice[0].close;
+    const dayChgPct = dayOpenP > 0 ? ((close - dayOpenP) / dayOpenP) * 100 : 0;
+    const distToFlipPct = ((close - gammaFlip) / Math.max(1, gammaFlip)) * 100;
+    isDumping =
+      recentChgPct <= -0.28 ||
+      dayChgPct <= -0.65 ||
+      (distToFlipPct < 0.25 && recentChgPct < -0.15);
+  }
+
   const gex: GexReportCalculated = {
     spotPrice: close,
     callWall,
@@ -954,11 +1125,21 @@ export function evaluateSuperIndicator(
     putGex,
     netGex,
     totGex,
+    isDumping,
     audit: {
-      total: 48,
-      cwRate: 72,
-      pwRate: 78,
-      flipRate: 68
+      total: totalGexTouches,
+      cwRate: cwAudit.hitRatePct,
+      cwTouches: cwAudit.touches,
+      cwBounces: cwAudit.bounces,
+      pwRate: pwAudit.hitRatePct,
+      pwTouches: pwAudit.touches,
+      pwBounces: pwAudit.bounces,
+      flipRate: flipAudit.hitRatePct,
+      flipTouches: flipAudit.touches,
+      flipBounces: flipAudit.bounces,
+      painRate: painAudit.hitRatePct,
+      painTouches: painAudit.touches,
+      painBounces: painAudit.bounces
     }
   };
 
@@ -1482,17 +1663,20 @@ export function generateHudData(
     recCol = "#fbbf24";
   }
 
-  // 2. GEX Regime
-  let gexRegimeStr = "🟢 Положительная Гамма — дилеры гасят движение, будут откаты";
+  // 2. GEX Regime (100% synchronized with Thermometer in GEX Analytics)
+  let gexRegimeStr = `🟢 Положительная Гамма (выше Flip $${gex.gammaFlip}) — дилеры гасят движение`;
   let gexRegimeCol = "#10b981";
   if (close > gex.callWall) {
-    gexRegimeStr = "🚀 Сквиз — пробили Потолок, дилеры покупают → сильный рост";
+    gexRegimeStr = `🚀 Сквиз — пробили Потолок $${gex.callWall}, дилеры покупают → сильный рост`;
     gexRegimeCol = "#fbbf24";
   } else if (close < gex.putWall) {
-    gexRegimeStr = "💥 Каскад — пробили Поддержку, дилеры продают → лавина вниз";
+    gexRegimeStr = `💥 Каскад — пробили Поддержку $${gex.putWall}, дилеры продают → лавина вниз`;
     gexRegimeCol = "#ef4444";
   } else if (close < gex.gammaFlip) {
-    gexRegimeStr = "🔴 Отрицательная Гамма — дилеры усиливают тренд, мало откатов";
+    gexRegimeStr = `🔴 Отрицательная Гамма (ниже Flip $${gex.gammaFlip}) — дилеры усиливают тренд`;
+    gexRegimeCol = "#ef4444";
+  } else if (gex.isDumping) {
+    gexRegimeStr = `🔴 Режим Шторм (Дамп к Flip $${gex.gammaFlip}) — дилеры хеджируются продажами`;
     gexRegimeCol = "#ef4444";
   }
 
@@ -1541,12 +1725,15 @@ export function generateHudData(
   // 6. Day Bias
   let dayBiasStr = "🟡 Слабый LONG (Гамма↑, но Макро против)";
   let dayBiasCol = "#f59e0b";
-  if (close > gex.gammaFlip && fc.isBull) {
+  if (close > gex.gammaFlip && fc.isBull && !gex.isDumping) {
     dayBiasStr = "🟢 Уклон LONG (Гамма↑ + Макро↑ — всё за рост)";
     dayBiasCol = "#fbbf24";
-  } else if (close < gex.gammaFlip && !fc.isBull) {
+  } else if ((close < gex.gammaFlip || gex.isDumping) && !fc.isBull) {
     dayBiasStr = "🔴 Уклон SHORT (Гамма↓ + Макро↓ — всё за падение)";
     dayBiasCol = "#ef4444";
+  } else if (close < gex.gammaFlip && fc.isBull) {
+    dayBiasStr = "🟠 Осторожный LONG (Отскок против -GEX)";
+    dayBiasCol = "#f59e0b";
   }
 
   const curScoreBull = fc.isBull ? 8 : 2;
@@ -1568,13 +1755,18 @@ export function generateHudData(
   const flowsDeltaStr = `${deltaPartFull} | ${cvdPartFull}`;
   const flowsDeltaCol = deltaCurrent > 0 ? "#fbbf24" : deltaCurrent < 0 ? "#ef4444" : "#94a3b8";
 
-  // 8. PCR & Vol
-  const pcrRvFull = `PCR 1.05🤖 (нейтр.) | Vol 0.85🤖 (норма)`;
-  const pcrRvShort = `PCR 1.05🤖 | Vol 0.85🤖`;
+  // 8. PCR & Vol (dynamic from actual GEX report)
+  const pcrLabel = gex.pcrVal > 1.08 ? "путы↑" : gex.pcrVal < 0.92 ? "коллы↑" : "нейтр.";
+  const rvIvLabel = gex.rvIvVal > 1.05 ? "высокая" : "норма";
+  const pcrRvFull = `PCR ${gex.pcrVal.toFixed(2)} (${pcrLabel}) | Vol ${gex.rvIvVal.toFixed(2)} (${rvIvLabel})`;
+  const pcrRvShort = `PCR ${gex.pcrVal.toFixed(2)} | Vol ${gex.rvIvVal.toFixed(2)}`;
   const pcrRvCol = "#f59e0b";
 
-  // 9. Audit
-  const auditStr = `🎯 CW ${gex.audit.cwRate}% | PW ${gex.audit.pwRate}% | Flip ${gex.audit.flipRate}% (n=${gex.audit.total})`;
+  // 9. Audit (100% synchronized with Hit Rate module in GEX Analytics)
+  const cwTxt = (gex.audit.cwTouches ?? 0) > 0 ? `${gex.audit.cwRate}% (${gex.audit.cwBounces}/${gex.audit.cwTouches})` : "0 уд.";
+  const pwTxt = (gex.audit.pwTouches ?? 0) > 0 ? `${gex.audit.pwRate}% (${gex.audit.pwBounces}/${gex.audit.pwTouches})` : "0 уд.";
+  const flipTxt = (gex.audit.flipTouches ?? 0) > 0 ? `${gex.audit.flipRate}% (${gex.audit.flipBounces}/${gex.audit.flipTouches})` : "0 уд.";
+  const auditStr = `🎯 CW ${cwTxt} | PW ${pwTxt} | Flip ${flipTxt} (всего уд: ${gex.audit.total})`;
   const auditCol = "#fbbf24";
 
   return {

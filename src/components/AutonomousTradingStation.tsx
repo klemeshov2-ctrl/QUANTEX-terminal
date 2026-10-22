@@ -1235,7 +1235,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       manualRvIv,
       hudTextDensity,
       tblViewMode,
-      externalGexReport: dayGexReport || gexReport
+      externalGexReport: gexReport || dayGexReport
     });
   }, [
     candles,
@@ -2192,8 +2192,26 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     volumeSeriesRef.current = volumeSeries;
     trendLineSeriesRef.current = null;
     priceLinesRef.current = [];
+    // Force full setData reload whenever the chart instance is recreated after a tab switch
+    lastFittedKeyRef.current = "";
+    prevCleanCandlesRef.current = [];
 
-    // Responsive Resize Observer
+    // Responsive Resize Observer + immediate next-frame dimension sync after tab switch
+    const syncDimensions = () => {
+      if (!chartInstanceRef.current || !container) return;
+      const newW = container.clientWidth;
+      const newH = container.clientHeight;
+      if (newW > 50 && newH > 50) {
+        try {
+          chartInstanceRef.current.applyOptions({
+            width: Math.floor(newW),
+            height: Math.floor(Math.max(newH, 220))
+          });
+        } catch {}
+      }
+    };
+    const rafId = requestAnimationFrame(syncDimensions);
+
     const resizeObserver = new ResizeObserver((entries) => {
       if (!chartInstanceRef.current) return;
       for (const entry of entries) {
@@ -2213,8 +2231,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     return () => {
       try {
+        cancelAnimationFrame(rafId);
         resizeObserver.disconnect();
       } catch {}
+      lastFittedKeyRef.current = "";
+      prevCleanCandlesRef.current = [];
       if (zonesPrimitiveRef.current && seriesInstanceRef.current) {
         try {
           seriesInstanceRef.current.detachPrimitive(zonesPrimitiveRef.current);
@@ -2227,6 +2248,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         seriesInstanceRef.current = null;
         volumeSeriesRef.current = null;
         trendLineSeriesRef.current = null;
+        ema50SeriesRef.current = null;
+        ema100SeriesRef.current = null;
+        ema200SeriesRef.current = null;
         priceLinesRef.current = [];
         try {
           chartToDispose.remove();
@@ -2374,6 +2398,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     macdHistSeriesRef.current = histSeries;
     macdFastSeriesRef.current = fastSeries;
     macdSlowSeriesRef.current = slowSeries;
+    lastFittedKeyRef.current = "";
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2475,6 +2500,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     rsiChartInstanceRef.current = rsiChart;
     rsi6SeriesRef.current = rsi6Series;
     rsi14SeriesRef.current = rsi14Series;
+    lastFittedKeyRef.current = "";
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2569,6 +2595,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     stochChartInstanceRef.current = stochChart;
     stochKSeriesRef.current = kSeries;
     stochDSeriesRef.current = dSeries;
+    lastFittedKeyRef.current = "";
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2754,6 +2781,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
     seriesInstanceRef.current = series;
     priceLinesRef.current = [];
+    lastFittedKeyRef.current = "";
+    prevCleanCandlesRef.current = [];
   }, [chartStyle]);
 
   // 4. Update Market Data, MACD, Trend Lines, GEX Levels, Zones, and Forecast Lines
@@ -3456,18 +3485,18 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // 8. Institutional GEX Levels (DAY GEX Analytics from GEX module)
+    // 8. Institutional GEX Levels (Synchronized with active GEX Analytics report)
     const isGexValidForAsset = (rep: any) => {
       if (!rep || !rep.callWall || !lastCandle || !lastCandle.close) return false;
       const ratio = rep.callWall / lastCandle.close;
       return ratio > 0.75 && ratio < 1.30;
     };
-    const effectiveGex = isGexValidForAsset(dayGexReport)
+    const effectiveGex = isGexValidForAsset(gexReport)
+      ? gexReport
+      : isGexValidForAsset(dayGexReport)
       ? dayGexReport
       : isGexValidForAsset(indicatorOutput?.gex)
       ? indicatorOutput?.gex
-      : isGexValidForAsset(gexReport)
-      ? gexReport
       : null;
 
     if (useGex && effectiveGex) {
@@ -3482,7 +3511,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#10b981",
           lineWidth: 2,
           lineStyle: "solid",
-          label: `🏰 Потолок CW (День): ${effectiveGex.callWall}`
+          label: `🏰 Потолок CW: ${effectiveGex.callWall}`
         });
 
         boundedLines.push({
@@ -3495,7 +3524,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#ef4444",
           lineWidth: 2,
           lineStyle: "solid",
-          label: `🛡️ Поддержка PW (День): ${effectiveGex.putWall}`
+          label: `🛡️ Поддержка PW: ${effectiveGex.putWall}`
         });
       }
 
