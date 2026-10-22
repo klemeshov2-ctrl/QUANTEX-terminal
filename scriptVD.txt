@@ -1,0 +1,186 @@
+//@version=6
+indicator("Volume Delta Candles 5TF + MTF with Fibonacci Probability Levels [S&T Premium v6]", "S&T Vol Delta", overlay=false, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ==========================================================
+// 📱 ГРУППА 1: НАСТРОЙКИ МОБИЛЬНОЙ ОПТИМИЗАЦИИ И ИНТЕРФЕЙСА
+// ==========================================================
+gp_ui        = "📱 Настройки Мобильной Оптимизации и Интерфейса"
+show_tables  = input.bool(true, "Показывать инфо-панели S&T", group=gp_ui)
+compact_mode = input.bool(${p?"true":"false"}, "Компактный режим панели", group=gp_ui)
+table_pos    = input.string("${p?"Нижний левый":"Нижний правый"}", "Позиция инфо-панели", options=["Верхний левый", "Верхний правый", "Нижний левый", "Нижний правый"], group=gp_ui)
+text_sz_opt  = input.string("${p?"Микро":"Маленький"}", "Размер шрифта на графике", options=["Микро", "Маленький", "Обычный", "Крупный"], group=gp_ui)
+label_offset = input.int(${p?"15":"8"}, "Смещение меток вправо (бары)", minval=2, maxval=50, group=gp_ui)
+line_len     = input.int(${p?"25":"40"}, "Длина горизонтальных линий (бары)", minval=5, maxval=100, group=gp_ui)
+
+// ==========================================================
+// 📊 ГРУППА 2: ДЕЛЬТА И МУЛЬТИ-ТАЙМФРЕЙМ (MTF)
+// ==========================================================
+gp_delta     = "📊 Объемная Дельта и MTF Анализ"
+use_mtf      = input.bool(true, "Включить MTF Анализ Дельты", group=gp_delta)
+mtf_tf       = input.timeframe("60", "Таймфрейм MTF Дельты", group=gp_delta)
+vd_smoothing = input.int(14, "Период сглаживания Дельты (EMA)", minval=1, maxval=50, group=gp_delta)
+extreme_th   = input.float(2.0, "Порог аномальной Дельты (StdDev)", minval=1.0, maxval=4.0, step=0.1, group=gp_delta)
+
+// ==========================================================
+// 🏛️ ГРУППА 3: ЗОНЫ ПОДДЕРЖКИ И СОПРОТИВЛЕНИЯ LIQUIDITY S/R
+// ==========================================================
+gp_sr        = "🏛️ Ключевые Уровни Liquidity S/R"
+show_sr_zones= input.bool(true, "Показывать ключевые зоны Liquidity S/R", group=gp_sr)
+max_sr_boxes = input.int(${p?"4":"8"}, "Макс. активных зон Liquidity S/R", minval=2, maxval=20, group=gp_sr)
+merge_sr     = input.bool(true, "Объединять близкие уровни Liquidity S/R", group=gp_sr)
+
+// ==========================================================
+// 🎯 ГРУППА 4: ФИБОНАЧЧИ УРОВНИ И ВЕРОЯТНОСТИ
+// ==========================================================
+gp_fib       = "🎯 Вероятности и Фибоначчи"
+show_fib_table = input.bool(true, "Показывать таблицу вероятностей Фибоначчи", group=gp_fib)
+show_forecast_lines = input.bool(${j.showPriceForecast!==!1?"true":"false"}, "Показывать визуальные линии прогноза", group=gp_fib)
+
+// ==========================================================
+// 🎨 ГРУППА 5: ЦВЕТОВАЯ СХЕМА S&T
+// ==========================================================
+gp_colors    = "🎨 Цветовая схема S&T"
+c_bull       = input.color(#22c55e, "Цвет Бычьих Зон / LONG", group=gp_colors)
+c_bear       = input.color(#ef4444, "Цвет Медвежьих Зон / SHORT", group=gp_colors)
+c_gold       = input.color(#eab308, "Цвет Золотых Сигналов", group=gp_colors)
+c_fuchsia    = input.color(#d946ef, "Цвет Пурпурных Сигналов", group=gp_colors)
+c_neutral    = input.color(#94a3b8, "Нейтральный Цвет", group=gp_colors)
+
+// ==========================================================
+// 🛠️ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ==========================================================
+get_text_size(opt) =>
+    opt == "Микро" ? size.tiny : opt == "Маленький" ? size.small : opt == "Обычный" ? size.normal : opt == "Крупный" ? size.large : size.small
+
+get_table_pos(pos) =>
+    pos == "Верхний левый" ? position.top_left : pos == "Верхний правый" ? position.top_right : pos == "Нижний левый" ? position.bottom_left : pos == "Нижний правый" ? position.bottom_right : position.bottom_right
+
+val_dot(v, max_v) =>
+    float ratio = max_v > 0 ? math.abs(v) / max_v : 0
+    ratio > 0.8 ? "🟣" : ratio > 0.5 ? "🔵" : ratio > 0.2 ? "🟡" : "⚪"
+
+// Базовые вычисления дельты объема
+v_buy  = volume * (close >= open ? (high - low > 0 ? (close - low) / (high - low) : 0.5) : (high - low > 0 ? (high - open) / (high - low) : 0.3))
+v_sell = volume - v_buy
+v_delta = v_buy - v_sell
+
+atr = ta.atr(14)
+v_delta_ema = ta.ema(v_delta, vd_smoothing)
+v_delta_sma50 = ta.sma(v_delta, 50)
+v_delta_stdev = ta.stdev(v_delta, 50)
+v_delta_z = v_delta_stdev > 0 ? (v_delta - v_delta_sma50) / v_delta_stdev : 0.0
+
+is_extreme_buy  = v_delta_z > extreme_th
+is_extreme_sell = v_delta_z < -extreme_th
+
+// MTF Анализ Дельты
+delta_mtf_raw = request.security(syminfo.tickerid, use_mtf ? mtf_tf : timeframe.period, v_delta, ignore_invalid_symbol=true)
+delta_mtf_smooth = request.security(syminfo.tickerid, use_mtf ? mtf_tf : timeframe.period, ta.ema(v_delta, vd_smoothing), ignore_invalid_symbol=true)
+
+// Отрисовка гистограммы дельты
+c_candle_body = is_extreme_buy ? c_gold : is_extreme_sell ? c_fuchsia : v_delta >= 0 ? c_bull : c_bear
+plotcandle(0, v_delta, 0, v_delta, title="Свечи Дельты Обьема S&T", color=c_candle_body, wickcolor=c_candle_body, bordercolor=c_candle_body)
+plot(v_delta_ema, title="EMA Сглаженная Дельта", color=color.white, linewidth=2)
+plot(use_mtf ? delta_mtf_smooth : na, title="MTF EMA Дельта", color=#38bdf8, linewidth=2, style=plot.style_line)
+hline(0, "Нулевая Линия Дельты", color=color.new(c_neutral, 50), linestyle=hline.style_dashed)
+
+// Расчет уровней поддержки/сопротивления Liquidity S/R
+ph_lt = ta.pivothigh(high, 5, 5)
+pl_lt = ta.pivotlow(low, 5, 5)
+
+var box[] sup_boxes = array.new_box(0)
+var box[] res_boxes = array.new_box(0)
+var label[] sup_labels = array.new_label(0)
+var label[] res_labels = array.new_label(0)
+
+draw_sr_box(float p_level, bool is_support, string label_text, int offset) =>
+    bg_color = is_support ? color.new(c_bull, 85) : color.new(c_bear, 85)
+    border_color = is_support ? color.new(c_bull, 60) : color.new(c_bear, 60)
+    textcolor = is_support ? c_bull : c_bear
+    
+    bool merged = false
+    if merge_sr
+        if is_support and array.size(sup_boxes) > 0
+            for i = 0 to array.size(sup_boxes) - 1
+                bx = array.get(sup_boxes, i)
+                lbl = array.get(sup_labels, i)
+                b_top = box.get_top(bx)
+                b_bottom = box.get_bottom(bx)
+                float box_center = (b_top + b_bottom) / 2.0
+                if math.abs(p_level - box_center) < atr * 0.65
+                    new_top = math.max(b_top, p_level + atr * 0.08)
+                    new_bottom = math.min(b_bottom, p_level - atr * 0.08)
+                    box.set_top(bx, new_top)
+                    box.set_bottom(bx, new_bottom)
+                    label.set_y(lbl, (new_top + new_bottom) / 2.0)
+                    label.set_text(lbl, label_text)
+                    merged := true
+                    break
+        else if not is_support and array.size(res_boxes) > 0
+            for i = 0 to array.size(res_boxes) - 1
+                bx = array.get(res_boxes, i)
+                lbl = array.get(res_labels, i)
+                b_top = box.get_top(bx)
+                b_bottom = box.get_bottom(bx)
+                float box_center = (b_top + b_bottom) / 2.0
+                if math.abs(p_level - box_center) < atr * 0.65
+                    new_top = math.max(b_top, p_level + atr * 0.08)
+                    new_bottom = math.min(b_bottom, p_level - atr * 0.08)
+                    box.set_top(bx, new_top)
+                    box.set_bottom(bx, new_bottom)
+                    label.set_y(lbl, (new_top + new_bottom) / 2.0)
+                    label.set_text(lbl, label_text)
+                    merged := true
+                    break
+
+    if not merged
+        b = box.new(left=bar_index - offset, top=p_level + atr * 0.08, right=bar_index + label_offset, bottom=p_level - atr * 0.08, bgcolor=bg_color, border_color=border_color, border_style=line.style_dashed)
+        l = label.new(bar_index + label_offset, p_level, text=label_text, style=label.style_label_left, color=color.new(color.black, 100), textcolor=textcolor, size=get_text_size(text_sz_opt))
+        if is_support
+            array.push(sup_boxes, b)
+            array.push(sup_labels, l)
+            if array.size(sup_boxes) > max_sr_boxes
+                box.delete(array.shift(sup_boxes))
+                label.delete(array.shift(sup_labels))
+        else
+            array.push(res_boxes, b)
+            array.push(res_labels, l)
+            if array.size(res_boxes) > max_sr_boxes
+                box.delete(array.shift(res_boxes))
+                label.delete(array.shift(res_labels))
+
+add_sr_zone(bool is_supp, float p_lvl, int off, string txt) =>
+    draw_sr_box(p_lvl, is_supp, txt, off)
+
+if show_sr_zones
+    if not na(ph_lt)
+        add_sr_zone(false, ph_lt, 15, "Сопротивление S&T (" + str.tostring(ph_lt, "#.##") + ")")
+    if not na(pl_lt)
+        add_sr_zone(true, pl_lt, 15, "Поддержка S&T (" + str.tostring(pl_lt, "#.##") + ")")
+
+// Таблица гистограммы и 5-TF аналитики
+var table vd_tbl = na
+if barstate.islast and show_tables
+    t_sz = get_text_size(text_sz_opt)
+    vd_tbl := table.new(get_table_pos(table_pos), columns=2, rows=6, bgcolor=#0f172a, border_color=#334155, border_width=1)
+    
+    table.cell(vd_tbl, 0, 0, "📊 VOLUME DELTA 5-TF", text_color=#38bdf8, text_size=t_sz, bgcolor=#1e293b)
+    table.cell(vd_tbl, 1, 0, syminfo.ticker, text_color=color.white, text_size=t_sz, bgcolor=#1e293b)
+    
+    table.cell(vd_tbl, 0, 1, "Текущая Дельта", text_color=c_neutral, text_size=t_sz)
+    table.cell(vd_tbl, 1, 1, str.tostring(v_delta, "#.#") + (v_delta > 0 ? " 🟢" : " 🔴"), text_color=v_delta > 0 ? c_bull : c_bear, text_size=t_sz)
+    
+    table.cell(vd_tbl, 0, 2, "Z-Score Аномалия", text_color=c_neutral, text_size=t_sz)
+    table.cell(vd_tbl, 1, 2, str.tostring(v_delta_z, "#.##") + (math.abs(v_delta_z) > extreme_th ? " 🔥 АНОМАЛИЯ" : " ⚪ Норма"), text_color=math.abs(v_delta_z) > extreme_th ? c_gold : c_neutral, text_size=t_sz)
+    
+    table.cell(vd_tbl, 0, 3, "MTF Дельта (" + (use_mtf ? mtf_tf : timeframe.period) + ")", text_color=c_neutral, text_size=t_sz)
+    table.cell(vd_tbl, 1, 3, str.tostring(delta_mtf_smooth, "#.#"), text_color=delta_mtf_smooth > 0 ? c_bull : c_bear, text_size=t_sz)
+
+    table.cell(vd_tbl, 0, 4, "Преобладание Рынка", text_color=c_neutral, text_size=t_sz)
+    table.cell(vd_tbl, 1, 4, is_extreme_buy ? "🔥 АГРЕССИВНЫЕ ПОКУПКИ" : is_extreme_sell ? "⚡ АГРЕССИВНЫЕ ПРОДАЖИ" : v_delta >= 0 ? "🟢 БЫЧЬЕ ПРЕОБЛАДАНИЕ" : "🔴 МЕДВЕЖЬЕ ПРЕОБЛАДАНИЕ", text_color=is_extreme_buy ? c_gold : is_extreme_sell ? c_fuchsia : v_delta >= 0 ? c_bull : c_bear, text_size=t_sz)
+
+    table.cell(vd_tbl, 0, 5, "Консенсус S&T Delta", text_color=c_neutral, text_size=t_sz)
+    table.cell(vd_tbl, 1, 5, (v_delta > 0 and delta_mtf_smooth > 0) ? "🟩 ПОЛНОЕ СОВПАДЕНИЕ (LONG)" : (v_delta < 0 and delta_mtf_smooth < 0) ? "🟥 ПОЛНОЕ СОВПАДЕНИЕ (SHORT)" : "⚖️ РАСХОЖДЕНИЕ ТАЙМФРЕЙМОВ", text_color=(v_delta > 0 and delta_mtf_smooth > 0) ? c_bull : (v_delta < 0 and delta_mtf_smooth < 0) ? c_bear : c_gold, text_size=t_sz)
+
+alertcondition(is_extreme_buy, "S&T Аномальная Buy Дельта", "Зафиксирован аномальный всплеск объема покупок!")
+alertcondition(is_extreme_sell, "S&T Аномальная Sell Дельта", "Зафиксирован аномальный всплеск объема продаж!")

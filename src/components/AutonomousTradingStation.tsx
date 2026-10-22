@@ -1,0 +1,7728 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import {
+  createChart,
+  CandlestickSeries,
+  BarSeries,
+  AreaSeries,
+  LineSeries,
+  HistogramSeries,
+  IChartApi,
+  ColorType,
+  LineStyle,
+  createSeriesMarkers,
+  TrackingModeExitMode
+} from "lightweight-charts";
+import {
+  TrendingUp,
+  TrendingDown,
+  Layers,
+  Sparkles,
+  Bot,
+  Calendar,
+  BookOpen,
+  Send,
+  RefreshCw,
+  Sliders,
+  Shield,
+  Flame,
+  Activity,
+  Maximize2,
+  Minimize2,
+  ZoomIn,
+  ZoomOut,
+  Check,
+  Copy,
+  Download,
+  Code2,
+  Zap,
+  BarChart2,
+  FileText,
+  AlertCircle,
+  HelpCircle,
+  ChevronRight,
+  ChevronLeft,
+  ChevronDown,
+  PlusCircle,
+  Clock,
+  Radio,
+  SlidersHorizontal,
+  RotateCcw,
+  CheckCircle2,
+  Target,
+  ArrowUpRight,
+  ArrowDownRight,
+  Eye,
+  EyeOff,
+  Settings,
+  X,
+  Minus,
+  Plus,
+  Palette,
+  Compass,
+  Info,
+  GripHorizontal,
+  Move,
+  ExternalLink,
+  Sliders as SlidersIcon,
+  User,
+  Crown,
+  LogIn,
+  LogOut,
+  Menu
+} from "lucide-react";
+import { GexMarketReport, GexStrikeData } from "../../server/gexEngine";
+import { AutonomousAiAnalystPanel, MacroNewsItem } from "./AutonomousAiAnalystPanel";
+import { GexAdvancedModules } from "./GexAdvancedModules";
+import { UnifiedStationSettings, ThemeId, STATION_THEMES, UserAccountItem } from "./UnifiedStationSettings";
+
+export const THEME_PALETTES: Record<ThemeId, {
+  bg: string;
+  surface: string;
+  surfaceAlt: string;
+  border: string;
+  chartBg: string;
+  chartGrid: string;
+  accent: string;
+  accentText: string;
+  accentBg: string;
+}> = {
+  cyber_dark: {
+    bg: "#07090e",
+    surface: "#0b0e17",
+    surfaceAlt: "#111624",
+    border: "#1f293d",
+    chartBg: "#080b12",
+    chartGrid: "rgba(42, 46, 57, 0.4)",
+    accent: "#06b6d4",
+    accentText: "text-cyan-400",
+    accentBg: "bg-cyan-500/20"
+  },
+  gold_bullion: {
+    bg: "#090603",
+    surface: "#140e06",
+    surfaceAlt: "#1e1509",
+    border: "#3d2a0d",
+    chartBg: "#0d0904",
+    chartGrid: "rgba(146, 64, 14, 0.3)",
+    accent: "#f59e0b",
+    accentText: "text-amber-400",
+    accentBg: "bg-amber-500/20"
+  },
+  navy_pro: {
+    bg: "#030712",
+    surface: "#081026",
+    surfaceAlt: "#0d1b3e",
+    border: "#1e2e5c",
+    chartBg: "#050c1e",
+    chartGrid: "rgba(30, 58, 100, 0.35)",
+    accent: "#38bdf8",
+    accentText: "text-sky-400",
+    accentBg: "bg-blue-500/20"
+  },
+  synthwave_violet: {
+    bg: "#090514",
+    surface: "#130a26",
+    surfaceAlt: "#1e0f3b",
+    border: "#3b1a6e",
+    chartBg: "#0c061a",
+    chartGrid: "rgba(88, 28, 135, 0.35)",
+    accent: "#c084fc",
+    accentText: "text-purple-400",
+    accentBg: "bg-purple-500/20"
+  },
+  forest_alpha: {
+    bg: "#030c07",
+    surface: "#07170e",
+    surfaceAlt: "#0b2416",
+    border: "#163d28",
+    chartBg: "#05120b",
+    chartGrid: "rgba(6, 78, 59, 0.35)",
+    accent: "#10b981",
+    accentText: "text-emerald-400",
+    accentBg: "bg-emerald-500/20"
+  },
+  monokai_slate: {
+    bg: "#000000",
+    surface: "#0d0d0d",
+    surfaceAlt: "#171717",
+    border: "#2a2a2a",
+    chartBg: "#050505",
+    chartGrid: "rgba(45, 45, 45, 0.5)",
+    accent: "#a3e635",
+    accentText: "text-lime-400",
+    accentBg: "bg-lime-500/20"
+  }
+};
+
+export type AssetSymbol = "XAUUSD" | "PAXGUSDT" | "MOEX_GOLD" | "MOEX_MINI" | "GLDRUBF" | "MOEX_SI" | "MOEX_RI" | "MOEX_BR" | "MOEX_NG" | "BTCUSDT" | "ETHUSDT" | "SOLUSDT" | "XRPUSDT";
+export type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
+export type ChartStyleType = "candles" | "bars" | "line" | "area";
+export type StationModuleTab = "chart" | "gex" | "editor" | "ai_assistant" | "calendar" | "journal" | "settings";
+
+interface TradeItem {
+  id: string;
+  date: string;
+  asset: string;
+  type: "BUY" | "SELL";
+  entryPrice: number;
+  exitPrice: number;
+  size: number;
+  pnl: number;
+  notes: string;
+  gexZone: string;
+}
+
+// Math helper for EMA calculation
+function calculateEMA(data: { close: number }[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const ema: number[] = [];
+  if (data.length === 0) return ema;
+  let prev = data[0].close;
+  ema.push(prev);
+  for (let i = 1; i < data.length; i++) {
+    const val = data[i].close * k + prev * (1 - k);
+    ema.push(val);
+    prev = val;
+  }
+  return ema;
+}
+
+// EMA series with matching timestamps for Lightweight Charts LineSeries
+function calculateEmaSeries(candles: { close: number; time: any }[], period: number): { time: any; value: number }[] {
+  if (!candles || candles.length === 0) return [];
+  const k = 2 / (period + 1);
+  const result: { time: any; value: number }[] = [];
+  let ema = candles[0].close;
+  result.push({ time: candles[0].time, value: Math.round(ema * 100) / 100 });
+  for (let i = 1; i < candles.length; i++) {
+    ema = candles[i].close * k + ema * (1 - k);
+    result.push({ time: candles[i].time, value: Math.round(ema * 100) / 100 });
+  }
+  return result;
+}
+
+// Relative Strength Index (RSI) for period 6 and 14
+function calculateRSI(candles: { close: number; time: any }[], period: number): { time: any; value: number }[] {
+  if (!candles || candles.length <= period) return [];
+  const result: { time: any; value: number }[] = [];
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  let rsi = 100 - (100 / (1 + rs));
+  result.push({ time: candles[period].time, value: Math.round(rsi * 10) / 10 });
+
+  for (let i = period + 1; i < candles.length; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    rsi = 100 - (100 / (1 + rs));
+    result.push({ time: candles[i].time, value: Math.round(rsi * 10) / 10 });
+  }
+  return result;
+}
+
+// Stochastic Oscillator (%K, %D)
+function calculateStochastic(candles: { high: number; low: number; close: number; time: any }[], periodK = 14, smoothD = 3): {
+  kData: { time: any; value: number }[];
+  dData: { time: any; value: number }[];
+} {
+  if (!candles || candles.length < periodK) return { kData: [], dData: [] };
+  const rawK: { time: any; k: number }[] = [];
+  for (let i = periodK - 1; i < candles.length; i++) {
+    let hh = -Infinity;
+    let ll = Infinity;
+    for (let j = i - periodK + 1; j <= i; j++) {
+      if (candles[j].high > hh) hh = candles[j].high;
+      if (candles[j].low < ll) ll = candles[j].low;
+    }
+    const range = hh - ll;
+    const k = range === 0 ? 50 : ((candles[i].close - ll) / range) * 100;
+    rawK.push({ time: candles[i].time, k });
+  }
+  const kData = rawK.map(item => ({ time: item.time, value: Math.round(item.k * 10) / 10 }));
+  const dData: { time: any; value: number }[] = [];
+  for (let i = smoothD - 1; i < rawK.length; i++) {
+    let sum = 0;
+    for (let j = i - smoothD + 1; j <= i; j++) {
+      sum += rawK[j].k;
+    }
+    dData.push({ time: rawK[i].time, value: Math.round((sum / smoothD) * 10) / 10 });
+  }
+  return { kData, dData };
+}
+
+function calculateATR(candles: { high: number; low: number; close: number; open?: number }[], period = 14): number[] {
+  const atrs: number[] = [];
+  if (candles.length === 0) return atrs;
+  let trSum = 0;
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = i > 0 ? candles[i - 1].close : (c.open || c.close);
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - prev), Math.abs(c.low - prev));
+    if (i < period) {
+      trSum += tr;
+      atrs.push(trSum / (i + 1));
+    } else {
+      const prevAtr = atrs[i - 1];
+      const atr = (prevAtr * (period - 1) + tr) / period;
+      atrs.push(atr);
+    }
+  }
+  return atrs;
+}
+
+// Fallback calibrated candle generator with accurate timeframe step and volatility scaling
+function generateFallbackCandles(symbol: AssetSymbol, interval: Timeframe = "15m", count = 140) {
+  const basePrice = (symbol === "XAUUSD" || symbol === "PAXGUSDT")
+    ? 4132.8
+    : symbol === "MOEX_GOLD"
+    ? 4204.8
+    : symbol === "MOEX_MINI"
+    ? 4203.3
+    : symbol === "GLDRUBF"
+    ? 8560.0
+    : symbol === "MOEX_SI"
+    ? 83846.0
+    : symbol === "MOEX_RI"
+    ? 93370.0
+    : symbol === "MOEX_BR"
+    ? 110.49
+    : symbol === "MOEX_NG"
+    ? 3.014
+    : symbol === "BTCUSDT"
+    ? 82200.0
+    : symbol === "ETHUSDT"
+    ? 2430.0
+    : symbol === "SOLUSDT"
+    ? 185.0
+    : 1.30;
+  const tfSecMap: Record<string, number> = {
+    "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400
+  };
+  const step = tfSecMap[interval] || 900;
+  const baseVol = (symbol === "XAUUSD" || symbol === "PAXGUSDT" || symbol === "MOEX_GOLD" || symbol === "MOEX_MINI")
+    ? 4.5
+    : symbol === "GLDRUBF"
+    ? 18.0
+    : symbol === "MOEX_SI"
+    ? 65.0
+    : symbol === "MOEX_RI"
+    ? 85.0
+    : symbol === "MOEX_BR"
+    ? 0.35
+    : symbol === "MOEX_NG"
+    ? 0.025
+    : symbol === "BTCUSDT"
+    ? 180.0
+    : symbol === "ETHUSDT"
+    ? 6.0
+    : symbol === "SOLUSDT"
+    ? 1.5
+    : 0.008;
+  const volatility = baseVol * Math.max(0.4, Math.sqrt(step / 900));
+  const now = Math.floor(Date.now() / 1000);
+  const candles: any[] = [];
+
+  let current = basePrice - count * 0.12 * (step / 900);
+  for (let i = count; i >= 1; i--) {
+    const t = now - i * step;
+    const change = (Math.sin(i * 0.22) + (Math.random() - 0.48) * 1.4) * volatility;
+    const open = Math.round(current * 100) / 100;
+    const close = Math.round((current + change) * 100) / 100;
+    const high = Math.round((Math.max(open, close) + Math.random() * volatility * 0.75) * 100) / 100;
+    const low = Math.round((Math.min(open, close) - Math.random() * volatility * 0.75) * 100) / 100;
+    const volume = Math.round(50 + Math.random() * 80);
+    candles.push({ time: t, open, high, low, close, volume });
+    current = close;
+  }
+  return candles;
+}
+
+import {
+  TradingViewZonesPrimitive,
+  ZoneBox,
+  ForecastArrow,
+  BosMarker,
+  BoundedPriceLine,
+  GexProfileBarItem,
+  GexProfileData,
+  CurrentPriceCountdown
+} from "./TradingViewZonesPrimitive";
+import {
+  evaluateSuperIndicator,
+  SuperIndicatorOutput,
+  resetIndicatorForecast
+} from "../lib/pineSuperIndicatorEngine";
+
+export interface AutonomousTradingStationProps {
+  currentUser?: UserAccountItem;
+  onUserChange?: (user: UserAccountItem) => void;
+  onOpenAuthModal?: () => void;
+}
+
+export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> = ({
+  currentUser: propUser,
+  onUserChange: propOnUserChange,
+  onOpenAuthModal
+}) => {
+  // Navigation & Asset State
+  const [activeAsset, setActiveAsset] = useState<AssetSymbol>("XAUUSD");
+  const [activeTf, setActiveTf] = useState<Timeframe>("15m");
+  const [activeTab, setActiveTab] = useState<StationModuleTab>("chart");
+  const [chartStyle, setChartStyle] = useState<ChartStyleType>("candles");
+  const [isAssetDropdownOpen, setIsAssetDropdownOpen] = useState<boolean>(false);
+  const [isMoreToolsOpen, setIsMoreToolsOpen] = useState<boolean>(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isMobileTfOpen, setIsMobileTfOpen] = useState<boolean>(false);
+  const assetDropdownRef = useRef<HTMLDivElement | null>(null);
+  const moreToolsRef = useRef<HTMLDivElement | null>(null);
+  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const mobileTfRef = useRef<HTMLDivElement | null>(null);
+
+  // Short human-friendly label for ultra-compact mobile header (~6" screens)
+  const getShortAssetLabel = (asset: AssetSymbol): string => {
+    switch (asset) {
+      case "XAUUSD": return "XAUUSD";
+      case "PAXGUSDT": return "PAXG";
+      case "MOEX_GOLD": return moexContracts?.large?.secId || "GDZ6";
+      case "MOEX_MINI": return moexContracts?.mini?.secId || "GNZ6";
+      case "GLDRUBF": return "GLDRUBF";
+      case "MOEX_SI": return moexContracts?.si?.secId || "SiZ6";
+      case "MOEX_RI": return moexContracts?.ri?.secId || "RIZ6";
+      case "MOEX_BR": return moexContracts?.br?.secId || "BRX6";
+      case "MOEX_NG": return moexContracts?.ng?.secId || "NGV6";
+      case "BTCUSDT": return "BTC";
+      case "ETHUSDT": return "ETH";
+      case "SOLUSDT": return "SOL";
+      case "XRPUSDT": return "XRP";
+      default: return asset;
+    }
+  };
+
+  // Active theme and RBAC user state
+  const [stationTheme, setStationTheme] = useState<ThemeId>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_theme");
+      if (saved && STATION_THEMES.some(t => t.id === saved)) {
+        return saved as ThemeId;
+      }
+    } catch {}
+    return "cyber_dark";
+  });
+
+  const [stationUser, setStationUser] = useState<UserAccountItem>(() => {
+    if (propUser) return propUser;
+    try {
+      const saved = localStorage.getItem("quantex_active_user");
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    return {
+      id: "usr-admin",
+      username: "admin",
+      role: "admin",
+      allowedTabs: ["chart", "gex", "calendar", "editor", "journal", "settings"],
+      createdAt: "2026-10-21"
+    };
+  });
+
+  // Sync propUser if it changes externally
+  useEffect(() => {
+    if (propUser && propUser.username !== stationUser.username) {
+      setStationUser(propUser);
+    }
+  }, [propUser]);
+
+  const handleUpdateActiveUser = (user: UserAccountItem) => {
+    setStationUser(user);
+    try {
+      localStorage.setItem("quantex_active_user", JSON.stringify(user));
+    } catch {}
+    if (propOnUserChange) {
+      propOnUserChange(user);
+    }
+  };
+
+  // Safe tab fallback: if activeTab is not in stationUser.allowedTabs
+  useEffect(() => {
+    if (stationUser?.allowedTabs && stationUser.allowedTabs.length > 0) {
+      if (activeTab !== "settings" && !stationUser.allowedTabs.includes(activeTab)) {
+        setActiveTab((stationUser.allowedTabs[0] as StationModuleTab) || "chart");
+      }
+    }
+  }, [stationUser, activeTab]);
+
+  // Moving averages (EMA 50, EMA 100, EMA 200) - default OFF as requested
+  const [showEma50, setShowEma50] = useState<boolean>(false);
+  const [showEma100, setShowEma100] = useState<boolean>(false);
+  const [showEma200, setShowEma200] = useState<boolean>(false);
+
+  // Sub-pane indicators (RSI 6 & 14, Stochastic) - default OFF as requested
+  const [showRsiPane, setShowRsiPane] = useState<boolean>(false);
+  const [showStochPane, setShowStochPane] = useState<boolean>(false);
+
+  // Sub-pane adjustable heights in pixels (MACD, RSI, Stochastic)
+  const [macdPaneHeight, setMacdPaneHeight] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem("quantex_macd_height");
+      if (s) return Number(s) || 110;
+    } catch {}
+    return 110;
+  });
+  const [rsiPaneHeight, setRsiPaneHeight] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem("quantex_rsi_height");
+      if (s) return Number(s) || 95;
+    } catch {}
+    return 95;
+  });
+  const [stochPaneHeight, setStochPaneHeight] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem("quantex_stoch_height");
+      if (s) return Number(s) || 95;
+    } catch {}
+    return 95;
+  });
+
+  const handleStartResizePane = (pane: "macd" | "rsi" | "stoch", e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    const startY = "touches" in e ? e.touches[0].clientY : e.clientY;
+    const initialH = pane === "macd" ? macdPaneHeight : pane === "rsi" ? rsiPaneHeight : stochPaneHeight;
+
+    const onMove = (moveEv: MouseEvent | TouchEvent) => {
+      const curY = "touches" in moveEv ? moveEv.touches[0].clientY : moveEv.clientY;
+      const deltaY = startY - curY; // Dragging UP expands height
+      const nextH = Math.max(55, Math.min(350, Math.round(initialH + deltaY)));
+      if (pane === "macd") {
+        setMacdPaneHeight(nextH);
+        try { localStorage.setItem("quantex_macd_height", String(nextH)); } catch {}
+      } else if (pane === "rsi") {
+        setRsiPaneHeight(nextH);
+        try { localStorage.setItem("quantex_rsi_height", String(nextH)); } catch {}
+      } else if (pane === "stoch") {
+        setStochPaneHeight(nextH);
+        try { localStorage.setItem("quantex_stoch_height", String(nextH)); } catch {}
+      }
+    };
+
+    const onEnd = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onEnd);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onEnd);
+    window.addEventListener("touchmove", onMove);
+    window.addEventListener("touchend", onEnd);
+  };
+
+  // Popup Modals for ALL users:
+  const [isIndicatorsModalOpen, setIsIndicatorsModalOpen] = useState<boolean>(false);
+  const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState<boolean>(false);
+
+  // HUD Table scale & styling (Available to ALL users)
+  const [hudScale, setHudScale] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_hud_scale");
+      if (saved) return Number(saved) || 100;
+    } catch {}
+    return 100;
+  });
+  const [hudFontSize, setHudFontSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_hud_font_size");
+      if (saved) return Number(saved) || 11;
+    } catch {}
+    return 11;
+  });
+  const [chartLabelScale, setChartLabelScale] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_chart_label_scale");
+      if (saved) return saved;
+    } catch {}
+    return "normal";
+  });
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("quantex_sound_alerts") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string>("telegram");
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (assetDropdownRef.current && !assetDropdownRef.current.contains(e.target as Node)) {
+        setIsAssetDropdownOpen(false);
+      }
+      if (moreToolsRef.current && !moreToolsRef.current.contains(e.target as Node)) {
+        setIsMoreToolsOpen(false);
+      }
+      if (mobileTfRef.current && !mobileTfRef.current.contains(e.target as Node)) {
+        setIsMobileTfOpen(false);
+      }
+      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Live Market & GEX Data
+  const [candles, setCandles] = useState<any[]>(() => generateFallbackCandles("XAUUSD", "15m", 140));
+  const [gexReport, setGexReport] = useState<GexMarketReport | null>(null);
+  const [dayGexReport, setDayGexReport] = useState<GexMarketReport | null>(null);
+  const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
+  const [isLoadingGex, setIsLoadingGex] = useState<boolean>(false);
+  const [lastUpdatedMsk, setLastUpdatedMsk] = useState<string>("");
+  const [moexContracts, setMoexContracts] = useState<{
+    large?: any;
+    mini?: any;
+    rub?: any;
+    si?: any;
+    ri?: any;
+    br?: any;
+    ng?: any;
+    allQuarterly?: any[];
+  } | null>(null);
+  const [oandaData, setOandaData] = useState<{
+    price: number;
+    bid: number;
+    ask: number;
+    volume: number;
+    high: number;
+    low: number;
+    change: number;
+    isWeekend: boolean;
+  } | null>(null);
+  const [activeContractInfo, setActiveContractInfo] = useState<{
+    secId?: string;
+    shortName?: string;
+    source?: string;
+    quarterLabel?: string;
+    openPosition?: number;
+    volToday?: number;
+    marketOpen?: boolean;
+    isPremarket?: boolean;
+    isClearing?: boolean;
+    sessionType?: string;
+    statusBadge?: string;
+    marketStatusText?: string;
+  }>({ marketOpen: true, statusBadge: "Торги идут", marketStatusText: "Торги идут" });
+  const [marketStatus, setMarketStatus] = useState<{
+    isOpen: boolean;
+    isPremarket?: boolean;
+    isClearing?: boolean;
+    sessionType?: string;
+    statusBadge?: string;
+    statusText: string;
+  }>({ isOpen: true, statusBadge: "Торги идут", statusText: "Торги идут в реальном времени" });
+  const [popoverActiveTab, setPopoverActiveTab] = useState<"ALL" | "GOLD" | "MOEX" | "CRYPTO">("ALL");
+
+  // 1-second live ticker for TradingView bar close countdown
+  const [currentTimeSec, setCurrentTimeSec] = useState<number>(() => Math.floor(Date.now() / 1000));
+  const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTimeSec(Math.floor(Date.now() / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const currentStepSec = useMemo(() => {
+    const tfSecMap: Record<string, number> = {
+      "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400
+    };
+    return tfSecMap[activeTf] || 900;
+  }, [activeTf]);
+
+  const barCountdown = useMemo(() => {
+    const last = candles && candles.length > 0 ? candles[candles.length - 1] : null;
+    if (!last) return { formatted: "00:00", seconds: 0 };
+    const closeTime = last.time + currentStepSec;
+    let diff = closeTime - currentTimeSec;
+    if (diff <= 0 || diff > currentStepSec * 2) {
+      // Synchronize with wall-clock rollover like in TradingView
+      diff = currentStepSec - (currentTimeSec % currentStepSec);
+    }
+    const s = Math.max(0, diff);
+    const hours = Math.floor(s / 3600);
+    const minutes = Math.floor((s % 3600) / 60);
+    const seconds = s % 60;
+    let formatted: string;
+    if (currentStepSec >= 3600 || hours > 0) {
+      formatted = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    } else {
+      formatted = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+    return { formatted, seconds: diff };
+  }, [candles, currentStepSec, currentTimeSec]);
+
+  // Synchronize price coordinate on price scale for live countdown badge
+  useEffect(() => {
+    const updateCoord = () => {
+      const last = candles && candles.length > 0 ? candles[candles.length - 1] : null;
+      if (!seriesInstanceRef.current || !last) return;
+      try {
+        const y = seriesInstanceRef.current.priceToCoordinate(last.close);
+        if (typeof y === "number" && !isNaN(y)) {
+          setPriceCoordY(y);
+        }
+      } catch {}
+    };
+    updateCoord();
+    const chart = chartInstanceRef.current;
+    if (chart) {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(updateCoord);
+      chart.subscribeCrosshairMove(updateCoord);
+      // Periodic fallback sync so pan/drag on price scale keeps badge aligned
+      const interval = setInterval(updateCoord, 500);
+      return () => {
+        clearInterval(interval);
+        try {
+          chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateCoord);
+          chart.unsubscribeCrosshairMove(updateCoord);
+        } catch {}
+      };
+    }
+  }, [candles]);
+
+  // Hovered candle for TradingView-style OHLC display & Moscow time tooltip
+  const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
+  const candlesRef = useRef<any[]>(candles);
+  useEffect(() => {
+    candlesRef.current = candles;
+  }, [candles]);
+
+  // Autonomous AI Analyst Docked Panel State (Right side of the chart, always open by default)
+  const [isAiPanelCollapsed, setIsAiPanelCollapsed] = useState<boolean>(false);
+  const [isHudMinimized, setIsHudMinimized] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false
+  );
+  const [aiPanelWidth, setAiPanelWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_ai_panel_width");
+      if (saved) {
+        const val = parseInt(saved, 10);
+        if (val >= 240 && val <= 750) return val;
+      }
+    } catch {}
+    if (typeof window !== "undefined") {
+      if (window.innerWidth < 768) return 280;
+      if (window.innerWidth < 1280) return 340;
+    }
+    return 380;
+  });
+  const [isDraggingAiWidth, setIsDraggingAiWidth] = useState<boolean>(false);
+  const dragAiStartXRef = useRef<number>(0);
+  const dragAiStartWidthRef = useRef<number>(380);
+
+  const handleStartResizeAi = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    setIsDraggingAiWidth(true);
+    const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+    dragAiStartXRef.current = clientX;
+    dragAiStartWidthRef.current = aiPanelWidth;
+  };
+
+  useEffect(() => {
+    if (!isDraggingAiWidth) return;
+
+    const handleMouseMove = (e: MouseEvent | TouchEvent) => {
+      const clientX = "touches" in e ? (e as TouchEvent).touches[0].clientX : (e as MouseEvent).clientX;
+      const deltaX = dragAiStartXRef.current - clientX;
+      const maxW = Math.max(300, window.innerWidth - 220);
+      const newWidth = Math.max(240, Math.min(maxW, dragAiStartWidthRef.current + deltaX));
+      setAiPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingAiWidth(false);
+      try {
+        localStorage.setItem("quantex_ai_panel_width", String(aiPanelWidth));
+      } catch {}
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("touchmove", handleMouseMove, { passive: false });
+    window.addEventListener("touchend", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("touchmove", handleMouseMove);
+      window.removeEventListener("touchend", handleMouseUp);
+    };
+  }, [isDraggingAiWidth, aiPanelWidth]);
+
+  // Draggable HUD State
+  const [hudPos, setHudPos] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingHud, setIsDraggingHud] = useState<boolean>(false);
+  const hudDragRef = useRef<{ startX: number; startY: number; initialX: number; initialY: number }>({
+    startX: 0,
+    startY: 0,
+    initialX: 0,
+    initialY: 0
+  });
+  const hudCardRef = useRef<HTMLDivElement | null>(null);
+  const chartWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // Dragging HUD panel listeners
+  useEffect(() => {
+    if (!isDraggingHud) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const parentEl = chartWrapperRef.current;
+      if (!parentEl) return;
+      const parentRect = parentEl.getBoundingClientRect();
+      const hudEl = hudCardRef.current;
+      const hudW = hudEl ? hudEl.offsetWidth : 320;
+      const hudH = hudEl ? hudEl.offsetHeight : 220;
+
+      const deltaX = e.clientX - hudDragRef.current.startX;
+      const deltaY = e.clientY - hudDragRef.current.startY;
+      let nextX = hudDragRef.current.initialX + deltaX;
+      let nextY = hudDragRef.current.initialY + deltaY;
+
+      const maxX = Math.max(10, parentRect.width - hudW - 10);
+      const maxY = Math.max(10, parentRect.height - hudH - 10);
+      nextX = Math.max(6, Math.min(nextX, maxX));
+      nextY = Math.max(6, Math.min(nextY, maxY));
+
+      setHudPos({ x: nextX, y: nextY });
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 0) return;
+      const touch = e.touches[0];
+      const parentEl = chartWrapperRef.current;
+      if (!parentEl) return;
+      const parentRect = parentEl.getBoundingClientRect();
+      const hudEl = hudCardRef.current;
+      const hudW = hudEl ? hudEl.offsetWidth : 320;
+      const hudH = hudEl ? hudEl.offsetHeight : 220;
+
+      const deltaX = touch.clientX - hudDragRef.current.startX;
+      const deltaY = touch.clientY - hudDragRef.current.startY;
+      let nextX = hudDragRef.current.initialX + deltaX;
+      let nextY = hudDragRef.current.initialY + deltaY;
+
+      const maxX = Math.max(10, parentRect.width - hudW - 10);
+      const maxY = Math.max(10, parentRect.height - hudH - 10);
+      nextX = Math.max(6, Math.min(nextX, maxX));
+      nextY = Math.max(6, Math.min(nextY, maxY));
+
+      setHudPos({ x: nextX, y: nextY });
+    };
+
+    const handleEnd = () => {
+      setIsDraggingHud(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleEnd);
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleEnd);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleEnd);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleEnd);
+    };
+  }, [isDraggingHud]);
+
+  const handleHudMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    const hudEl = hudCardRef.current;
+    const parentEl = chartWrapperRef.current;
+    if (!hudEl || !parentEl) return;
+    const rect = hudEl.getBoundingClientRect();
+    const parentRect = parentEl.getBoundingClientRect();
+    const curX = hudPos ? hudPos.x : (rect.left - parentRect.left);
+    const curY = hudPos ? hudPos.y : (rect.top - parentRect.top);
+    hudDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: curX,
+      initialY: curY
+    };
+    setIsDraggingHud(true);
+  };
+
+  const handleHudTouchStart = (e: React.TouchEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    const touch = e.touches[0];
+    const hudEl = hudCardRef.current;
+    const parentEl = chartWrapperRef.current;
+    if (!hudEl || !parentEl) return;
+    const rect = hudEl.getBoundingClientRect();
+    const parentRect = parentEl.getBoundingClientRect();
+    const curX = hudPos ? hudPos.x : (rect.left - parentRect.left);
+    const curY = hudPos ? hudPos.y : (rect.top - parentRect.top);
+    hudDragRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      initialX: curX,
+      initialY: curY
+    };
+    setIsDraggingHud(true);
+  };
+
+  // Countdown is rendered efficiently via DOM overlays & headers to prevent full canvas re-renders every 1s
+
+  // ========================================================
+  // ⚙️ INPUTS EXACTLY MATCHING QUANTEX PREMIUM v8 PINE SCRIPT v6
+  // ========================================================
+  // gp_presets: "⚙️ Оптимальные Пресеты QUANTEX"
+  const [presetSel, setPresetSel] = useState<string>("★ Универсальный (Все таймфреймы / Авто-Адаптивный)");
+
+  // gp_ui: "📱 Настройки Мобильной Оптимизации"
+  const [showTables, setShowTables] = useState<boolean>(true);
+  const [tblViewMode, setTblViewMode] = useState<string>("💻 Стандартный (ПК / Полный HUD)");
+  const [hudTextDensity, setHudTextDensity] = useState<string>("🖥️ ПК (Полный текст)");
+  const [tablePos, setTablePos] = useState<string>("Нижний левый");
+  const [tableTextSz, setTableTextSz] = useState<string>("Маленький (size.small)");
+  const [textSzOpt, setTextSzOpt] = useState<string>("Маленький");
+  const [labelOffset, setLabelOffset] = useState<number>(15);
+  const [lineLen, setLineLen] = useState<number>(20);
+  const [cleanOb, setCleanOb] = useState<boolean>(true);
+  const [mergeObFvg, setMergeObFvg] = useState<boolean>(true);
+  const [showSweeps, setShowSweeps] = useState<boolean>(false);
+  const [useAntiRound, setUseAntiRound] = useState<boolean>(true);
+
+  // gp_delta: "📊 Volume Delta & MTF"
+  const [vdSmoothing, setVdSmoothing] = useState<number>(14);
+  const [extremeTh, setExtremeTh] = useState<number>(1.0);
+
+  // gp_smc: "🏛️ SMC & S&R"
+  const [lbSt, setLbSt] = useState<number>(5);
+  const [lbIt, setLbIt] = useState<number>(12);
+  const [lbLt, setLbLt] = useState<number>(28);
+  const [showBos, setShowBos] = useState<boolean>(true);
+  const [showOb, setShowOb] = useState<boolean>(true);
+  const [showFvg, setShowFvg] = useState<boolean>(true);
+  const [obLimit, setObLimit] = useState<number>(3);
+  const [showSrZones, setShowSrZones] = useState<boolean>(true);
+  const [maxSrBoxes, setMaxSrBoxes] = useState<number>(3);
+  const [mergeSr, setMergeSr] = useState<boolean>(true);
+  const [mergeDist, setMergeDist] = useState<number>(0.65);
+
+  // gp_fib: "🎯 Волновой Прогноз Цены"
+  const [fibPeriod, setFibPeriod] = useState<number>(15);
+  const [showProbs, setShowProbs] = useState<boolean>(true);
+  const [dirMode, setDirMode] = useState<string>("Авто-Структура");
+  const [showReversal, setShowReversal] = useState<boolean>(true);
+  const [showForecast, setShowForecast] = useState<boolean>(true);
+  const [showAltWave, setShowAltWave] = useState<boolean>(true);
+  const [slBreakMode, setSlBreakMode] = useState<string>("Закрытие бара (Фильтр шпилек / SMC)");
+  const [filterPlanBMtf, setFilterPlanBMtf] = useState<boolean>(true);
+  const [fcLookback, setFcLookback] = useState<number>(30);
+  const [fcTargetMult, setFcTargetMult] = useState<number>(1.0);
+  const [fcPostTarget, setFcPostTarget] = useState<boolean>(true);
+  const [fcModelAcc, setFcModelAcc] = useState<string>("SMC-Balanced");
+  const [fcUseMtf, setFcUseMtf] = useState<boolean>(true);
+  const [fcMtfMode, setFcMtfMode] = useState<string>("Авто-Адаптивный (Рекомендуется)");
+  const [fcMtfTf, setFcMtfTf] = useState<string>("60");
+  const [fcHtfIntrabar, setFcHtfIntrabar] = useState<boolean>(true);
+  const [fcFastRejection, setFcFastRejection] = useState<boolean>(true);
+
+  // gp_sig: "⚡ Торговые Сигналы QUANTEX"
+  const [showSignals, setShowSignals] = useState<boolean>(false);
+  const [signalMode, setSignalMode] = useState<string>("Консервативный");
+
+  // gp_colors: "🎨 Тематическое Оформление"
+  const [themeMode, setThemeMode] = useState<string>("Золотой Слейт");
+
+  // gp_trend: "📈 Динамическая Линия Тренда"
+  const [showTrendL, setShowTrendL] = useState<boolean>(true);
+  const [trendType, setTrendType] = useState<string>("EMA");
+  const [trendLen, setTrendLen] = useState<number>(200);
+
+  // gp_trail: "🛡️ Адаптивный Трейлинг-Стоп (Anti-Whipsaw)"
+  const [useTrailing, setUseTrailing] = useState<boolean>(true);
+  const [trailMode, setTrailMode] = useState<string>("🛡️ Институциональный (BE при TP1 + Защита 50%)");
+  const [trailBeTrigger, setTrailBeTrigger] = useState<string>("Строго при взятии TP1 (Рекомендовано)");
+  const [trailBeBuff, setTrailBeBuff] = useState<number>(0.15);
+  const [trailAtrDist, setTrailAtrDist] = useState<number>(2.20);
+  const [trailResetsWave, setTrailResetsWave] = useState<boolean>(false);
+  const [showTrailLine, setShowTrailLine] = useState<boolean>(false);
+
+  // gp_osc: "📊 MACD (Binance) + RSI" (Enabled by default as requested)
+  const [showMacdPane, setShowMacdPane] = useState<boolean>(true);
+  const [macdFast, setMacdFast] = useState<number>(12);
+  const [macdSlow, setMacdSlow] = useState<number>(26);
+  const [macdSigLen, setMacdSigLen] = useState<number>(9);
+  const [rsi6Len, setRsi6Len] = useState<number>(6);
+  const [rsi14Len, setRsi14Len] = useState<number>(14);
+  const [showOscMarks, setShowOscMarks] = useState<boolean>(false);
+  const [showRsiDiv, setShowRsiDiv] = useState<boolean>(false);
+  const [showDivLines, setShowDivLines] = useState<boolean>(false);
+  const [divLookback, setDivLookback] = useState<number>(14);
+
+  // gp_mtf_syn: "⚡ Мультитаймфреймовый Синтез (MTF)"
+  const [showAllMtfCons, setShowAllMtfCons] = useState<boolean>(true);
+  const [showMtfWave, setShowMtfWave] = useState<boolean>(false);
+  const [showTpClusters, setShowTpClusters] = useState<boolean>(false);
+
+  // gp_gex: "🏛️ GEX & Dealer Gamma Engine"
+  const [useGex, setUseGex] = useState<boolean>(true);
+  const [gexAssetType, setGexAssetType] = useState<string>("Авто-Определение");
+  const [gexAnchorMode, setGexAnchorMode] = useState<string>("🎯 Дневной якорь (рекомендовано)");
+  const [flipSearchRange, setFlipSearchRange] = useState<number>(8);
+  const [showGexWalls, setShowGexWalls] = useState<boolean>(true);
+  const [showGexFlip, setShowGexFlip] = useState<boolean>(true);
+  const [showGexPain, setShowGexPain] = useState<boolean>(true);
+  const [showGexSleepers, setShowGexSleepers] = useState<boolean>(false);
+  const [showGexEm, setShowGexEm] = useState<boolean>(false);
+  const [showGexBars, setShowGexBars] = useState<boolean>(true);
+  const [gexRightLimit, setGexRightLimit] = useState<number>(80);
+  const [gexAlignFc, setGexAlignFc] = useState<boolean>(true);
+  const [manualPcr, setManualPcr] = useState<number>(0.0);
+  const [manualRvIv, setManualRvIv] = useState<number>(0.0);
+
+  // gp_gex_adv: "🎯 GEX Advanced (VP POC + Audit)"
+  const [useVpPocWeight, setUseVpPocWeight] = useState<boolean>(true);
+  const [vpLookbackBars, setVpLookbackBars] = useState<number>(200);
+  const [useFridayBoost, setUseFridayBoost] = useState<boolean>(true);
+  const [useGexAudit, setUseGexAudit] = useState<boolean>(true);
+
+  // 100% synchronized indicator output (Engine single source of truth for both chart and HUD)
+  const indicatorOutput = useMemo<SuperIndicatorOutput | null>(() => {
+    if (!candles || candles.length < 10) return null;
+    return evaluateSuperIndicator(candles, activeAsset, activeTf, presetSel, {
+      showOb,
+      showFvg,
+      showSr: showSrZones,
+      showGex: useGex,
+      showSignals,
+      useFridayBoost,
+      useGexAudit,
+      manualPcr,
+      manualRvIv,
+      hudTextDensity,
+      tblViewMode,
+      externalGexReport: dayGexReport || gexReport
+    });
+  }, [
+    candles,
+    activeAsset,
+    activeTf,
+    presetSel,
+    showOb,
+    showFvg,
+    showSrZones,
+    useGex,
+    showSignals,
+    useFridayBoost,
+    useGexAudit,
+    manualPcr,
+    manualRvIv,
+    hudTextDensity,
+    tblViewMode,
+    dayGexReport,
+    gexReport
+  ]);
+
+  // Settings Modal State
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [settingsActiveGroup, setSettingsActiveGroup] = useState<string>("presets");
+
+  // Selected strike for GEX detail modal / breakdown
+  const [selectedStrikeDetail, setSelectedStrikeDetail] = useState<GexStrikeData | null>(null);
+  const [gexHorizon, setGexHorizon] = useState<"DAY" | "WEEK" | "MONTH" | "ALL">("WEEK");
+  const gexHorizonRef = useRef<"DAY" | "WEEK" | "MONTH" | "ALL">("WEEK");
+  useEffect(() => {
+    gexHorizonRef.current = gexHorizon;
+  }, [gexHorizon]);
+  const [gexFilterMode, setGexFilterMode] = useState<"atm" | "all" | "walls">("atm");
+  const [gexMetricMode, setGexMetricMode] = useState<"gex" | "oi" | "volume">("gex");
+  const [gexExplTab, setGexExplTab] = useState<"simple" | "scenarios" | "guide" | "rules">("simple");
+
+  // Pine Script v6 / QUANTEX Premium v8 Editor State
+  const [indicatorCode, setIndicatorCode] = useState<string>("");
+  const [isScriptSaved, setIsScriptSaved] = useState<boolean>(false);
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string>("");
+  const [copiedCode, setCopiedCode] = useState<boolean>(false);
+  const [isLoadingCode, setIsLoadingCode] = useState<boolean>(false);
+
+  // AI Assistant State
+  const [aiPromptInput, setAiPromptInput] = useState<string>("");
+  const [aiChatMessages, setAiChatMessages] = useState<Array<{ role: "user" | "assistant"; text: string; time: string }>>([
+    {
+      role: "assistant",
+      text: "👋 Здравствуйте! Я автономный торговый ИИ-ассистент платформы QUANTEX. Все котировки, уровни Гаммы (GEX), дельта объемов и сетапы индикатора QUANTEX Pro v8 считываются непосредственно из автономного движка сервера без внешних сервисов и скриншотов.",
+      time: "Автономно"
+    }
+  ]);
+  const [isAiThinking, setIsAiThinking] = useState<boolean>(false);
+
+  // Economic Calendar State & Synchronization Metadata
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [calendarCategoryFilter, setCalendarCategoryFilter] = useState<string>("ALL");
+  const [calendarSyncMeta, setCalendarSyncMeta] = useState<{ date: string; timeMsk: string; receivedAt?: string }>({
+    date: new Date().toLocaleDateString("ru-RU", {
+      timeZone: "Europe/Moscow",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric"
+    }),
+    timeMsk:
+      new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }).format(new Date()) + " МСК",
+    receivedAt:
+      new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }).format(new Date()) + " МСК"
+  });
+
+  // Macro News Feed State & Filters (Unified 5 sections: ALL | GOLD | GEOPOLITICS | MOEX | CRYPTO)
+  const [marketNews, setMarketNews] = useState<MacroNewsItem[]>([]);
+  const [isNewsLoading, setIsNewsLoading] = useState<boolean>(false);
+  const [calendarSubTab, setCalendarSubTab] = useState<"news" | "calendar">("news");
+  const [stationNewsCategory, setStationNewsCategory] = useState<string>("ALL");
+  const [stationNewsSearch, setStationNewsSearch] = useState<string>("");
+  const [stationNewsImpact, setStationNewsImpact] = useState<string>("ALL");
+
+  // Client-side sanitizer to ensure no raw URLs or link artifacts ever appear in news titles/summaries
+  const cleanNewsTextClient = (raw?: string): string => {
+    if (!raw) return "";
+    return raw
+      .replace(/<[^>]+>/g, " ")
+      .replace(/https?:\/\/\S+/gi, "")
+      .replace(/www\.\S+/gi, "")
+      .replace(/\b[a-z0-9-]+\.(ru|com|org|net|io|info|me|co|uk)(\/\S*)?/gi, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  };
+
+  // Unified section matcher for both News and Daily Events: ALL | GOLD | GEOPOLITICS | MOEX | CRYPTO
+  const matchesMarketSection = (item: any, targetSection: string): boolean => {
+    if (!targetSection || targetSection === "ALL") return true;
+    if (item.section === targetSection) return true;
+    if (Array.isArray(item.sections) && item.sections.includes(targetSection)) return true;
+
+    const text = `${item.title || ""} ${item.summary || ""} ${item.impact || ""} ${item.category || ""} ${item.currency || ""} ${(item.affectedAssets || []).join(" ")}`.toLowerCase();
+    if (targetSection === "GEOPOLITICS") {
+      return (
+        item.category === "GEOPOLITICS" ||
+        item.section === "GEOPOLITICS" ||
+        /(геополит|военн|конфликт|санкци|ормуз|красн.*мор|хусит|ближн.*восток|нато|тайван|израиль|иран|украин|эмбарго|пошлин|тариф|переговор|оборон|безопасност)/i.test(text)
+      );
+    }
+    if (targetSection === "MOEX") {
+      return (
+        item.category === "MOEX_MARKET" ||
+        item.currency === "RUB" ||
+        /(мосбирж|moex|цб рф|банк россии|рубл|gldrubf|si|ri|brent| росстат|минфин)/i.test(text)
+      );
+    }
+    if (targetSection === "CRYPTO") {
+      return (
+        item.category === "CRYPTO" ||
+        item.currency === "USDT" ||
+        /(биткоин|bitcoin|btc|эфириум|ethereum|eth|solana|sol|xrp|крипт|crypto|deribit|etf)/i.test(text)
+      );
+    }
+    if (targetSection === "GOLD") {
+      return (
+        item.category === "GOLD_MARKET" ||
+        item.category === "FED_RATES" ||
+        item.category === "INFLATION" ||
+        item.category === "LABOR" ||
+        item.category === "DXY" ||
+        item.category === "GEOPOLITICS" ||
+        /(золот|xauusd|oanda|фрс|fomc|инфляц|cpi|pce|dxy|us10y|трежерис|ввп|pmi)/i.test(text)
+      );
+    }
+    return true;
+  };
+
+  const getSectionBadgeMeta = (item: any): { code: "GOLD" | "GEOPOLITICS" | "MOEX" | "CRYPTO"; label: string; className: string } => {
+    const sec = item.section || (
+      item.category === "GEOPOLITICS" || (matchesMarketSection(item, "GEOPOLITICS") && !item.category?.includes("FED")) ? "GEOPOLITICS" :
+      matchesMarketSection(item, "MOEX") && !matchesMarketSection(item, "GOLD") ? "MOEX" :
+      matchesMarketSection(item, "CRYPTO") && !matchesMarketSection(item, "GOLD") ? "CRYPTO" : "GOLD"
+    );
+    if (sec === "GEOPOLITICS") {
+      return {
+        code: "GEOPOLITICS",
+        label: "🌍 Геополитика",
+        className: "bg-red-500/20 text-red-300 border border-red-500/40"
+      };
+    }
+    if (sec === "MOEX") {
+      return {
+        code: "MOEX",
+        label: "🇷🇺 MOEX",
+        className: "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+      };
+    }
+    if (sec === "CRYPTO") {
+      return {
+        code: "CRYPTO",
+        label: "₿ Крипта",
+        className: "bg-purple-500/20 text-purple-300 border border-purple-500/40"
+      };
+    }
+    return {
+      code: "GOLD",
+      label: "🪙 Золото",
+      className: "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+    };
+  };
+
+  const getNewsTimestampMs = (item: MacroNewsItem): number => {
+    if (typeof (item as any).timestampMs === "number" && !isNaN((item as any).timestampMs)) {
+      return (item as any).timestampMs;
+    }
+    if (item.publishedAt) {
+      const parsed = new Date(item.publishedAt).getTime();
+      if (!isNaN(parsed)) return parsed;
+    }
+    // Fallback parse from DD.MM.YYYY • HH:MM МСК
+    const m = (item.time || "").match(/(\d{2})\.(\d{2})\.(\d{4}).*?(\d{2}):(\d{2})/);
+    if (m) {
+      const [, dd, mm, yyyy, hh, min] = m;
+      return new Date(`${yyyy}-${mm}-${dd}T${hh}:${min}:00+03:00`).getTime();
+    }
+    return 0;
+  };
+
+  const formatRelativeFreshness = (tsMs: number): string => {
+    if (!tsMs) return "Свежая";
+    const diffMin = Math.max(0, Math.floor((Date.now() - tsMs) / 60000));
+    if (diffMin <= 2) return "Только что";
+    if (diffMin < 60) return `${diffMin} мин назад`;
+    const hours = Math.floor(diffMin / 60);
+    const remMin = diffMin % 60;
+    if (hours < 24) return remMin > 0 ? `${hours} ч ${remMin} мин назад` : `${hours} ч назад`;
+    return `${Math.floor(hours / 24)} дн назад`;
+  };
+
+  // Strictly sorted news feed: freshest news at the top, descending by timestamp
+  const sortedMarketNews = useMemo(() => {
+    return [...marketNews]
+      .map((item) => ({
+        ...item,
+        title: cleanNewsTextClient(item.title) || item.title,
+        summary: cleanNewsTextClient(item.summary) || item.summary,
+        _tsMs: getNewsTimestampMs(item)
+      }))
+      .sort((a, b) => b._tsMs - a._tsMs);
+  }, [marketNews]);
+
+  // Trade Journal State
+  const [journalTrades, setJournalTrades] = useState<TradeItem[]>([]);
+  const [newTradeAsset, setNewTradeAsset] = useState<string>("XAUUSD");
+  const [newTradeType, setNewTradeType] = useState<"BUY" | "SELL">("BUY");
+  const [newTradeEntry, setNewTradeEntry] = useState<string>("");
+  const [newTradeExit, setNewTradeExit] = useState<string>("");
+  const [newTradeSize, setNewTradeSize] = useState<string>("1.0");
+  const [newTradePnl, setNewTradePnl] = useState<string>("");
+  const [newTradeNotes, setNewTradeNotes] = useState<string>("");
+
+  // Lightweight Charts DOM Container & References
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const macdContainerRef = useRef<HTMLDivElement | null>(null);
+  const rsiContainerRef = useRef<HTMLDivElement | null>(null);
+  const stochContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const chartInstanceRef = useRef<IChartApi | null>(null);
+  const macdChartInstanceRef = useRef<IChartApi | null>(null);
+  const rsiChartInstanceRef = useRef<IChartApi | null>(null);
+  const stochChartInstanceRef = useRef<IChartApi | null>(null);
+
+  const seriesInstanceRef = useRef<any>(null);
+  const volumeSeriesRef = useRef<any>(null);
+  const trendLineSeriesRef = useRef<any>(null);
+
+  // EMA series on main chart
+  const ema50SeriesRef = useRef<any>(null);
+  const ema100SeriesRef = useRef<any>(null);
+  const ema200SeriesRef = useRef<any>(null);
+
+  // MACD series
+  const macdHistSeriesRef = useRef<any>(null);
+  const macdFastSeriesRef = useRef<any>(null);
+  const macdSlowSeriesRef = useRef<any>(null);
+
+  // RSI series
+  const rsi6SeriesRef = useRef<any>(null);
+  const rsi14SeriesRef = useRef<any>(null);
+
+  // Stochastic series
+  const stochKSeriesRef = useRef<any>(null);
+  const stochDSeriesRef = useRef<any>(null);
+
+  const priceLinesRef = useRef<any[]>([]);
+  const zonesPrimitiveRef = useRef<TradingViewZonesPrimitive | null>(null);
+  const lastFittedKeyRef = useRef<string>("");
+
+  // 1. Fetch Market Candles from local server
+  const fetchCandles = async (symbol: AssetSymbol, interval: Timeframe) => {
+    try {
+      setIsLoadingCandles(true);
+      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=160`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
+          setCandles(data.candles);
+          setLastUpdatedMsk(new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК");
+        }
+        if (data.oandaData) {
+          setOandaData(data.oandaData);
+        }
+        setMarketStatus({
+          isOpen: data.marketOpen !== false,
+          isPremarket: !!data.isPremarket,
+          isClearing: !!data.isClearing,
+          sessionType: data.sessionType || (data.marketOpen !== false ? "DAY" : "NIGHT"),
+          statusBadge: data.statusBadge || (data.marketOpen !== false ? "Торги идут" : "Сейчас нет торгов"),
+          statusText: data.marketStatusText || (data.marketOpen === false ? "Сейчас нет торгов" : "Торги открыты")
+        });
+        setActiveContractInfo({
+          secId: data.moexSecId,
+          shortName: data.shortName,
+          source: data.source,
+          quarterLabel: data.quarterLabel,
+          openPosition: data.openPosition,
+          volToday: data.volToday,
+          marketOpen: data.marketOpen !== false,
+          isPremarket: !!data.isPremarket,
+          isClearing: !!data.isClearing,
+          sessionType: data.sessionType,
+          statusBadge: data.statusBadge,
+          marketStatusText: data.marketStatusText || (data.marketOpen === false ? "Сейчас нет торгов" : "Торги идут")
+        });
+      }
+    } catch (e: any) {
+      console.warn("Candle fetch notice:", e.message);
+    } finally {
+      setIsLoadingCandles(false);
+    }
+  };
+
+  // 1b. Fetch Real MOEX Quarterly Contracts (Auto-rollover GDZ6/GNZ6)
+  const fetchMoexContracts = async () => {
+    try {
+      const res = await fetch("/api/market/moex/contracts");
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          setMoexContracts(d);
+        }
+      }
+    } catch (e) {
+      console.warn("Notice loading MOEX contracts:", e);
+    }
+  };
+
+  // 2. Fetch GEX Report from local server
+  const fetchGexReport = async (symbol: AssetSymbol, horizon?: "DAY" | "WEEK" | "MONTH" | "ALL") => {
+    const targetH = horizon || gexHorizonRef.current;
+    try {
+      setIsLoadingGex(true);
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=${targetH}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.report) {
+          setGexReport(data.report);
+        }
+      }
+    } catch (e: any) {
+      console.warn("GEX fetch notice:", e.message);
+    } finally {
+      setIsLoadingGex(false);
+    }
+  };
+
+  // 2b. Fetch DAY GEX Report specifically for Station Chart & Indicator mathematical forecasts
+  const fetchDayGexReport = async (symbol: AssetSymbol) => {
+    try {
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=DAY`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.report) {
+          setDayGexReport(data.report);
+        }
+      }
+    } catch (e: any) {
+      console.warn("DAY GEX fetch notice:", e.message);
+    }
+  };
+
+  const handleSelectGexHorizon = (horizon: "DAY" | "WEEK" | "MONTH" | "ALL") => {
+    gexHorizonRef.current = horizon;
+    setGexHorizon(horizon);
+    fetchGexReport(activeAsset, horizon);
+  };
+
+  // 3. Fetch Economic Calendar from local server (with Moscow date & time synchronization)
+  const fetchCalendar = async () => {
+    try {
+      const res = await fetch("/api/market/economic-calendar");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.events && Array.isArray(data.events)) {
+          setCalendarEvents(data.events);
+        }
+        if (data.date || data.timeMsk || data.receivedAt) {
+          setCalendarSyncMeta((prev) => ({
+            date: data.date || prev.date,
+            timeMsk: data.timeMsk ? (String(data.timeMsk).includes("МСК") ? data.timeMsk : `${data.timeMsk} МСК`) : prev.timeMsk,
+            receivedAt: data.receivedAt || prev.receivedAt
+          }));
+        }
+      }
+    } catch (e: any) {
+      console.warn("Calendar fetch notice:", e.message);
+    }
+  };
+
+  // 3.1 Fetch Market News from local server
+  const fetchMarketNews = async () => {
+    try {
+      const res = await fetch("/api/market/news");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.news && Array.isArray(data.news)) {
+          setMarketNews(data.news);
+        }
+        if (data.date || data.timeMsk || data.receivedAt) {
+          setCalendarSyncMeta((prev) => ({
+            date: data.date || prev.date,
+            timeMsk: data.timeMsk ? (String(data.timeMsk).includes("МСК") ? data.timeMsk : `${data.timeMsk} МСК`) : prev.timeMsk,
+            receivedAt: data.receivedAt || prev.receivedAt
+          }));
+        }
+      }
+    } catch (e: any) {
+      console.warn("Market news fetch notice:", e.message);
+    }
+  };
+
+  // 3.2 Manual on-demand refresh of macro news from RSS sources + daily price-impacting events
+  const refreshMarketNews = async () => {
+    setIsNewsLoading(true);
+    try {
+      const [res, calRes] = await Promise.all([
+        fetch("/api/market/news/refresh", { method: "POST" }),
+        fetch("/api/market/economic-calendar")
+      ]);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.news && Array.isArray(data.news)) {
+          setMarketNews(data.news);
+        }
+        if (data.date || data.timeMsk || data.receivedAt) {
+          setCalendarSyncMeta((prev) => ({
+            date: data.date || prev.date,
+            timeMsk: data.timeMsk ? (String(data.timeMsk).includes("МСК") ? data.timeMsk : `${data.timeMsk} МСК`) : prev.timeMsk,
+            receivedAt: data.receivedAt || prev.receivedAt
+          }));
+        }
+      }
+      if (calRes.ok) {
+        const calData = await calRes.json();
+        if (calData.events && Array.isArray(calData.events)) {
+          setCalendarEvents(calData.events);
+        }
+        if (calData.date || calData.timeMsk || calData.receivedAt) {
+          setCalendarSyncMeta((prev) => ({
+            date: calData.date || prev.date,
+            timeMsk: calData.timeMsk ? (String(calData.timeMsk).includes("МСК") ? calData.timeMsk : `${calData.timeMsk} МСК`) : prev.timeMsk,
+            receivedAt: calData.receivedAt || prev.receivedAt
+          }));
+        }
+      }
+    } catch (e: any) {
+      console.warn("Market news refresh notice:", e.message);
+    } finally {
+      setIsNewsLoading(false);
+    }
+  };
+
+  // 4. Fetch Trade Journal
+  const fetchJournal = async () => {
+    try {
+      const res = await fetch("/api/journal/trades");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.trades) {
+          setJournalTrades(data.trades);
+        }
+      }
+    } catch (e: any) {
+      console.warn("Journal fetch notice:", e.message);
+    }
+  };
+
+  // 5. Fetch QUANTEX Premium v8 Pine Script code from server
+  const fetchIndicatorCode = async () => {
+    try {
+      setIsLoadingCode(true);
+      const res = await fetch("/api/indicator/st-premium-code");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.code && data.code.trim().length > 0) {
+          setIndicatorCode(data.code);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("Notice loading indicator code:", e);
+    } finally {
+      setIsLoadingCode(false);
+    }
+  };
+
+  // Save QUANTEX Premium v8 Code back to server
+  const handleSaveIndicatorCode = async () => {
+    try {
+      setIsScriptSaved(true);
+      const res = await fetch("/api/indicator/st-premium-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: indicatorCode })
+      });
+      const d = await res.json();
+      if (d.success) {
+        setSaveSuccessMsg("Скрипт QUANTEX Pro v8 успешно сохранен на сервере!");
+      } else {
+        setSaveSuccessMsg(`Ошибка: ${d.error || "Не удалось сохранить"}`);
+      }
+      setTimeout(() => {
+        setIsScriptSaved(false);
+        setSaveSuccessMsg("");
+      }, 3000);
+    } catch (e: any) {
+      setSaveSuccessMsg(`Ошибка сети: ${e.message}`);
+      setTimeout(() => {
+        setIsScriptSaved(false);
+        setSaveSuccessMsg("");
+      }, 3000);
+    }
+  };
+
+  // Initial Data Load & Auto-Refresh Interval
+  useEffect(() => {
+    fetchCandles(activeAsset, activeTf);
+    fetchDayGexReport(activeAsset);
+    fetchGexReport(activeAsset, gexHorizonRef.current);
+    fetchCalendar();
+    fetchMarketNews();
+    fetchJournal();
+    fetchIndicatorCode();
+    fetchMoexContracts();
+
+    let tickCount = 0;
+    const interval = setInterval(() => {
+      tickCount += 1;
+      fetchCandles(activeAsset, activeTf);
+      fetchMoexContracts();
+      if (tickCount % 3 === 0) {
+        fetchDayGexReport(activeAsset);
+        fetchGexReport(activeAsset, gexHorizonRef.current);
+      }
+      if (tickCount % 6 === 0) {
+        fetchMarketNews();
+        fetchCalendar();
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [activeAsset, activeTf]);
+
+  // Handle Preset Resolution exactly matching `f_resolve_preset` in Pine Script
+  const applyPreset = (presetName: string, changeAsset = false) => {
+    setPresetSel(presetName);
+    if (presetName === "Золото (XAUUSD) - 5 мин Скальпинг") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("5m");
+      setLbSt(2);
+      setLbIt(8);
+      setLbLt(18);
+      setFibPeriod(12);
+      setExtremeTh(1.0);
+      setSignalMode("Консервативный");
+      setFcTargetMult(0.95);
+      setFcLookback(18);
+    } else if (presetName === "Золото (XAUUSD) - 15 мин Оптимальный") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("15m");
+      setLbSt(3);
+      setLbIt(10);
+      setLbLt(22);
+      setFibPeriod(15);
+      setExtremeTh(1.1);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.10);
+      setFcLookback(25);
+    } else if (presetName === "Золото (XAUUSD) - 30 мин Свинг-Интрадей") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("30m");
+      setLbSt(4);
+      setLbIt(12);
+      setLbLt(26);
+      setFibPeriod(18);
+      setExtremeTh(1.2);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.15);
+      setFcLookback(30);
+    } else if (presetName === "Золото (XAUUSD) - 1 час Интрадей/Тренд") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("1h");
+      setLbSt(4);
+      setLbIt(13);
+      setLbLt(28);
+      setFibPeriod(20);
+      setExtremeTh(1.3);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.18);
+      setFcLookback(32);
+    } else if (presetName === "Золото (XAUUSD) - 4 часа Свинг") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("4h");
+      setLbSt(5);
+      setLbIt(14);
+      setLbLt(30);
+      setFibPeriod(22);
+      setExtremeTh(1.4);
+      setSignalMode("Сверх-Надежный");
+      setFcTargetMult(1.20);
+      setFcLookback(35);
+    } else if (presetName === "Золото (XAUUSD) - 1 день Инвестиционный/Дневной") {
+      if (changeAsset) setActiveAsset("XAUUSD");
+      setActiveTf("1d");
+      setLbSt(5);
+      setLbIt(15);
+      setLbLt(32);
+      setFibPeriod(24);
+      setExtremeTh(1.5);
+      setSignalMode("Сверх-Надежный");
+      setFcTargetMult(1.22);
+      setFcLookback(38);
+    } else if (presetName === "Биткоин (BTCUSD) - 15 мин Оптимальный") {
+      if (changeAsset) setActiveAsset("BTCUSDT");
+      setActiveTf("15m");
+      setLbSt(3);
+      setLbIt(10);
+      setLbLt(24);
+      setFibPeriod(18);
+      setExtremeTh(1.3);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.20);
+      setFcLookback(25);
+    } else if (presetName === "Общий (Все активы) - 1 мин Скальпинг") {
+      setActiveTf("1m");
+      setLbSt(2);
+      setLbIt(5);
+      setLbLt(14);
+      setFibPeriod(10);
+      setExtremeTh(0.9);
+      setSignalMode("Агрессивный");
+      setFcTargetMult(0.75);
+      setFcLookback(12);
+    } else if (presetName === "Общий (Все активы) - 5 мин Быстрый скальпинг") {
+      setActiveTf("5m");
+      setLbSt(3);
+      setLbIt(8);
+      setLbLt(18);
+      setFibPeriod(14);
+      setExtremeTh(1.1);
+      setSignalMode("Агрессивный");
+      setFcTargetMult(0.90);
+      setFcLookback(18);
+    } else if (presetName === "Общий (Все активы) - 15 мин Оптимальный") {
+      setActiveTf("15m");
+      setLbSt(4);
+      setLbIt(10);
+      setLbLt(24);
+      setFibPeriod(16);
+      setExtremeTh(1.2);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.10);
+      setFcLookback(25);
+    } else if (presetName === "Общий (Все активы) - 1 час Часовой тренд") {
+      setActiveTf("1h");
+      setLbSt(5);
+      setLbIt(13);
+      setLbLt(28);
+      setFibPeriod(20);
+      setExtremeTh(1.4);
+      setSignalMode("Консервативный");
+      setFcTargetMult(1.18);
+      setFcLookback(30);
+    } else if (presetName === "Общий (Все активы) - 4 часа Свинг-трейдинг") {
+      setActiveTf("4h");
+      setLbSt(5);
+      setLbIt(14);
+      setLbLt(30);
+      setFibPeriod(22);
+      setExtremeTh(1.5);
+      setSignalMode("Сверх-Надежный");
+      setFcTargetMult(1.20);
+      setFcLookback(35);
+    } else if (presetName === "★ Универсальный (Все таймфреймы / Авто-Адаптивный)") {
+      const tfSecMap: Record<string, number> = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400
+      };
+      const tfSec = tfSecMap[activeTf] || 900;
+      const b = tfSec <= 180 ? 0 : tfSec <= 300 ? 1 : tfSec <= 900 ? 2 : tfSec <= 1800 ? 3 : tfSec <= 7200 ? 4 : tfSec <= 28800 ? 5 : 6;
+      if (b === 0) {
+        setLbSt(2); setLbIt(6); setLbLt(16); setFibPeriod(10); setExtremeTh(1.00); setSignalMode("Агрессивный"); setFcTargetMult(0.85); setFcLookback(16);
+      } else if (b === 1) {
+        setLbSt(3); setLbIt(8); setLbLt(20); setFibPeriod(12); setExtremeTh(1.10); setSignalMode("Консервативный"); setFcTargetMult(1.00); setFcLookback(20);
+      } else if (b === 2) {
+        setLbSt(3); setLbIt(10); setLbLt(22); setFibPeriod(15); setExtremeTh(1.15); setSignalMode("Консервативный"); setFcTargetMult(1.10); setFcLookback(25);
+      } else if (b === 3) {
+        setLbSt(4); setLbIt(12); setLbLt(26); setFibPeriod(18); setExtremeTh(1.25); setSignalMode("Консервативный"); setFcTargetMult(1.15); setFcLookback(28);
+      } else if (b === 4) {
+        setLbSt(4); setLbIt(13); setLbLt(28); setFibPeriod(20); setExtremeTh(1.35); setSignalMode("Консервативный"); setFcTargetMult(1.18); setFcLookback(32);
+      } else if (b === 5) {
+        setLbSt(5); setLbIt(14); setLbLt(30); setFibPeriod(22); setExtremeTh(1.45); setSignalMode("Сверх-Надежный"); setFcTargetMult(1.20); setFcLookback(35);
+      } else {
+        setLbSt(5); setLbIt(15); setLbLt(32); setFibPeriod(24); setExtremeTh(1.50); setSignalMode("Сверх-Надежный"); setFcTargetMult(1.22); setFcLookback(38);
+      }
+    }
+  };
+
+  // Dynamic Auto-Adaptation per Timeframe (Pine Script f_resolve_preset 1:1)
+  useEffect(() => {
+    if (presetSel === "★ Универсальный (Все таймфреймы / Авто-Адаптивный)") {
+      const tfSecMap: Record<string, number> = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400
+      };
+      const tfSec = tfSecMap[activeTf] || 900;
+      const b = tfSec <= 180 ? 0 : tfSec <= 300 ? 1 : tfSec <= 900 ? 2 : tfSec <= 1800 ? 3 : tfSec <= 7200 ? 4 : tfSec <= 28800 ? 5 : 6;
+      if (b === 0) {
+        setLbSt(2); setLbIt(6); setLbLt(16); setFibPeriod(10); setExtremeTh(1.00); setSignalMode("Агрессивный"); setFcTargetMult(0.85); setFcLookback(16);
+      } else if (b === 1) {
+        setLbSt(3); setLbIt(8); setLbLt(20); setFibPeriod(12); setExtremeTh(1.10); setSignalMode("Консервативный"); setFcTargetMult(1.00); setFcLookback(20);
+      } else if (b === 2) {
+        setLbSt(3); setLbIt(10); setLbLt(22); setFibPeriod(15); setExtremeTh(1.15); setSignalMode("Консервативный"); setFcTargetMult(1.10); setFcLookback(25);
+      } else if (b === 3) {
+        setLbSt(4); setLbIt(12); setLbLt(26); setFibPeriod(18); setExtremeTh(1.25); setSignalMode("Консервативный"); setFcTargetMult(1.15); setFcLookback(28);
+      } else if (b === 4) {
+        setLbSt(4); setLbIt(13); setLbLt(28); setFibPeriod(20); setExtremeTh(1.35); setSignalMode("Консервативный"); setFcTargetMult(1.18); setFcLookback(32);
+      } else if (b === 5) {
+        setLbSt(5); setLbIt(14); setLbLt(30); setFibPeriod(22); setExtremeTh(1.45); setSignalMode("Сверх-Надежный"); setFcTargetMult(1.20); setFcLookback(35);
+      } else {
+        setLbSt(5); setLbIt(15); setLbLt(32); setFibPeriod(24); setExtremeTh(1.50); setSignalMode("Сверх-Надежный"); setFcTargetMult(1.22); setFcLookback(38);
+      }
+    }
+  }, [activeTf, presetSel]);
+
+  // 1. Initialize Main Lightweight Chart (ONCE per activeTab === "chart" mount)
+  useEffect(() => {
+    if (activeTab !== "chart") return;
+    const container = chartContainerRef.current;
+    if (!container) return;
+
+    if (chartInstanceRef.current) {
+      try {
+        chartInstanceRef.current.remove();
+      } catch {}
+      chartInstanceRef.current = null;
+    }
+    while (container.firstChild) {
+      try {
+        container.removeChild(container.firstChild);
+      } catch {}
+    }
+
+    const width = container.clientWidth || 800;
+    const height = Math.max(container.clientHeight || 380, 220);
+
+    const curThemePal = THEME_PALETTES[stationTheme] || THEME_PALETTES.cyber_dark;
+    let chart: IChartApi;
+    try {
+      chart = createChart(container, {
+        width,
+        height,
+        layout: {
+          background: { type: ColorType.Solid, color: curThemePal.chartBg },
+          textColor: "#9ca3af",
+          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 11 : 12
+        },
+        grid: {
+          vertLines: { color: curThemePal.chartGrid },
+          horzLines: { color: curThemePal.chartGrid }
+        },
+        crosshair: {
+          mode: 1,
+          vertLine: { color: "rgba(120, 123, 134, 0.6)", width: 1, style: 3 },
+          horzLine: { color: "rgba(120, 123, 134, 0.6)", width: 1, style: 3 }
+        },
+        localization: {
+          locale: "ru-RU",
+          dateFormat: "dd.MM.yyyy",
+          timeFormatter: (time: any) => {
+            const timestamp = typeof time === "number" ? (time < 1e11 ? time * 1000 : time) : Number(time) * 1000;
+            const date = new Date(timestamp);
+            return new Intl.DateTimeFormat("ru-RU", {
+              timeZone: "Europe/Moscow",
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false
+            }).format(date).replace(",", "") + " МСК";
+          }
+        },
+        rightPriceScale: {
+          borderColor: "#2a2e39",
+          scaleMargins: { top: 0.10, bottom: 0.14 },
+          entireTextOnly: false,
+          ticksVisible: true,
+          alignLabels: true,
+          autoScale: true
+        },
+        timeScale: {
+          borderColor: "#2a2e39",
+          timeVisible: true,
+          secondsVisible: false,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 11 : 9,
+          minBarSpacing: 2,
+          fixLeftEdge: false,
+          fixRightEdge: false,
+          tickMarkFormatter: (time: any) => {
+            const timestamp = typeof time === "number" ? (time < 1e11 ? time * 1000 : time) : Number(time) * 1000;
+            const date = new Date(timestamp);
+            return new Intl.DateTimeFormat("ru-RU", {
+              timeZone: "Europe/Moscow",
+              day: "2-digit",
+              month: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false
+            }).format(date).replace(",", "");
+          }
+        },
+        trackingMode: {
+          exitMode: TrackingModeExitMode.OnTouchEnd
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          axisPressedMouseMove: {
+            time: true,
+            price: true,
+          },
+          mouseWheel: true,
+          pinch: true,
+          axisDoubleClickReset: {
+            time: true,
+            price: true,
+          },
+        },
+        kineticScroll: {
+          touch: true,
+          mouse: true,
+        }
+      });
+    } catch (e) {
+      console.warn("Chart creation error:", e);
+      return;
+    }
+
+    // Main Series
+    let series: any;
+    if (chartStyle === "bars") {
+      series = chart.addSeries(BarSeries, {
+        upColor: "#089981",
+        downColor: "#f23645"
+      });
+    } else if (chartStyle === "area") {
+      series = chart.addSeries(AreaSeries, {
+        topColor: "rgba(14, 165, 233, 0.35)",
+        bottomColor: "rgba(14, 165, 233, 0.0)",
+        lineColor: "#0ea5e9",
+        lineWidth: 1
+      });
+    } else if (chartStyle === "line") {
+      series = chart.addSeries(LineSeries, {
+        color: "#2962ff",
+        lineWidth: 1
+      });
+    } else {
+      series = chart.addSeries(CandlestickSeries, {
+        upColor: "#089981",
+        downColor: "#f23645",
+        borderVisible: true,
+        borderColor: "#2a2e39",
+        borderUpColor: "#089981",
+        borderDownColor: "#f23645",
+        wickUpColor: "#089981",
+        wickDownColor: "#f23645"
+      });
+    }
+
+    // Attach native TradingView Zones & Forecast Primitive
+    try {
+      const zonesPrimitive = new TradingViewZonesPrimitive();
+      series.attachPrimitive(zonesPrimitive);
+      zonesPrimitiveRef.current = zonesPrimitive;
+    } catch (e) {
+      console.warn("Could not attach zones primitive:", e);
+    }
+
+    // Volume Series at bottom (dedicated invisible price scale)
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume"
+    });
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+      visible: false
+    });
+
+    // EMA 50, EMA 100, EMA 200 Series (Distinct colors, default off)
+    const ema50Series = chart.addSeries(LineSeries, {
+      color: "#38bdf8",
+      lineWidth: 1,
+      title: "EMA 50",
+      visible: showEma50
+    });
+    const ema100Series = chart.addSeries(LineSeries, {
+      color: "#f59e0b",
+      lineWidth: 1,
+      title: "EMA 100",
+      visible: showEma100
+    });
+    const ema200Series = chart.addSeries(LineSeries, {
+      color: "#ec4899",
+      lineWidth: 2,
+      title: "EMA 200",
+      visible: showEma200
+    });
+
+    ema50SeriesRef.current = ema50Series;
+    ema100SeriesRef.current = ema100Series;
+    ema200SeriesRef.current = ema200Series;
+
+    chartInstanceRef.current = chart;
+    seriesInstanceRef.current = series;
+    volumeSeriesRef.current = volumeSeries;
+    trendLineSeriesRef.current = null;
+    priceLinesRef.current = [];
+
+    // Responsive Resize Observer
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!chartInstanceRef.current) return;
+      for (const entry of entries) {
+        const { width: newW, height: newH } = entry.contentRect;
+        if (newW > 50 && newH > 50 && chartInstanceRef.current) {
+          try {
+            chartInstanceRef.current.applyOptions({
+              width: Math.floor(newW),
+              height: Math.floor(Math.max(newH, 220))
+            });
+          } catch {}
+        }
+      }
+    });
+
+    resizeObserver.observe(container);
+
+    // Crosshair move subscription for TradingView-style candle OHLC & Moscow time
+    const handleCrosshairMove = (param: any) => {
+      if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+        setHoveredCandle(null);
+        return;
+      }
+      const s = seriesInstanceRef.current;
+      if (!s) return;
+      const data = param.seriesData?.get(s);
+      if (data && typeof data === "object") {
+        const fullCandle = candlesRef.current?.find((c) => c.time === param.time);
+        const o = "open" in data ? (data as any).open : (fullCandle?.open ?? (data as any).value ?? 0);
+        const h = "high" in data ? (data as any).high : (fullCandle?.high ?? o);
+        const l = "low" in data ? (data as any).low : (fullCandle?.low ?? o);
+        const c = "close" in data ? (data as any).close : (fullCandle?.close ?? (data as any).value ?? o);
+        setHoveredCandle({
+          time: Number(param.time),
+          open: Number(o),
+          high: Number(h),
+          low: Number(l),
+          close: Number(c),
+          volume: fullCandle?.volume ?? 0
+        });
+      } else {
+        setHoveredCandle(null);
+      }
+    };
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+
+    return () => {
+      try {
+        chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      } catch {}
+      try {
+        resizeObserver.disconnect();
+      } catch {}
+      if (zonesPrimitiveRef.current && seriesInstanceRef.current) {
+        try {
+          seriesInstanceRef.current.detachPrimitive(zonesPrimitiveRef.current);
+        } catch {}
+        zonesPrimitiveRef.current = null;
+      }
+      if (chartInstanceRef.current) {
+        const chartToDispose = chartInstanceRef.current;
+        chartInstanceRef.current = null;
+        seriesInstanceRef.current = null;
+        volumeSeriesRef.current = null;
+        trendLineSeriesRef.current = null;
+        priceLinesRef.current = [];
+        try {
+          chartToDispose.remove();
+        } catch {}
+      }
+    };
+  }, [activeTab]);
+
+  // Chart Navigation & Panning Handlers
+  const handlePanLeft = () => {
+    if (!chartInstanceRef.current) return;
+    const ts = chartInstanceRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (range) {
+      const shift = Math.max(8, Math.round((range.to - range.from) * 0.25));
+      ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
+    }
+  };
+
+  const handlePanRight = () => {
+    if (!chartInstanceRef.current) return;
+    const ts = chartInstanceRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (range) {
+      const shift = Math.max(8, Math.round((range.to - range.from) * 0.25));
+      ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+    }
+  };
+
+  const handleZoomIn = () => {
+    if (!chartInstanceRef.current) return;
+    const ts = chartInstanceRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (range) {
+      const span = range.to - range.from;
+      const newSpan = Math.max(12, span * 0.75);
+      const center = (range.from + range.to) / 2;
+      ts.setVisibleLogicalRange({ from: center - newSpan / 2, to: center + newSpan / 2 });
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (!chartInstanceRef.current) return;
+    const ts = chartInstanceRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (range) {
+      const span = range.to - range.from;
+      const newSpan = Math.min((candles?.length || 100) + 60, span * 1.35);
+      const center = (range.from + range.to) / 2;
+      ts.setVisibleLogicalRange({ from: center - newSpan / 2, to: center + newSpan / 2 });
+    }
+  };
+
+  const handleResetChart = () => {
+    if (!chartInstanceRef.current || !candles || candles.length === 0) return;
+    const dynamicOffset = typeof window !== "undefined" && window.innerWidth < 768 ? 14 : 22;
+    const visibleBars = typeof window !== "undefined" && window.innerWidth < 768 ? 42 : 65;
+    const fromIdx = Math.max(0, candles.length - visibleBars);
+    const toIdx = candles.length + dynamicOffset;
+    try {
+      chartInstanceRef.current.priceScale("right").applyOptions({ autoScale: true });
+      chartInstanceRef.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+    } catch {}
+  };
+
+  const handleScrollToRealtime = () => {
+    if (!chartInstanceRef.current) return;
+    try {
+      chartInstanceRef.current.priceScale("right").applyOptions({ autoScale: true });
+      chartInstanceRef.current.timeScale().scrollToRealTime();
+    } catch {}
+  };
+
+  // 2. Initialize MACD Sub-Panel (if showMacdPane is true)
+  useEffect(() => {
+    if (activeTab !== "chart" || !showMacdPane) return;
+    const container = macdContainerRef.current;
+    if (!container) return;
+
+    if (macdChartInstanceRef.current) {
+      try {
+        macdChartInstanceRef.current.remove();
+      } catch {}
+      macdChartInstanceRef.current = null;
+    }
+    while (container.firstChild) {
+      try {
+        container.removeChild(container.firstChild);
+      } catch {}
+    }
+
+    const width = container.clientWidth || 800;
+    const height = 110;
+
+    const curTheme = THEME_PALETTES[stationTheme] || THEME_PALETTES.cyber_dark;
+    let macdChart: IChartApi;
+    try {
+      macdChart = createChart(container, {
+        width,
+        height,
+        layout: {
+          background: { type: ColorType.Solid, color: curTheme.chartBg },
+          textColor: "#64748b"
+        },
+        grid: {
+          vertLines: { color: curTheme.chartGrid },
+          horzLines: { color: curTheme.chartGrid }
+        },
+        timeScale: {
+          borderColor: "#1e293b",
+          visible: true,
+          timeVisible: true
+        },
+        rightPriceScale: {
+          borderColor: "#1e293b",
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          autoScale: true
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: false
+        }
+      });
+    } catch {
+      return;
+    }
+
+    const histSeries = macdChart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" }
+    });
+    const fastSeries = macdChart.addSeries(LineSeries, {
+      color: "#facc15",
+      lineWidth: 2,
+      title: "MACD DIF"
+    });
+    const slowSeries = macdChart.addSeries(LineSeries, {
+      color: "#ec4899",
+      lineWidth: 2,
+      title: "MACD DEA"
+    });
+
+    macdChartInstanceRef.current = macdChart;
+    macdHistSeriesRef.current = histSeries;
+    macdFastSeriesRef.current = fastSeries;
+    macdSlowSeriesRef.current = slowSeries;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newW } = entry.contentRect;
+        if (newW > 50 && macdChartInstanceRef.current) {
+          try {
+            macdChartInstanceRef.current.applyOptions({ width: newW });
+          } catch {}
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      try {
+        resizeObserver.disconnect();
+      } catch {}
+      if (macdChartInstanceRef.current) {
+        const c = macdChartInstanceRef.current;
+        macdChartInstanceRef.current = null;
+        macdHistSeriesRef.current = null;
+        macdFastSeriesRef.current = null;
+        macdSlowSeriesRef.current = null;
+        try {
+          c.remove();
+        } catch {}
+      }
+    };
+  }, [activeTab, showMacdPane]);
+
+  // 2b. Initialize RSI Sub-Panel (RSI 6 and RSI 14)
+  useEffect(() => {
+    if (activeTab !== "chart" || !showRsiPane) return;
+    const container = rsiContainerRef.current;
+    if (!container) return;
+
+    if (rsiChartInstanceRef.current) {
+      try { rsiChartInstanceRef.current.remove(); } catch {}
+      rsiChartInstanceRef.current = null;
+    }
+    while (container.firstChild) {
+      try { container.removeChild(container.firstChild); } catch {}
+    }
+
+    const curTheme = THEME_PALETTES[stationTheme] || THEME_PALETTES.cyber_dark;
+    const width = container.clientWidth || 800;
+    const height = 110;
+
+    let rsiChart: IChartApi;
+    try {
+      rsiChart = createChart(container, {
+        width,
+        height,
+        layout: {
+          background: { type: ColorType.Solid, color: curTheme.chartBg },
+          textColor: "#64748b"
+        },
+        grid: {
+          vertLines: { color: curTheme.chartGrid },
+          horzLines: { color: curTheme.chartGrid }
+        },
+        timeScale: {
+          borderColor: "#1e293b",
+          visible: true,
+          timeVisible: true
+        },
+        rightPriceScale: {
+          borderColor: "#1e293b",
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          autoScale: true
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: false
+        }
+      });
+    } catch {
+      return;
+    }
+
+    const rsi6Series = rsiChart.addSeries(LineSeries, {
+      color: "#a855f7",
+      lineWidth: 1,
+      title: "RSI 6"
+    });
+    const rsi14Series = rsiChart.addSeries(LineSeries, {
+      color: "#38bdf8",
+      lineWidth: 2,
+      title: "RSI 14"
+    });
+
+    try {
+      rsi6Series.createPriceLine({ price: 70, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "70" });
+      rsi6Series.createPriceLine({ price: 30, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "30" });
+    } catch {}
+
+    rsiChartInstanceRef.current = rsiChart;
+    rsi6SeriesRef.current = rsi6Series;
+    rsi14SeriesRef.current = rsi14Series;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newW } = entry.contentRect;
+        if (newW > 50 && rsiChartInstanceRef.current) {
+          try { rsiChartInstanceRef.current.applyOptions({ width: newW }); } catch {}
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      try { resizeObserver.disconnect(); } catch {}
+      if (rsiChartInstanceRef.current) {
+        const c = rsiChartInstanceRef.current;
+        rsiChartInstanceRef.current = null;
+        rsi6SeriesRef.current = null;
+        rsi14SeriesRef.current = null;
+        try { c.remove(); } catch {}
+      }
+    };
+  }, [activeTab, showRsiPane]);
+
+  // 2c. Initialize Stochastic Sub-Panel (%K 14, %D 3)
+  useEffect(() => {
+    if (activeTab !== "chart" || !showStochPane) return;
+    const container = stochContainerRef.current;
+    if (!container) return;
+
+    if (stochChartInstanceRef.current) {
+      try { stochChartInstanceRef.current.remove(); } catch {}
+      stochChartInstanceRef.current = null;
+    }
+    while (container.firstChild) {
+      try { container.removeChild(container.firstChild); } catch {}
+    }
+
+    const curTheme = THEME_PALETTES[stationTheme] || THEME_PALETTES.cyber_dark;
+    const width = container.clientWidth || 800;
+    const height = 110;
+
+    let stochChart: IChartApi;
+    try {
+      stochChart = createChart(container, {
+        width,
+        height,
+        layout: {
+          background: { type: ColorType.Solid, color: curTheme.chartBg },
+          textColor: "#64748b"
+        },
+        grid: {
+          vertLines: { color: curTheme.chartGrid },
+          horzLines: { color: curTheme.chartGrid }
+        },
+        timeScale: {
+          borderColor: "#1e293b",
+          visible: true,
+          timeVisible: true
+        },
+        rightPriceScale: {
+          borderColor: "#1e293b",
+          scaleMargins: { top: 0.1, bottom: 0.1 },
+          autoScale: true
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: false
+        }
+      });
+    } catch {
+      return;
+    }
+
+    const kSeries = stochChart.addSeries(LineSeries, {
+      color: "#3b82f6",
+      lineWidth: 2,
+      title: "%K"
+    });
+    const dSeries = stochChart.addSeries(LineSeries, {
+      color: "#f59e0b",
+      lineWidth: 1,
+      title: "%D"
+    });
+
+    try {
+      kSeries.createPriceLine({ price: 80, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "80" });
+      kSeries.createPriceLine({ price: 20, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "20" });
+    } catch {}
+
+    stochChartInstanceRef.current = stochChart;
+    stochKSeriesRef.current = kSeries;
+    stochDSeriesRef.current = dSeries;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newW } = entry.contentRect;
+        if (newW > 50 && stochChartInstanceRef.current) {
+          try { stochChartInstanceRef.current.applyOptions({ width: newW }); } catch {}
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    return () => {
+      try { resizeObserver.disconnect(); } catch {}
+      if (stochChartInstanceRef.current) {
+        const c = stochChartInstanceRef.current;
+        stochChartInstanceRef.current = null;
+        stochKSeriesRef.current = null;
+        stochDSeriesRef.current = null;
+        try { c.remove(); } catch {}
+      }
+    };
+  }, [activeTab, showStochPane]);
+
+  // Dynamic Height Resizing Synchronizers for MACD, RSI, and Stochastic
+  useEffect(() => {
+    if (macdChartInstanceRef.current && macdContainerRef.current) {
+      try {
+        const w = macdContainerRef.current.clientWidth;
+        macdChartInstanceRef.current.applyOptions({ height: macdPaneHeight, width: w > 50 ? w : undefined });
+      } catch {}
+    }
+  }, [macdPaneHeight]);
+
+  useEffect(() => {
+    if (rsiChartInstanceRef.current && rsiContainerRef.current) {
+      try {
+        const w = rsiContainerRef.current.clientWidth;
+        rsiChartInstanceRef.current.applyOptions({ height: rsiPaneHeight, width: w > 50 ? w : undefined });
+      } catch {}
+    }
+  }, [rsiPaneHeight]);
+
+  useEffect(() => {
+    if (stochChartInstanceRef.current && stochContainerRef.current) {
+      try {
+        const w = stochContainerRef.current.clientWidth;
+        stochChartInstanceRef.current.applyOptions({ height: stochPaneHeight, width: w > 50 ? w : undefined });
+      } catch {}
+    }
+  }, [stochPaneHeight]);
+
+  // Dynamic Width Synchronizer when AI Analyst panel width or collapsed state changes
+  useEffect(() => {
+    if (chartInstanceRef.current && chartContainerRef.current) {
+      const w = chartContainerRef.current.clientWidth;
+      const h = chartContainerRef.current.clientHeight;
+      if (w > 50 && h > 50) {
+        try {
+          chartInstanceRef.current.applyOptions({ width: w, height: h });
+        } catch {}
+      }
+    }
+    if (macdChartInstanceRef.current && macdContainerRef.current) {
+      try {
+        const w = macdContainerRef.current.clientWidth;
+        if (w > 50) macdChartInstanceRef.current.applyOptions({ width: w });
+      } catch {}
+    }
+    if (rsiChartInstanceRef.current && rsiContainerRef.current) {
+      try {
+        const w = rsiContainerRef.current.clientWidth;
+        if (w > 50) rsiChartInstanceRef.current.applyOptions({ width: w });
+      } catch {}
+    }
+    if (stochChartInstanceRef.current && stochContainerRef.current) {
+      try {
+        const w = stochContainerRef.current.clientWidth;
+        if (w > 50) stochChartInstanceRef.current.applyOptions({ width: w });
+      } catch {}
+    }
+  }, [aiPanelWidth, isAiPanelCollapsed]);
+
+  // Real-time Theme Colors Synchronizer across all Chart instances
+  useEffect(() => {
+    const meta = THEME_PALETTES[stationTheme] || THEME_PALETTES.cyber_dark;
+    if (chartInstanceRef.current) {
+      try {
+        chartInstanceRef.current.applyOptions({
+          layout: { background: { type: ColorType.Solid, color: meta.chartBg } },
+          grid: { vertLines: { color: meta.chartGrid }, horzLines: { color: meta.chartGrid } }
+        });
+      } catch {}
+    }
+    if (macdChartInstanceRef.current) {
+      try {
+        macdChartInstanceRef.current.applyOptions({
+          layout: { background: { type: ColorType.Solid, color: meta.chartBg } },
+          grid: { vertLines: { color: meta.chartGrid }, horzLines: { color: meta.chartGrid } }
+        });
+      } catch {}
+    }
+    if (rsiChartInstanceRef.current) {
+      try {
+        rsiChartInstanceRef.current.applyOptions({
+          layout: { background: { type: ColorType.Solid, color: meta.chartBg } },
+          grid: { vertLines: { color: meta.chartGrid }, horzLines: { color: meta.chartGrid } }
+        });
+      } catch {}
+    }
+    if (stochChartInstanceRef.current) {
+      try {
+        stochChartInstanceRef.current.applyOptions({
+          layout: { background: { type: ColorType.Solid, color: meta.chartBg } },
+          grid: { vertLines: { color: meta.chartGrid }, horzLines: { color: meta.chartGrid } }
+        });
+      } catch {}
+    }
+  }, [stationTheme]);
+
+  // Dynamic EMA Series Visibility Toggle
+  useEffect(() => {
+    try {
+      ema50SeriesRef.current?.applyOptions({ visible: showEma50 });
+      ema100SeriesRef.current?.applyOptions({ visible: showEma100 });
+      ema200SeriesRef.current?.applyOptions({ visible: showEma200 });
+    } catch {}
+  }, [showEma50, showEma100, showEma200]);
+
+  // 3. Handle Chart Style change smoothly without destroying main chart
+  useEffect(() => {
+    const chart = chartInstanceRef.current;
+    if (!chart || activeTab !== "chart") return;
+
+    if (seriesInstanceRef.current) {
+      if (zonesPrimitiveRef.current) {
+        try {
+          seriesInstanceRef.current.detachPrimitive(zonesPrimitiveRef.current);
+        } catch {}
+        zonesPrimitiveRef.current = null;
+      }
+      try {
+        chart.removeSeries(seriesInstanceRef.current);
+      } catch {}
+      seriesInstanceRef.current = null;
+    }
+
+    let series: any;
+    if (chartStyle === "bars") {
+      series = chart.addSeries(BarSeries, {
+        upColor: "#10b981",
+        downColor: "#f43f5e"
+      });
+    } else if (chartStyle === "area") {
+      series = chart.addSeries(AreaSeries, {
+        topColor: "rgba(14, 165, 233, 0.4)",
+        bottomColor: "rgba(14, 165, 233, 0.0)",
+        lineColor: "#0ea5e9",
+        lineWidth: 2
+      });
+    } else if (chartStyle === "line") {
+      series = chart.addSeries(LineSeries, {
+        color: "#38bdf8",
+        lineWidth: 2
+      });
+    } else {
+      series = chart.addSeries(CandlestickSeries, {
+        upColor: "#089981",
+        downColor: "#f23645",
+        borderVisible: true,
+        borderColor: "#2a2e39",
+        borderUpColor: "#089981",
+        borderDownColor: "#f23645",
+        wickUpColor: "#089981",
+        wickDownColor: "#f23645"
+      });
+    }
+    try {
+      const zonesPrimitive = new TradingViewZonesPrimitive();
+      series.attachPrimitive(zonesPrimitive);
+      zonesPrimitiveRef.current = zonesPrimitive;
+    } catch (e) {
+      console.warn("Could not re-attach zones primitive:", e);
+    }
+    seriesInstanceRef.current = series;
+    priceLinesRef.current = [];
+  }, [chartStyle]);
+
+  // 4. Update Market Data, MACD, Trend Lines, GEX Levels, Zones, and Forecast Lines
+  useEffect(() => {
+    const chart = chartInstanceRef.current;
+    const series = seriesInstanceRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    if (!chart || !series || candles.length === 0 || activeTab !== "chart") return;
+
+    // 1. Set main price candles
+    const currentKey = `${activeAsset}_${activeTf}`;
+    const isNewAssetOrTf = lastFittedKeyRef.current !== currentKey;
+    let prevLogicalRange: any = null;
+    try {
+      if (!isNewAssetOrTf) {
+        prevLogicalRange = chart.timeScale().getVisibleLogicalRange();
+      }
+    } catch {}
+
+    // Configure dynamic precision & minMove for every asset
+    const assetDec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+    const assetMinMove = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 1 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 0.1 : 0.01;
+
+    try {
+      series.applyOptions({
+        priceFormat: {
+          type: "price",
+          precision: assetDec,
+          minMove: assetMinMove
+        }
+      });
+      if (isNewAssetOrTf) {
+        chart.priceScale("right").applyOptions({
+          autoScale: true
+        });
+      }
+    } catch {}
+
+    // Deduplicate and enforce strictly ascending timestamps for Lightweight Charts
+    const cleanCandles: any[] = [];
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      if (!c || typeof c.time !== "number" || isNaN(c.time)) continue;
+      if (cleanCandles.length > 0 && c.time <= cleanCandles[cleanCandles.length - 1].time) {
+        const last = cleanCandles[cleanCandles.length - 1];
+        cleanCandles[cleanCandles.length - 1] = {
+          time: last.time,
+          open: Number(c.open ?? last.open),
+          high: Math.max(Number(c.high ?? last.high), last.high),
+          low: Math.min(Number(c.low ?? last.low), last.low),
+          close: Number(c.close ?? last.close),
+          volume: Number(c.volume || last.volume || 100)
+        };
+      } else {
+        cleanCandles.push({
+          time: c.time,
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+          volume: Number(c.volume || 100)
+        });
+      }
+    }
+
+    try {
+      if (chartStyle === "candles" || chartStyle === "bars") {
+        series.setData(
+          cleanCandles.map(c => ({
+            time: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close
+          }))
+        );
+      } else {
+        series.setData(cleanCandles.map(c => ({ time: c.time, value: c.close })));
+      }
+
+      if (volumeSeries) {
+        volumeSeries.setData(
+          cleanCandles.map(c => ({
+            time: c.time,
+            value: c.volume || 100,
+            color: c.close >= c.open ? "rgba(16, 185, 129, 0.35)" : "rgba(244, 63, 94, 0.35)"
+          }))
+        );
+      }
+
+      // If user had dragged/scrolled the chart, restore range to avoid jarring snaps
+      if (prevLogicalRange && !isNewAssetOrTf) {
+        try {
+          chart.timeScale().setVisibleLogicalRange(prevLogicalRange);
+        } catch {}
+      }
+    } catch (err) {
+      console.warn("Notice updating series data:", err);
+    }
+
+    // 2. Set MACD data if pane is active
+    if (showMacdPane && macdChartInstanceRef.current && macdHistSeriesRef.current && candles.length >= 26) {
+      try {
+        const emaFast = calculateEMA(candles, macdFast);
+        const emaSlow = calculateEMA(candles, macdSlow);
+        const difValues = candles.map((_, i) => emaFast[i] - emaSlow[i]);
+        const deaValues = calculateEMA(candles.map((_, i) => ({ close: difValues[i] })), macdSigLen);
+
+        macdHistSeriesRef.current.setData(
+          candles.map((c, i) => {
+            const hist = difValues[i] - deaValues[i];
+            return {
+              time: c.time,
+              value: Math.round(hist * 100) / 100,
+              color: hist >= 0 ? "#0ecb81" : "#f6465d"
+            };
+          })
+        );
+        macdFastSeriesRef.current?.setData(candles.map((c, i) => ({ time: c.time, value: Math.round(difValues[i] * 100) / 100 })));
+        macdSlowSeriesRef.current?.setData(candles.map((c, i) => ({ time: c.time, value: Math.round(deaValues[i] * 100) / 100 })));
+      } catch {}
+    }
+
+    // 2b. Set RSI data if pane is active
+    if (showRsiPane && rsiChartInstanceRef.current && rsi6SeriesRef.current && rsi14SeriesRef.current && candles.length >= 15) {
+      try {
+        const rsi6Data = calculateRSI(candles, rsi6Len);
+        const rsi14Data = calculateRSI(candles, rsi14Len);
+        rsi6SeriesRef.current.setData(rsi6Data);
+        rsi14SeriesRef.current.setData(rsi14Data);
+      } catch {}
+    }
+
+    // 2c. Set Stochastic data if pane is active
+    if (showStochPane && stochChartInstanceRef.current && stochKSeriesRef.current && stochDSeriesRef.current && candles.length >= 14) {
+      try {
+        const { kData, dData } = calculateStochastic(candles, 14, 3);
+        stochKSeriesRef.current.setData(kData);
+        stochDSeriesRef.current.setData(dData);
+      } catch {}
+    }
+
+    // 2d. Set EMA 50, EMA 100, EMA 200 data
+    if (ema50SeriesRef.current && candles.length > 0) {
+      try {
+        const e50 = calculateEmaSeries(candles, 50);
+        ema50SeriesRef.current.setData(e50);
+      } catch {}
+    }
+    if (ema100SeriesRef.current && candles.length > 0) {
+      try {
+        const e100 = calculateEmaSeries(candles, 100);
+        ema100SeriesRef.current.setData(e100);
+      } catch {}
+    }
+    if (ema200SeriesRef.current && candles.length > 0) {
+      try {
+        const e200 = calculateEmaSeries(candles, 200);
+        ema200SeriesRef.current.setData(e200);
+      } catch {}
+    }
+
+    // 3. Clear old price lines
+    priceLinesRef.current.forEach((pl) => {
+      try {
+        series.removePriceLine(pl);
+      } catch {}
+    });
+    priceLinesRef.current = [];
+
+
+    // 4. Dynamic Trend Line (EMA 200 by default)
+    if (showTrendL && candles.length >= 20) {
+      const len = Math.min(trendLen, candles.length);
+      const trendValues = calculateEMA(candles, len);
+      if (!trendLineSeriesRef.current) {
+        try {
+          trendLineSeriesRef.current = chart.addSeries(LineSeries, {
+            color: "#f59e0b",
+            lineWidth: 1,
+            title: `Trend (${trendType} ${trendLen})`,
+            priceLineVisible: false,
+            lastValueVisible: true
+          });
+        } catch {}
+      }
+      if (trendLineSeriesRef.current) {
+        try {
+          trendLineSeriesRef.current.setData(candles.map((c, idx) => ({ time: c.time, value: trendValues[idx] })));
+        } catch {}
+      }
+    } else if (!showTrendL && trendLineSeriesRef.current) {
+      try {
+        chart.removeSeries(trendLineSeriesRef.current);
+      } catch {}
+      trendLineSeriesRef.current = null;
+    }
+
+    // 5. Native Canvas Zones (OB, FVG, OTE) and Forecast Arrow bounded to bar indices
+    const tfSecondsMap: Record<string, number> = {
+      "1m": 60,
+      "5m": 300,
+      "15m": 900,
+      "30m": 1800,
+      "1h": 3600,
+      "4h": 14400,
+      "1d": 86400
+    };
+    const tfSec = tfSecondsMap[activeTf] || 900;
+    const lastCandle = candles[candles.length - 1];
+    const lastIdx = candles.length - 1;
+
+    const zoneBoxes: ZoneBox[] = [];
+
+    // Order Blocks (+OB Demand & -OB Supply) - bounded by pivot bar and future offset
+    if (showOb && candles.length >= 20) {
+      const scanLen = Math.min(35, candles.length);
+      const recent = candles.slice(-scanLen);
+      let minIdx = lastIdx - scanLen;
+      let maxIdx = lastIdx - scanLen;
+      let minPrice = Infinity;
+      let maxPrice = -Infinity;
+
+      for (let k = 0; k < recent.length; k++) {
+        const c = recent[k];
+        const globalIdx = lastIdx - scanLen + k;
+        if (c.low < minPrice) {
+          minPrice = c.low;
+          minIdx = globalIdx;
+        }
+        if (c.high > maxPrice) {
+          maxPrice = c.high;
+          maxIdx = globalIdx;
+        }
+      }
+
+      const minCandle = candles[minIdx] || recent[0];
+      const maxCandle = candles[maxIdx] || recent[0];
+
+      // Bullish OB (+OB Demand) - bounds ending at current bar
+      zoneBoxes.push({
+        id: `ob_demand_${minCandle.time}`,
+        type: "ob_bull",
+        startTime: minCandle.time,
+        endTime: lastCandle.time,
+        startLogical: minIdx,
+        endLogical: lastIdx,
+        topPrice: minCandle.high,
+        bottomPrice: minCandle.low,
+        label: "+OB",
+        fillColor: "rgba(8, 153, 129, 0.12)",
+        borderColor: "rgba(8, 153, 129, 0.60)",
+        borderStyle: "dashed"
+      });
+
+      // Bearish OB (-OB Supply) - bounds ending at current bar
+      zoneBoxes.push({
+        id: `ob_supply_${maxCandle.time}`,
+        type: "ob_bear",
+        startTime: maxCandle.time,
+        endTime: lastCandle.time,
+        startLogical: maxIdx,
+        endLogical: lastIdx,
+        topPrice: maxCandle.high,
+        bottomPrice: maxCandle.low,
+        label: "-OB",
+        fillColor: "rgba(242, 54, 69, 0.12)",
+        borderColor: "rgba(242, 54, 69, 0.60)",
+        borderStyle: "dashed"
+      });
+    }
+
+    // Fair Value Gaps (FVG) - 3-candle imbalance (ends at current bar)
+    if (showFvg && candles.length >= 15) {
+      for (let i = candles.length - 2; i >= Math.max(5, candles.length - 30); i--) {
+        const c1 = candles[i - 2];
+        const c3 = candles[i];
+        if (c3.low > c1.high) {
+          zoneBoxes.push({
+            id: `fvg_bull_${c3.time}`,
+            type: "fvg_bull",
+            startTime: candles[i - 1].time,
+            endTime: lastCandle.time,
+            startLogical: i - 1,
+            endLogical: lastIdx,
+            topPrice: c3.low,
+            bottomPrice: c1.high,
+            label: "+FVG",
+            fillColor: "rgba(14, 165, 233, 0.10)",
+            borderColor: "rgba(14, 165, 233, 0.45)",
+            borderStyle: "dotted"
+          });
+          break;
+        } else if (c3.high < c1.low) {
+          zoneBoxes.push({
+            id: `fvg_bear_${c3.time}`,
+            type: "fvg_bear",
+            startTime: candles[i - 1].time,
+            endTime: lastCandle.time,
+            startLogical: i - 1,
+            endLogical: lastIdx,
+            topPrice: c1.low,
+            bottomPrice: c3.high,
+            label: "-FVG",
+            fillColor: "rgba(242, 54, 69, 0.10)",
+            borderColor: "rgba(242, 54, 69, 0.45)",
+            borderStyle: "dotted"
+          });
+          break;
+        }
+      }
+    }
+
+    // OTE Reversal Zone (0.618 - 0.786 Fibonacci) & 0.50 EQ (Pine Script lines 2579-2585: [bar_index - line_len, bar_index + label_offset])
+    let eqData: { startTime: number; endTime: number; startLogical?: number; endLogical?: number; price: number; label: string } | null = null;
+    if (showReversal && candles.length > 20) {
+      const fibLen = Math.min(fibPeriod, 30);
+      const recent = candles.slice(-fibLen);
+      const highSw = Math.max(...recent.map(c => c.high));
+      const lowSw = Math.min(...recent.map(c => c.low));
+      const range = highSw - lowSw;
+      const eq500 = lowSw + range * 0.5;
+      const isBull = lastCandle.close >= eq500;
+
+      const oteTop = isBull ? highSw - range * 0.618 : lowSw + range * 0.786;
+      const oteBot = isBull ? highSw - range * 0.786 : lowSw + range * 0.618;
+
+      const oteStartIdx = Math.max(0, lastIdx - lineLen);
+      const oteEndIdx = lastIdx + labelOffset;
+      const oteStartTime = candles[oteStartIdx]?.time ?? recent[0].time;
+      const oteEndTime = lastCandle.time + tfSec * labelOffset;
+
+      zoneBoxes.push({
+        id: "ote_zone",
+        type: "ote",
+        startTime: oteStartTime,
+        endTime: oteEndTime,
+        startLogical: oteStartIdx,
+        endLogical: oteEndIdx,
+        topPrice: Math.max(oteTop, oteBot),
+        bottomPrice: Math.min(oteTop, oteBot),
+        label: `OTE (${Math.min(oteTop, oteBot).toFixed(1)}–${Math.max(oteTop, oteBot).toFixed(1)})`,
+        fillColor: "rgba(234, 179, 8, 0.08)",
+        borderColor: "rgba(234, 179, 8, 0.35)",
+        borderStyle: "dashed"
+      });
+
+      eqData = {
+        startTime: oteStartTime,
+        endTime: oteEndTime,
+        startLogical: oteStartIdx,
+        endLogical: oteEndIdx,
+        price: Math.round(eq500 * 100) / 100,
+        label: `0.50 EQ (${(Math.round(eq500 * 10) / 10).toFixed(1)})`
+      };
+    }
+
+    // S&R Liquidity Zones (Exact Pine Script box.new: [bar_index - offset, p_level + atr * 0.08, bar_index + label_offset, p_level - atr * 0.08])
+    if (showSrZones && candles.length >= 30) {
+      const atrArr = calculateATR(candles, 14);
+      const atrVal = atrArr.length > 0 ? atrArr[atrArr.length - 1] : ((lastCandle.high - lastCandle.low) || 10);
+      const srHalfH = Math.max(atrVal * 0.08, 0.4);
+
+      const ltRecent = candles.slice(-40);
+      const phLt = Math.max(...ltRecent.map(c => c.high));
+      const plLt = Math.min(...ltRecent.map(c => c.low));
+      const ltOffset = 35;
+      const srEndLogical = lastIdx + labelOffset;
+      const srEndTime = lastCandle.time + tfSec * labelOffset;
+
+      const ltStartLogical = Math.max(0, lastIdx - ltOffset);
+      const ltStartTime = candles[ltStartLogical]?.time ?? candles[0].time;
+
+      // Resistance (Liq LT Сопр.)
+      zoneBoxes.push({
+        id: "sr_res_lt",
+        type: "sr",
+        startTime: ltStartTime,
+        endTime: srEndTime,
+        startLogical: ltStartLogical,
+        endLogical: srEndLogical,
+        topPrice: phLt + srHalfH,
+        bottomPrice: phLt - srHalfH,
+        label: `Liq LT [${phLt > 1000 ? (phLt / 1000).toFixed(1) + "K" : phLt.toFixed(0)}] Сопр.`,
+        fillColor: "rgba(242, 54, 69, 0.12)",
+        borderColor: "rgba(242, 54, 69, 0.65)",
+        borderStyle: "solid"
+      });
+
+      // Support (Liq LT Подд.)
+      zoneBoxes.push({
+        id: "sr_sup_lt",
+        type: "sr",
+        startTime: ltStartTime,
+        endTime: srEndTime,
+        startLogical: ltStartLogical,
+        endLogical: srEndLogical,
+        topPrice: plLt + srHalfH,
+        bottomPrice: plLt - srHalfH,
+        label: `Liq LT [${plLt > 1000 ? (plLt / 1000).toFixed(1) + "K" : plLt.toFixed(0)}] Подд.`,
+        fillColor: "rgba(8, 153, 129, 0.12)",
+        borderColor: "rgba(8, 153, 129, 0.65)",
+        borderStyle: "solid"
+      });
+
+      // Intermediate Pivots (IT - offset 15)
+      const itRecent = candles.slice(-18);
+      const phIt = Math.max(...itRecent.map(c => c.high));
+      const plIt = Math.min(...itRecent.map(c => c.low));
+      if (Math.abs(phIt - phLt) / phLt > 0.003) {
+        const itStartLogical = Math.max(0, lastIdx - 15);
+        zoneBoxes.push({
+          id: "sr_res_it",
+          type: "sr",
+          startTime: candles[itStartLogical]?.time ?? lastCandle.time,
+          endTime: srEndTime,
+          startLogical: itStartLogical,
+          endLogical: srEndLogical,
+          topPrice: phIt + srHalfH,
+          bottomPrice: phIt - srHalfH,
+          label: `Liq IT [${phIt > 1000 ? (phIt / 1000).toFixed(1) + "K" : phIt.toFixed(0)}]`,
+          fillColor: "rgba(242, 54, 69, 0.08)",
+          borderColor: "rgba(242, 54, 69, 0.45)",
+          borderStyle: "dashed"
+        });
+      }
+      if (Math.abs(plIt - plLt) / plLt > 0.003) {
+        const itStartLogical = Math.max(0, lastIdx - 15);
+        zoneBoxes.push({
+          id: "sr_sup_it",
+          type: "sr",
+          startTime: candles[itStartLogical]?.time ?? lastCandle.time,
+          endTime: srEndTime,
+          startLogical: itStartLogical,
+          endLogical: srEndLogical,
+          topPrice: plIt + srHalfH,
+          bottomPrice: plIt - srHalfH,
+          label: `Liq IT [${plIt > 1000 ? (plIt / 1000).toFixed(1) + "K" : plIt.toFixed(0)}]`,
+          fillColor: "rgba(8, 153, 129, 0.08)",
+          borderColor: "rgba(8, 153, 129, 0.45)",
+          borderStyle: "dashed"
+        });
+      }
+    }
+
+    // Wave Forecast Arrow on Canvas (Exact 1:1 Pine Script port using evaluateSuperIndicator)
+    let forecastData: ForecastArrow | null = null;
+    let altForecastData: ForecastArrow | null = null;
+    let computedTp1 = 0;
+    let computedTp2 = 0;
+    let computedSl = 0;
+    let computedEntry = 0;
+    let isForecastBull = true;
+
+    if (indicatorOutput) {
+      const fc = indicatorOutput.forecast;
+      computedEntry = fc.p1Entry;
+      computedTp1 = fc.p2Tp1;
+      computedTp2 = fc.p3Tp2;
+      computedSl = fc.activeTrailingSl;
+      isForecastBull = fc.isBull;
+
+      const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+
+      // Use anchored start coordinates if fixed/locked (matching TradingView)
+      const startT = fc.startTime ?? lastCandle.time;
+      const startLog = fc.startLogical ?? lastIdx;
+
+      if (showForecast) {
+        // Wave trajectory only; ВХОД, TP1, TP2, SL labels & horizontal lines are rendered once via boundedLines below
+        forecastData = {
+          startTime: startT,
+          startPrice: fc.startPrice,
+          startLogical: startLog,
+          pullbackTime: startT + tfSec * 3,
+          pullbackPrice: fc.p1Entry,
+          pullbackLogical: startLog + 3,
+          tp1Time: startT + tfSec * 7,
+          tp1Price: fc.p2Tp1,
+          tp1Logical: startLog + 7,
+          tp2Time: startT + tfSec * 12,
+          tp2Price: fc.p3Tp2,
+          tp2Logical: startLog + 12,
+          isBull: fc.isBull,
+          labelStart: fc.isBull
+            ? `🟢 Long ${fc.isLocked && fc.barsSinceStart ? `[#${fc.startBar}]` : ""}`
+            : `🔴 Short ${fc.isLocked && fc.barsSinceStart ? `[#${fc.startBar}]` : ""}`
+        };
+
+        if (showAltWave) {
+          altForecastData = {
+            startTime: startT,
+            startPrice: fc.activeTrailingSl,
+            startLogical: startLog,
+            tp1Time: startT + tfSec * 6,
+            tp1Price: fc.altTp1,
+            tp1Logical: startLog + 6,
+            tp2Time: startT + tfSec * 11,
+            tp2Price: fc.altTp2,
+            tp2Logical: startLog + 11,
+            isBull: !fc.isBull,
+            labelTp1: `План Б: ${fc.altTp1.toFixed(dec)}`,
+            labelTp2: `Цель 2: ${fc.altTp2.toFixed(dec)}`
+          };
+        }
+      }
+    }
+
+    // BOS Marker
+    let bosData: BosMarker | null = null;
+    if (showBos && candles.length >= 16) {
+      const bosIdx = candles.length - 12;
+      const bosCandle = candles[bosIdx];
+      bosData = {
+        time: bosCandle.time,
+        price: bosCandle.high,
+        logical: bosIdx,
+        isBull: true,
+        label: "— BOS —"
+      };
+    }
+
+    // 6. Bounded Price Lines (Entry, TP1, TP2, SL, CW, PW, Flip, Pain, Magnet, EM)
+    // Strictly bounded by [gx1, gx2] bar coordinates matching Pine Script line.new(x1, y1, x2, y2)
+    const boundedLines: BoundedPriceLine[] = [];
+    const gx1 = Math.max(0, lastIdx - lineLen);
+    const gx1Time = candles[gx1]?.time ?? lastCandle.time;
+    const gx2Base = lastIdx + labelOffset + 8;
+    const gx2BaseTime = lastCandle.time + tfSec * (labelOffset + 8);
+
+    const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+
+    if (showForecast && computedTp1 > 0) {
+      const fcStartLog = indicatorOutput?.forecast?.startLogical ?? Math.max(0, lastIdx - 15);
+      const lineStartLog = Math.max(0, fcStartLog);
+      const lineStartTime = candles[lineStartLog]?.time ?? gx1Time;
+      const lineEndLog = Math.max(lastIdx + Math.max(labelOffset, 8), fcStartLog + 16);
+      const lineEndTime = lastCandle.time + tfSec * Math.max(labelOffset, 8);
+
+      // SL (Red dashed line)
+      boundedLines.push({
+        id: "sl_line",
+        price: Number(computedSl.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: "#ef4444",
+        lineWidth: 1.5,
+        lineStyle: "dashed",
+        label: indicatorOutput?.forecast.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}`
+      });
+
+      // Вход (Amber dotted line)
+      boundedLines.push({
+        id: "entry_line",
+        price: Number(computedEntry.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: "#f59e0b",
+        lineWidth: 1.5,
+        lineStyle: "dotted",
+        label: `ВХОД: ${computedEntry.toFixed(dec)}`
+      });
+
+      // TP1 (Green dotted line)
+      boundedLines.push({
+        id: "tp1_line",
+        price: Number(computedTp1.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: "#10b981",
+        lineWidth: 1.5,
+        lineStyle: "dotted",
+        label: `TP1: ${computedTp1.toFixed(dec)}`
+      });
+
+      // TP2 (Blue dotted line)
+      if (computedTp2 > 0) {
+        boundedLines.push({
+          id: "tp2_line",
+          price: Number(computedTp2.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: "#0284c7",
+          lineWidth: 1.5,
+          lineStyle: "dotted",
+          label: `TP2: ${computedTp2.toFixed(dec)}`
+        });
+      }
+    }
+
+    // 8. Institutional GEX Levels (DAY GEX Analytics from GEX module)
+    const isGexValidForAsset = (rep: any) => {
+      if (!rep || !rep.callWall || !lastCandle || !lastCandle.close) return false;
+      const ratio = rep.callWall / lastCandle.close;
+      return ratio > 0.75 && ratio < 1.30;
+    };
+    const effectiveGex = isGexValidForAsset(dayGexReport)
+      ? dayGexReport
+      : isGexValidForAsset(indicatorOutput?.gex)
+      ? indicatorOutput?.gex
+      : isGexValidForAsset(gexReport)
+      ? gexReport
+      : null;
+
+    if (useGex && effectiveGex) {
+      if (showGexWalls) {
+        // Call Wall: "🏰 Потолок CW (День): " + callWall
+        boundedLines.push({
+          id: "cw_line",
+          price: effectiveGex.callWall,
+          startTime: gx1Time,
+          endTime: gx2BaseTime,
+          startLogical: gx1,
+          endLogical: gx2Base,
+          color: "#10b981",
+          lineWidth: 2,
+          lineStyle: "solid",
+          label: `🏰 Потолок CW (День): ${effectiveGex.callWall}`
+        });
+
+        // Put Wall: "🛡️ Поддержка PW (День): " + putWall
+        boundedLines.push({
+          id: "pw_line",
+          price: effectiveGex.putWall,
+          startTime: gx1Time,
+          endTime: gx2BaseTime,
+          startLogical: gx1,
+          endLogical: gx2Base,
+          color: "#ef4444",
+          lineWidth: 2,
+          lineStyle: "solid",
+          label: `🛡️ Поддержка PW (День): ${effectiveGex.putWall}`
+        });
+      }
+
+      if (showGexFlip) {
+        // Zero Flip: "⚡ Граница Гаммы (День): " + gammaFlip
+        boundedLines.push({
+          id: "flip_line",
+          price: effectiveGex.gammaFlip,
+          startTime: gx1Time,
+          endTime: gx2BaseTime,
+          startLogical: gx1,
+          endLogical: gx2Base,
+          color: "#a855f7",
+          lineWidth: 2,
+          lineStyle: "dashed",
+          label: `⚡ Граница Гаммы: ${effectiveGex.gammaFlip}`
+        });
+      }
+
+      if (showGexPain) {
+        // Магнит дня (Max Pain): "🎯 Магнит дня: " + maxPain
+        boundedLines.push({
+          id: "pain_line",
+          price: effectiveGex.maxPain,
+          startTime: gx1Time,
+          endTime: gx2BaseTime,
+          startLogical: gx1,
+          endLogical: gx2Base,
+          color: "#06b6d4",
+          lineWidth: 1.5,
+          lineStyle: "dotted",
+          label: `🎯 Магнит дня: ${effectiveGex.maxPain}`
+        });
+      }
+
+      if (showGexSleepers) {
+        // Спящий магнит (Sleeper Magnet): "🧲 Спящий магнит (День): " + sleeperMagnet
+        const sleeperPrice = effectiveGex.sleeperMagnet || Math.round(effectiveGex.spotPrice * 1.035 * 10) / 10;
+        boundedLines.push({
+          id: "sleeper_line",
+          price: sleeperPrice,
+          startTime: gx1Time,
+          endTime: gx2BaseTime,
+          startLogical: gx1,
+          endLogical: gx2Base,
+          color: "#f59e0b",
+          lineWidth: 1.5,
+          lineStyle: "dashed",
+          label: `🧲 Спящий магнит: ${sleeperPrice}`
+        });
+      }
+
+      if (showGexEm) {
+        const gx1Em = Math.max(0, lastIdx - Math.min(18, lineLen));
+        const gx1EmTime = candles[gx1Em]?.time ?? lastCandle.time;
+        const gx2Em = gx2Base + 38;
+        const gx2EmTime = lastCandle.time + tfSec * (labelOffset + 46);
+
+        boundedLines.push({
+          id: "em_h68",
+          price: effectiveGex.expectedMove68.high,
+          startTime: gx1EmTime,
+          endTime: gx2EmTime,
+          startLogical: gx1Em,
+          endLogical: gx2Em,
+          color: "#38bdf8",
+          lineWidth: 1,
+          lineStyle: "dashed",
+          label: `📐 Диапазон ММ 68% (Вверх): ${effectiveGex.expectedMove68.high}`
+        });
+        boundedLines.push({
+          id: "em_l68",
+          price: effectiveGex.expectedMove68.low,
+          startTime: gx1EmTime,
+          endTime: gx2EmTime,
+          startLogical: gx1Em,
+          endLogical: gx2Em,
+          color: "#38bdf8",
+          lineWidth: 1,
+          lineStyle: "dashed",
+          label: `📐 Диапазон ММ 68% (Низ): ${effectiveGex.expectedMove68.low}`
+        });
+        boundedLines.push({
+          id: "em_h95",
+          price: effectiveGex.expectedMove95.high,
+          startTime: gx1EmTime,
+          endTime: gx2EmTime,
+          startLogical: gx1Em,
+          endLogical: gx2Em,
+          color: "#fbbf24",
+          lineWidth: 1,
+          lineStyle: "dotted",
+          label: `🚨 Диапазон ММ 95% (Макс): ${effectiveGex.expectedMove95.high}`
+        });
+        boundedLines.push({
+          id: "em_l95",
+          price: effectiveGex.expectedMove95.low,
+          startTime: gx1EmTime,
+          endTime: gx2EmTime,
+          startLogical: gx1Em,
+          endLogical: gx2Em,
+          color: "#fbbf24",
+          lineWidth: 1,
+          lineStyle: "dotted",
+          label: `🚨 Диапазон ММ 95% (Мин): ${effectiveGex.expectedMove95.low}`
+        });
+      }
+    }
+
+    // 8b. GEX profile removed from chart (viewable in full detail in GEX Analytics tab)
+    // Update native canvas primitive with zones, forecast, bounded lines, and bar countdown
+    zonesPrimitiveRef.current?.setData({
+      zones: zoneBoxes,
+      forecast: forecastData,
+      altForecast: altForecastData,
+      bos: bosData,
+      eqLine: eqData,
+      lines: boundedLines,
+      gexProfile: null,
+      currentPriceCountdown: lastCandle ? {
+        price: lastCandle.close,
+        text: barCountdown.formatted,
+        isBull: (lastCandle.close >= (candles[candles.length - 2]?.close ?? lastCandle.close))
+      } : null
+    });
+
+    // 9. Signals & ML Markers
+    if (showSignals && candles.length > 20) {
+      const markers: any[] = [];
+      const emaShort = calculateEMA(candles, 9);
+      const emaMed = calculateEMA(candles, 21);
+      for (let i = 12; i < candles.length; i++) {
+        const prevBull = emaShort[i - 1] <= emaMed[i - 1];
+        const currBull = emaShort[i] > emaMed[i];
+        const prevBear = emaShort[i - 1] >= emaMed[i - 1];
+        const currBear = emaShort[i] < emaMed[i];
+
+        if (prevBull && currBull && candles[i].close > candles[i].open) {
+          markers.push({
+            time: candles[i].time,
+            position: "belowBar",
+            color: "#fbbf24",
+            shape: "triangleUp",
+            text: "LONG"
+          });
+        } else if (prevBear && currBear && candles[i].close < candles[i].open) {
+          markers.push({
+            time: candles[i].time,
+            position: "aboveBar",
+            color: "#ef4444",
+            shape: "triangleDown",
+            text: "SHORT"
+          });
+        }
+      }
+      if (markers.length > 0) {
+        try {
+          createSeriesMarkers(series, markers);
+        } catch {}
+      }
+    }
+
+    // 10. Viewport: Clean standard right offset without GEX profile padding
+    const isMobileW = typeof window !== "undefined" && window.innerWidth < 768;
+    const dynamicOffset = Math.max(labelOffset + 4, isMobileW ? 12 : 18);
+    try {
+      chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+    } catch {}
+
+    if (lastFittedKeyRef.current !== currentKey) {
+      try {
+        const visibleCount = isMobileW ? 42 : 65;
+        const fromIdx = Math.max(0, candles.length - visibleCount);
+        const toIdx = candles.length + dynamicOffset;
+        chart.priceScale("right").applyOptions({ autoScale: true });
+        chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+      } catch {}
+      lastFittedKeyRef.current = currentKey;
+    }
+  }, [
+    activeTab,
+    candles,
+    chartStyle,
+    useGex,
+    showGexWalls,
+    showGexFlip,
+    showGexPain,
+    showGexSleepers,
+    showGexEm,
+    showGexBars,
+    showReversal,
+    showForecast,
+    showAltWave,
+    fcTargetMult,
+    showOb,
+    showFvg,
+    showSrZones,
+    showTrendL,
+    trendType,
+    trendLen,
+    showSignals,
+    gexReport,
+    dayGexReport,
+    showMacdPane,
+    macdFast,
+    macdSlow,
+    macdSigLen,
+    showRsiPane,
+    rsi6Len,
+    rsi14Len,
+    showStochPane,
+    showEma50,
+    showEma100,
+    showEma200,
+    labelOffset,
+    lineLen,
+    indicatorOutput
+  ]);
+
+  // AI Assistant Analysis Dispatcher
+  const handleSendAiMessage = async (customText?: string) => {
+    const textToSend = customText || aiPromptInput;
+    if (!textToSend.trim()) return;
+
+    const userMsg = {
+      role: "user" as const,
+      text: textToSend,
+      time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+    };
+    setAiChatMessages(prev => [...prev, userMsg]);
+    if (!customText) setAiPromptInput("");
+    setIsAiThinking(true);
+
+    try {
+      const res = await fetch("/api/gold/run-dual-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json();
+      const answer = data.report?.planMarkdown || 
+        `📊 **Анализ по сетапу QUANTEX Premium v8 (${activeAsset})**:\n` +
+        `• Спот: ${candles[candles.length - 1]?.close || 4165.0}\n` +
+        `• Режим Гаммы: ${gexReport?.netGexRegime || "POSITIVE_GAMMA"}\n` +
+        `• Call Wall (Потолок): ${gexReport?.callWall || 4200} | Put Wall (Поддержка): ${gexReport?.putWall || 4100}\n` +
+        `• Рекомендация: Поиск лонг-реакции в зоне OTE с первичной целью на 0.50 EQ и расширением к Call Wall.`;
+
+      setAiChatMessages(prev => [
+        ...prev,
+        {
+          role: "assistant",
+          text: answer,
+          time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+        }
+      ]);
+    } catch (e: any) {
+      setAiChatMessages(prev => [
+        ...prev,
+        {
+          role: "assistant",
+          text: `⚠️ Ошибка ИИ-ассистента: ${e.message}`,
+          time: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+        }
+      ]);
+    } finally {
+      setIsAiThinking(false);
+    }
+  };
+
+  // Add Trade to Journal
+  const handleAddTrade = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTradeEntry || !newTradePnl) return;
+    try {
+      const res = await fetch("/api/journal/trades", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          asset: newTradeAsset,
+          type: newTradeType,
+          entryPrice: newTradeEntry,
+          exitPrice: newTradeExit,
+          size: newTradeSize,
+          pnl: newTradePnl,
+          notes: newTradeNotes
+        })
+      });
+      if (res.ok) {
+        fetchJournal();
+        setNewTradeEntry("");
+        setNewTradeExit("");
+        setNewTradePnl("");
+        setNewTradeNotes("");
+      }
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const latestCandle = candles[candles.length - 1];
+  const prevCandle = candles[candles.length - 2];
+  const priceChange = latestCandle && prevCandle ? latestCandle.close - prevCandle.close : 0;
+  const priceChangePct = prevCandle ? (priceChange / prevCandle.close) * 100 : 0;
+
+  // Closest single strike to real-time spot price (ATM)
+  const closestStrikeToSpot = useMemo(() => {
+    if (!gexReport?.strikes?.length || !gexReport.spotPrice) return null;
+    let closest = gexReport.strikes[0].strike;
+    let minDiff = Math.abs(closest - gexReport.spotPrice);
+    for (const s of gexReport.strikes) {
+      const diff = Math.abs(s.strike - gexReport.spotPrice);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = s.strike;
+      }
+    }
+    return closest;
+  }, [gexReport]);
+
+  // Symmetrically sorted strikes for GEX display: strictly descending
+  // Highest strike at top, Lowest strike at bottom (цена меньшая снизу, к верху выше)
+  const gexStrikesDescending = useMemo(() => {
+    if (!gexReport?.strikes) return [];
+    const list = [...gexReport.strikes].sort((a, b) => b.strike - a.strike);
+    if (!gexReport.spotPrice) return list;
+
+    if (gexFilterMode === "atm") {
+      const spot = gexReport.spotPrice;
+      // ATM range: within ±3.5% of spotPrice, or at least 14 strikes around spot
+      const filtered = list.filter(s => Math.abs(s.strike - spot) / spot <= 0.038);
+      if (filtered.length >= 8) return filtered;
+      // Fallback: take 16 strikes centered on spot
+      const closestIdx = list.reduce((bestIdx, s, idx) => 
+        Math.abs(s.strike - spot) < Math.abs(list[bestIdx].strike - spot) ? idx : bestIdx, 0);
+      const start = Math.max(0, closestIdx - 8);
+      const end = Math.min(list.length, closestIdx + 9);
+      return list.slice(start, end);
+    } else if (gexFilterMode === "walls") {
+      // Key Walls mode: show exact key levels (Call Wall, Put Wall, Gamma Flip, Max Pain, and Spot strike)
+      const keySet = new Set([
+        gexReport.callWall,
+        gexReport.putWall,
+        gexReport.gammaFlip,
+        gexReport.maxPain,
+        closestStrikeToSpot
+      ].filter(Boolean) as number[]);
+
+      const filtered = list.filter(s => {
+        return Array.from(keySet).some(lvl => Math.abs(s.strike - lvl) <= 10);
+      });
+      return filtered.length >= 3 ? filtered : list.slice(0, 8);
+    }
+    return list;
+  }, [gexReport, gexFilterMode, closestStrikeToSpot]);
+
+  const maxAbsGex = useMemo(() => {
+    if (!gexStrikesDescending.length) return 1;
+    let max = 0.1;
+    for (const s of gexStrikesDescending) {
+      if (gexMetricMode === "volume") {
+        if ((s.callVolume || 0) > max) max = s.callVolume || 0;
+        if ((s.putVolume || 0) > max) max = s.putVolume || 0;
+      } else if (gexMetricMode === "oi") {
+        if (s.callOi > max) max = s.callOi;
+        if (s.putOi > max) max = s.putOi;
+      } else {
+        if (Math.abs(s.callGex) > max) max = Math.abs(s.callGex);
+        if (Math.abs(s.putGex) > max) max = Math.abs(s.putGex);
+      }
+    }
+    return max;
+  }, [gexStrikesDescending, gexMetricMode]);
+
+  // SMC & Market Structure state calculation for TradingView HUD table
+  const smcStructure = useMemo(() => {
+    if (candles.length < 15) return { trend: "BULLISH", text: "BOS Bullish ↑", color: "text-emerald-400" };
+    const last10 = candles.slice(-10);
+    const upCloses = last10.filter(c => c.close >= c.open).length;
+    if (upCloses >= 7) return { trend: "BULLISH", text: "BOS Bullish ↑ (Импульс)", color: "text-emerald-400" };
+    if (upCloses <= 3) return { trend: "BEARISH", text: "BOS Bearish ↓ (Снижение)", color: "text-rose-400" };
+    return { trend: "CHOPPY", text: "CHoCH / Консолидация", color: "text-amber-400" };
+  }, [candles]);
+
+  const volumeDeltaState = useMemo(() => {
+    if (!candles.length) return { delta: "+1,420", buyersPct: 58, sellersPct: 42, isPositive: true };
+    const recent = candles.slice(-14);
+    const buyVol = recent.reduce((sum, c) => sum + (c.close >= c.open ? c.volume || 60 : (c.volume || 60) * 0.4), 0);
+    const sellVol = recent.reduce((sum, c) => sum + (c.close < c.open ? c.volume || 60 : (c.volume || 60) * 0.4), 0);
+    const total = buyVol + sellVol || 1;
+    const buyersPct = Math.round((buyVol / total) * 100);
+    const sellersPct = 100 - buyersPct;
+    const diff = Math.round(buyVol - sellVol);
+    return {
+      delta: diff >= 0 ? `+${diff}` : `${diff}`,
+      buyersPct,
+      sellersPct,
+      isPositive: diff >= 0
+    };
+  }, [candles]);
+
+  // Day of week verdict exactly from Pine Script `f_dow_verdict()`
+  const dayOfWeekInfo = useMemo(() => {
+    const d = new Date().getDay(); // 0 is Sunday, 1 Monday, ...
+    const dowEmoji = d === 1 ? "🔵" : d === 2 ? "🔵" : d === 3 ? "🟡" : d === 4 ? "🟠" : d === 5 ? "🔴" : "⚪";
+    const dowName = d === 1 ? "Пн" : d === 2 ? "Вт" : d === 3 ? "Ср" : d === 4 ? "Чт" : d === 5 ? "Пт" : d === 6 ? "Сб" : "Вс";
+    const dowVerdict = d === 1 ? "Слабая гамма — жди ложных пробоев" :
+                       d === 2 ? "Умеренная — короткие цели" :
+                       d === 3 ? "Тренд зарождается — набирает силу" :
+                       d === 4 ? "Сильная гамма — тренд работает" :
+                       d === 5 ? "ЭКСПИРАЦИЯ — сквизы и пробои" : "Выходной";
+    return { dowName, dowEmoji, dowVerdict };
+  }, []);
+
+  const activeThemeMeta = STATION_THEMES.find(t => t.id === stationTheme) || STATION_THEMES[0];
+  const curPalette = THEME_PALETTES[stationTheme] || THEME_PALETTES["cyber_dark"];
+
+  return (
+    <div
+      className="flex flex-col flex-1 text-gray-100 min-h-0 h-full overflow-hidden font-sans transition-colors duration-200"
+      style={{ backgroundColor: curPalette.bg }}
+    >
+      
+      {/* 🧭 MOBILE TOP BAR: Ultra-compact single row (height ~42px) tailored for ~6" phones */}
+      <div
+        className="md:hidden border-b px-2 py-1.5 flex items-center justify-between gap-1.5 shrink-0 transition-colors duration-200 select-none z-30 relative"
+        style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
+      >
+        {/* Left: Compact Ticker Trigger (e.g. XAUUSD, GDZ6, SiZ6) */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button
+            onClick={() => setIsAssetDropdownOpen(prev => !prev)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-[#121622] hover:bg-[#1a2030] border border-amber-500/50 text-amber-300 text-xs font-mono font-extrabold transition cursor-pointer shadow-xs shrink-0"
+            title="Выбор торгового инструмента"
+          >
+            <span>{getShortAssetLabel(activeAsset)}</span>
+            <ChevronDown className={`h-3 w-3 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {/* Live Price + Change % */}
+          {latestCandle && (
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="font-mono text-xs font-extrabold text-white truncate">
+                {activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI" || activeAsset === "GLDRUBF"
+                  ? latestCandle.close.toLocaleString("ru-RU", { maximumFractionDigits: 1 })
+                  : activeAsset === "MOEX_NG"
+                  ? latestCandle.close.toFixed(3)
+                  : activeAsset === "XRPUSDT"
+                  ? latestCandle.close.toFixed(4)
+                  : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI")
+                  ? latestCandle.close.toFixed(1)
+                  : latestCandle.close.toFixed(2)}
+              </span>
+              <span
+                className={`font-mono text-[9px] font-bold px-1 py-0.2 rounded shrink-0 ${
+                  priceChange >= 0
+                    ? "bg-emerald-500/20 text-emerald-400"
+                    : "bg-rose-500/20 text-rose-400"
+                }`}
+              >
+                {priceChange >= 0 ? "+" : ""}
+                {priceChangePct.toFixed(1)}%
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Live Bar Countdown Pill + Quick TF + Mobile Menu */}
+        <div className="flex items-center gap-1 shrink-0">
+          {/* ⏱ Always-Visible Bar Close Countdown Pill */}
+          <div
+            className="flex items-center gap-1 bg-[#0b1728] border border-cyan-500/60 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 shadow-xs"
+            title={`Отсчёт закрытия бара ${activeTf}: ${barCountdown.formatted}`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+            <span>{barCountdown.formatted}</span>
+          </div>
+
+          {/* Quick TF selector trigger */}
+          <div className="relative" ref={mobileTfRef}>
+            <button
+              onClick={() => setIsMobileTfOpen(prev => !prev)}
+              className="px-1.5 py-1 rounded-md bg-gray-900 border border-gray-700 hover:border-cyan-500 text-cyan-300 text-[10.5px] font-mono font-bold transition flex items-center gap-0.5 cursor-pointer"
+              title="Сменить таймфрейм"
+            >
+              <span>{activeTf.toUpperCase()}</span>
+              <ChevronDown className="h-2.5 w-2.5 text-gray-400" />
+            </button>
+
+            {/* Mobile Timeframe Dropdown */}
+            {isMobileTfOpen && (
+              <div className="absolute right-0 top-full mt-1 w-32 bg-[#0c0f18] border border-cyan-500/40 rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5">
+                {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
+                  <button
+                    key={tf}
+                    onClick={() => {
+                      setActiveTf(tf);
+                      setIsMobileTfOpen(false);
+                    }}
+                    className={`w-full px-2 py-1.5 rounded text-left font-mono text-xs font-bold transition cursor-pointer flex items-center justify-between ${
+                      activeTf === tf ? "bg-cyan-600 text-white" : "text-gray-300 hover:bg-gray-800"
+                    }`}
+                  >
+                    <span>{tf.toUpperCase()}</span>
+                    {activeTf === tf && <Check className="h-3 w-3 text-white" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Mobile Drawer Trigger (☰) */}
+          <div className="relative" ref={mobileMenuRef}>
+            <button
+              onClick={() => setIsMobileMenuOpen(prev => !prev)}
+              className={`p-1.5 rounded-md border transition cursor-pointer ${
+                isMobileMenuOpen
+                  ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/50"
+                  : "bg-gray-900 text-gray-300 hover:text-white border-gray-700"
+              }`}
+              title="Меню терминала"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+
+            {/* Mobile Actions Drawer / Popover */}
+            {isMobileMenuOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-64 max-w-[85vw] bg-[#0c0f18]/98 border border-gray-700 rounded-xl shadow-2xl p-2.5 z-50 space-y-2 backdrop-blur-md">
+                <div className="flex items-center justify-between pb-1.5 border-b border-gray-800">
+                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">Панель управления</span>
+                  <button
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="p-1 rounded text-gray-400 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Primary Navigation Tabs */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {stationUser.allowedTabs.includes("chart") && (
+                    <button
+                      onClick={() => {
+                        setActiveTab("chart");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-bold transition ${
+                        activeTab === "chart"
+                          ? "bg-cyan-600 text-white"
+                          : "bg-gray-900 text-gray-300 hover:bg-gray-800"
+                      }`}
+                    >
+                      <BarChart2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>График</span>
+                    </button>
+                  )}
+                  {stationUser.allowedTabs.includes("gex") && (
+                    <button
+                      onClick={() => {
+                        setActiveTab("gex");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-bold transition ${
+                        activeTab === "gex"
+                          ? "bg-purple-600 text-white"
+                          : "bg-gray-900 text-gray-300 hover:bg-gray-800"
+                      }`}
+                    >
+                      <Activity className="h-3.5 w-3.5 shrink-0" />
+                      <span>GEX</span>
+                    </button>
+                  )}
+                  {stationUser.allowedTabs.includes("calendar") && (
+                    <button
+                      onClick={() => {
+                        setActiveTab("calendar");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-bold transition ${
+                        activeTab === "calendar"
+                          ? "bg-blue-600 text-white"
+                          : "bg-gray-900 text-gray-300 hover:bg-gray-800"
+                      }`}
+                    >
+                      <Calendar className="h-3.5 w-3.5 shrink-0" />
+                      <span>Новости</span>
+                    </button>
+                  )}
+                  {stationUser.allowedTabs.includes("settings") && (
+                    <button
+                      onClick={() => {
+                        setSettingsInitialSection("telegram");
+                        setActiveTab("settings");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-bold transition ${
+                        activeTab === "settings"
+                          ? "bg-amber-600 text-white"
+                          : "bg-gray-900 text-gray-300 hover:bg-gray-800"
+                      }`}
+                    >
+                      <Settings className="h-3.5 w-3.5 shrink-0" />
+                      <span>Настройки</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Chart Style Switcher for Mobile */}
+                <div className="pt-1.5 border-t border-gray-800">
+                  <div className="text-[10px] text-gray-400 mb-1 font-semibold">Стиль графика</div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(["candles", "bars", "area", "line"] as ChartStyleType[]).map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => {
+                          setChartStyle(st);
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={`px-1 py-1 rounded text-[10px] font-semibold text-center transition ${
+                          chartStyle === st ? "bg-gray-800 text-cyan-300 border border-cyan-500/50" : "bg-gray-950 text-gray-400"
+                        }`}
+                      >
+                        {st === "candles" ? "Свечи" : st === "bars" ? "Бары" : st === "area" ? "Зона" : "Линия"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Quick Indicators & Tools Buttons */}
+                <div className="pt-1.5 border-t border-gray-800 flex flex-col gap-1.5">
+                  <button
+                    onClick={() => {
+                      setIsIndicatorsModalOpen(true);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Sliders className="h-3.5 w-3.5" />
+                      <span>Индикаторы & Уровни</span>
+                    </span>
+                    <span className="text-[10px] text-cyan-400">Настроить ⚙️</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsAiPanelCollapsed(prev => !prev);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-bold bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-700"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Bot className="h-3.5 w-3.5 text-cyan-400" />
+                      <span>ИИ-Аналитик (Боковая панель)</span>
+                    </span>
+                    <span className="text-[10px] text-gray-400">{isAiPanelCollapsed ? "Закрыта" : "Открыта"}</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      fetchCandles(activeAsset, activeTf);
+                      fetchDayGexReport(activeAsset);
+                      fetchGexReport(activeAsset, gexHorizonRef.current);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-700"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isLoadingCandles ? "animate-spin text-cyan-400" : ""}`} />
+                    <span>Обновить данные</span>
+                  </button>
+                </div>
+
+                {/* Market Status Footnote */}
+                <div className="pt-1 border-t border-gray-800/80 text-[10px] text-gray-400 text-center font-mono">
+                  {marketStatus.statusText}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 🧭 DESKTOP TOP QUANTEX TERMINAL HEADER (Full rich controls for screens >= md / tablets / PCs) */}
+      <div
+        className="hidden md:flex border-b px-2 sm:px-3 py-1.5 items-center justify-between gap-2 flex-wrap shrink-0 transition-colors duration-200"
+        style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
+      >
+        
+        {/* Left: Unified Ticker Selector Popup Trigger + Live Price & Market Status */}
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-wrap">
+          <div className="relative shrink-0" ref={assetDropdownRef}>
+            <button
+              onClick={() => setIsAssetDropdownOpen(prev => !prev)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#121622] hover:bg-[#1a2030] border border-amber-500/50 text-amber-300 text-xs font-bold transition cursor-pointer shadow-sm"
+              title="Выбор торгового инструмента (Единый стандарт тикеров QUANTEX)"
+            >
+              <span>📋</span>
+              <span className="font-mono tracking-tight">
+                {activeAsset === "XAUUSD" ? "OANDA:XAUUSD • Золото Спот" :
+                 activeAsset === "PAXGUSDT" ? "BINANCE:PAXGUSDT • Крипто-золото" :
+                 activeAsset === "MOEX_GOLD" ? `MOEX:${moexContracts?.large?.secId || "GDZ6"} • Золото Фьюч` :
+                 activeAsset === "MOEX_MINI" ? `MOEX:${moexContracts?.mini?.secId || "GNZ6"} • Мини-золото` :
+                 activeAsset === "GLDRUBF" ? "MOEX:GLDRUBF • Золото (₽/г)" :
+                 activeAsset === "MOEX_SI" ? `MOEX:${moexContracts?.si?.secId || "SiZ6"} • Курс USD/RUB` :
+                 activeAsset === "MOEX_RI" ? `MOEX:${moexContracts?.ri?.secId || "RIZ6"} • Индекс РТС` :
+                 activeAsset === "MOEX_BR" ? `MOEX:${moexContracts?.br?.secId || "BRX6"} • Нефть Brent` :
+                 activeAsset === "MOEX_NG" ? `MOEX:${moexContracts?.ng?.secId || "NGV6"} • Природный газ` :
+                 `BINANCE:${activeAsset} • ${activeAsset.replace("USDT", "/USDT")}`}
+              </span>
+              <ChevronDown className={`h-3.5 w-3.5 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {/* Floating Popover: Unified Standardized Ticker Directory (All 13 Instruments) */}
+            {isAssetDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1.5 w-[92vw] sm:w-[540px] max-h-[82vh] overflow-y-auto bg-[#0c0f18]/98 border border-amber-500/40 rounded-xl shadow-2xl shadow-black/95 backdrop-blur-md z-50 p-3 space-y-2.5">
+                {/* Popover Header & Category Filters */}
+                <div className="flex flex-col gap-2 pb-2 border-b border-gray-800/90 sticky top-0 bg-[#0c0f18] z-10">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-extrabold text-amber-300 tracking-wide uppercase">
+                        Единый каталог инструментов (13)
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
+                        Стандарт БИРЖА:ТИКЕР
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setIsAssetDropdownOpen(false)}
+                      className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-800/60 cursor-pointer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {/* Category Filter Pills */}
+                  <div className="flex items-center gap-1 bg-[#121622] p-0.5 rounded-lg border border-gray-800 flex-wrap">
+                    {[
+                      { id: "ALL" as const, label: "Все (13)" },
+                      { id: "GOLD" as const, label: "🥇 Золото (5)" },
+                      { id: "MOEX" as const, label: "🇷🇺 Фьючерсы РФ (7)" },
+                      { id: "CRYPTO" as const, label: "⚡ Крипто 24/7 (5)" }
+                    ].map((cat) => (
+                      <button
+                        key={cat.id}
+                        onClick={() => setPopoverActiveTab(cat.id)}
+                        className={`flex-1 px-2 py-1 rounded text-[11px] font-bold transition cursor-pointer whitespace-nowrap text-center ${
+                          popoverActiveTab === cat.id
+                            ? "bg-amber-500/25 text-amber-300 border border-amber-500/50"
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Unified Table Column Headers */}
+                <div className="grid grid-cols-12 gap-2 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-gray-400 border-b border-gray-800/60">
+                  <div className="col-span-5">Стандарт Тикера</div>
+                  <div className="col-span-4">Инструмент / Рынок</div>
+                  <div className="col-span-3 text-right">Котировка / ОИ</div>
+                </div>
+
+                {/* Standardized Ticker Rows */}
+                <div className="space-y-1">
+                  {[
+                    {
+                      id: "XAUUSD" as AssetSymbol,
+                      category: ["GOLD"],
+                      code: "OANDA:XAUUSD",
+                      badge: "OANDA SPOT",
+                      badgeTone: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+                      name: "Золото Спот (1 oz USD)",
+                      sub: "Эталон TradingView • symbols/XAUUSD/?exchange=OANDA",
+                      price: `$${(oandaData?.price || (activeAsset === "XAUUSD" && latestCandle ? latestCandle.close : 4132.35)).toFixed(2)}`,
+                      meta: `Bid/Ask: ${(oandaData?.bid || 4132.01).toFixed(2)}/${(oandaData?.ask || 4132.37).toFixed(2)}`
+                    },
+                    {
+                      id: "PAXGUSDT" as AssetSymbol,
+                      category: ["GOLD", "CRYPTO"],
+                      code: "BINANCE:PAXGUSDT",
+                      badge: "SPOT 24/7",
+                      badgeTone: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",
+                      name: "Крипто-золото PAX Gold",
+                      sub: "Binance Spot • 1 токен = 1 тройская унция (24/7)",
+                      price: activeAsset === "PAXGUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$4135.40",
+                      meta: "Торги 24/7 без выходных"
+                    },
+                    {
+                      id: "MOEX_GOLD" as AssetSymbol,
+                      category: ["GOLD", "MOEX"],
+                      code: `MOEX:${moexContracts?.large?.secId || "GDZ6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
+                      sub: "МосБиржа • Срочный контракт (1 унция, USD)",
+                      price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
+                      meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "MOEX_MINI" as AssetSymbol,
+                      category: ["GOLD", "MOEX"],
+                      code: `MOEX:${moexContracts?.mini?.secId || "GNZ6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
+                      sub: "МосБиржа • Мини-контракт (0.1 унции, USD)",
+                      price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
+                      meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "GLDRUBF" as AssetSymbol,
+                      category: ["GOLD", "MOEX"],
+                      code: "MOEX:GLDRUBF",
+                      badge: "MOEX ВЕЧНЫЙ",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: "Вечный фьючерс Золото (₽/г)",
+                      sub: "МосБиржа • Рублевое золото за 1 грамм (RUB)",
+                      price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
+                      meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "MOEX_SI" as AssetSymbol,
+                      category: ["MOEX"],
+                      code: `MOEX:${moexContracts?.si?.secId || "SiZ6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Фьючерс Курс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
+                      sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
+                      price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
+                      meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "MOEX_RI" as AssetSymbol,
+                      category: ["MOEX"],
+                      code: `MOEX:${moexContracts?.ri?.secId || "RIZ6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
+                      sub: "МосБиржа • Индексный фьючерс (пункты)",
+                      price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
+                      meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "MOEX_BR" as AssetSymbol,
+                      category: ["MOEX"],
+                      code: `MOEX:${moexContracts?.br?.secId || "BRX6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
+                      sub: "МосБиржа • Товарный фьючерс (10 баррелей, USD)",
+                      price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
+                      meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "MOEX_NG" as AssetSymbol,
+                      category: ["MOEX"],
+                      code: `MOEX:${moexContracts?.ng?.secId || "NGV6"}`,
+                      badge: "MOEX FORTS",
+                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                      name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
+                      sub: "МосБиржа • Товарный фьючерс (100 MMBtu, USD)",
+                      price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
+                      meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
+                    },
+                    {
+                      id: "BTCUSDT" as AssetSymbol,
+                      category: ["CRYPTO"],
+                      code: "BINANCE:BTCUSDT",
+                      badge: "SPOT 24/7",
+                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                      name: "Bitcoin Спот (BTC/USDT)",
+                      sub: "Binance Spot • Опционный профиль Deribit GEX",
+                      price: activeAsset === "BTCUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$82,200",
+                      meta: "24/7 Онлайн"
+                    },
+                    {
+                      id: "ETHUSDT" as AssetSymbol,
+                      category: ["CRYPTO"],
+                      code: "BINANCE:ETHUSDT",
+                      badge: "SPOT 24/7",
+                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                      name: "Ethereum Спот (ETH/USDT)",
+                      sub: "Binance Spot • Опционный профиль Deribit GEX",
+                      price: activeAsset === "ETHUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$2,430",
+                      meta: "24/7 Онлайн"
+                    },
+                    {
+                      id: "SOLUSDT" as AssetSymbol,
+                      category: ["CRYPTO"],
+                      code: "BINANCE:SOLUSDT",
+                      badge: "SPOT 24/7",
+                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                      name: "Solana Спот (SOL/USDT)",
+                      sub: "Binance Spot • Институциональный профиль GEX",
+                      price: activeAsset === "SOLUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$185.00",
+                      meta: "24/7 Онлайн"
+                    },
+                    {
+                      id: "XRPUSDT" as AssetSymbol,
+                      category: ["CRYPTO"],
+                      code: "BINANCE:XRPUSDT",
+                      badge: "SPOT 24/7",
+                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                      name: "Ripple Спот (XRP/USDT)",
+                      sub: "Binance Spot • Институциональный профиль GEX",
+                      price: activeAsset === "XRPUSDT" && latestCandle ? `$${latestCandle.close.toFixed(4)}` : "$1.3000",
+                      meta: "24/7 Онлайн"
+                    }
+                  ]
+                    .filter((item) => popoverActiveTab === "ALL" || item.category.includes(popoverActiveTab))
+                    .map((item) => {
+                      const isSelected = activeAsset === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            setActiveAsset(item.id);
+                            setIsAssetDropdownOpen(false);
+                          }}
+                          className={`w-full grid grid-cols-12 gap-2 items-center px-2.5 py-2 rounded-lg text-left transition cursor-pointer border ${
+                            isSelected
+                              ? "bg-amber-500/15 border-amber-500 text-white shadow-sm"
+                              : "bg-[#121622]/85 hover:bg-[#1a2030] border-gray-800/80 text-gray-300"
+                          }`}
+                        >
+                          {/* Col 1: Standard Ticker Code + Feed Badge */}
+                          <div className="col-span-5 flex flex-col gap-0.5 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono font-extrabold text-xs text-white truncate">
+                                {item.code}
+                              </span>
+                              {isSelected && <Check className="h-3.5 w-3.5 text-amber-400 shrink-0" />}
+                            </div>
+                            <span className={`inline-flex w-fit text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${item.badgeTone}`}>
+                              {item.badge}
+                            </span>
+                          </div>
+
+                          {/* Col 2: Standardized Instrument Name */}
+                          <div className="col-span-4 flex flex-col min-w-0">
+                            <span className="text-[11px] font-bold text-gray-100 truncate">{item.name}</span>
+                            <span className="text-[9.5px] text-gray-400 truncate">{item.sub}</span>
+                          </div>
+
+                          {/* Col 3: Price & Open Interest / Status */}
+                          <div className="col-span-3 text-right flex flex-col items-end min-w-0">
+                            <span className="font-mono font-extrabold text-xs text-white whitespace-nowrap">{item.price}</span>
+                            <span className="font-mono text-[9.5px] text-amber-400/90 whitespace-nowrap truncate max-w-full">{item.meta}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Live Price + Change % + Trading Status */}
+          {latestCandle && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-mono text-sm sm:text-base font-extrabold text-white whitespace-nowrap">
+                {activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI" || activeAsset === "GLDRUBF"
+                  ? latestCandle.close.toLocaleString("ru-RU", { maximumFractionDigits: 1 })
+                  : activeAsset === "MOEX_NG"
+                  ? latestCandle.close.toFixed(3)
+                  : activeAsset === "XRPUSDT"
+                  ? latestCandle.close.toFixed(4)
+                  : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI")
+                  ? latestCandle.close.toFixed(1)
+                  : latestCandle.close.toFixed(2)}
+                <span className="text-[10px] text-amber-400 ml-1 font-sans font-bold">
+                  {activeAsset === "MOEX_SI" ? "₽" :
+                   activeAsset === "GLDRUBF" ? "₽/г" :
+                   activeAsset === "MOEX_RI" ? "п." :
+                   activeAsset === "XAUUSD" ? "$ (OANDA:XAUUSD)" : "$"}
+                </span>
+              </span>
+
+              <span
+                className={`font-mono text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 ${
+                  priceChange >= 0
+                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                    : "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                }`}
+              >
+                {priceChange >= 0 ? "+" : ""}
+                {priceChangePct.toFixed(2)}%
+              </span>
+
+              {/* ⏱ Desktop Bar Close Countdown Pill */}
+              <div
+                className="flex items-center gap-1.5 bg-[#0b1728] border border-cyan-500/60 px-2 py-0.5 rounded text-xs font-mono font-bold text-cyan-300 shadow-sm"
+                title={`Отсчёт времени закрытия текущего бара (${activeTf}): ${barCountdown.formatted}`}
+              >
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                <span>Бара: {barCountdown.formatted}</span>
+              </div>
+
+              {marketStatus.isPremarket ? (
+                <span
+                  className="text-[10px] font-mono font-bold text-amber-200 bg-amber-500/25 px-2 py-0.5 rounded border border-amber-400/60 flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                  title={marketStatus.statusText}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                  <span>🟡 {marketStatus.statusBadge || "Премаркет"}</span>
+                </span>
+              ) : marketStatus.isClearing ? (
+                <span
+                  className="text-[10px] font-mono font-bold text-yellow-200 bg-yellow-500/20 px-2 py-0.5 rounded border border-yellow-400/50 flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                  title={marketStatus.statusText}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                  <span>⏸ {marketStatus.statusBadge || "Клиринг"}</span>
+                </span>
+              ) : marketStatus.sessionType === "POSTMARKET" ? (
+                <span
+                  className="text-[10px] font-mono font-bold text-indigo-200 bg-indigo-500/20 px-2 py-0.5 rounded border border-indigo-400/50 flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                  title={marketStatus.statusText}
+                >
+                  <span>🏁 {marketStatus.statusBadge || "Постмаркет"}</span>
+                </span>
+              ) : marketStatus.isOpen ? (
+                <span
+                  className="text-[10px] font-mono font-bold text-emerald-300 bg-emerald-500/15 px-2 py-0.5 rounded border border-emerald-500/40 flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                  title={marketStatus.statusText}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>🟢 {marketStatus.statusBadge || "Торги идут"}</span>
+                </span>
+              ) : (
+                <span
+                  className="text-[10px] font-mono font-bold text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                  title={marketStatus.statusText}
+                >
+                  <span>⏸ {marketStatus.statusBadge || "Сейчас нет торгов"}</span>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Right: PRIMARY TABS (График, GEX, Новости, Настройки) + Dropdown Tools */}
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+          {stationUser.allowedTabs.includes("chart") && (
+            <button
+              onClick={() => setActiveTab("chart")}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-lg text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                activeTab === "chart"
+                  ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/25 ring-1 ring-cyan-400/50"
+                  : "bg-[#121622] text-gray-300 hover:text-white hover:bg-gray-800 border border-gray-800"
+              }`}
+            >
+              <BarChart2 className="h-3.5 w-3.5 shrink-0" />
+              <span>График</span>
+            </button>
+          )}
+
+          {stationUser.allowedTabs.includes("gex") && (
+            <button
+              onClick={() => setActiveTab("gex")}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-lg text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                activeTab === "gex"
+                  ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-500/25 ring-1 ring-purple-400/50"
+                  : "bg-[#121622] text-gray-300 hover:text-white hover:bg-gray-800 border border-gray-800"
+              }`}
+            >
+              <Activity className="h-3.5 w-3.5 shrink-0" />
+              <span>GEX Аналитика</span>
+            </button>
+          )}
+
+          {stationUser.allowedTabs.includes("calendar") && (
+            <button
+              onClick={() => setActiveTab("calendar")}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-lg text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                activeTab === "calendar"
+                  ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-blue-500/25 ring-1 ring-blue-400/50"
+                  : "bg-[#121622] text-gray-300 hover:text-white hover:bg-gray-800 border border-gray-800"
+              }`}
+            >
+              <Calendar className="h-3.5 w-3.5 shrink-0" />
+              <span>Новости</span>
+              {marketNews.length > 0 && (
+                <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-blue-500/30 text-blue-200 border border-blue-400/40">
+                  {marketNews.length}
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* DEDICATED MAIN SETTINGS TAB (Unified for Telegram, AI API, Passwords, RBAC, Themes) */}
+          {stationUser.allowedTabs.includes("settings") && (
+            <button
+              onClick={() => {
+                setSettingsInitialSection("telegram");
+                setActiveTab("settings");
+              }}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-lg text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+                activeTab === "settings"
+                  ? "bg-gradient-to-r from-amber-500 to-yellow-600 text-black shadow-md shadow-amber-500/30 ring-1 ring-amber-400/50"
+                  : "bg-[#121622] text-gray-300 hover:text-white hover:bg-gray-800 border border-gray-800"
+              }`}
+              title="Открыть главную вкладку настроек (Telegram-бот, API ИИ, пароль сервера, пользователи, темы)"
+            >
+              <Settings className="h-3.5 w-3.5 shrink-0" />
+              <span>Настройки</span>
+            </button>
+          )}
+
+          {/* Secondary Tools Dropdown (Код Pro v8, Журнал) */}
+          {(stationUser.allowedTabs.includes("editor") || stationUser.allowedTabs.includes("journal")) && (
+            <div className="relative" ref={moreToolsRef}>
+              <button
+                onClick={() => setIsMoreToolsOpen(prev => !prev)}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer whitespace-nowrap border ${
+                  activeTab === "editor" || activeTab === "journal"
+                    ? "bg-amber-500/20 text-amber-300 border-amber-500/50"
+                    : "bg-[#121622] text-gray-400 hover:text-white border-gray-800"
+                }`}
+                title="Дополнительные инструменты"
+              >
+                <span>
+                  {activeTab === "editor"
+                    ? "Код v8"
+                    : activeTab === "journal"
+                    ? "Журнал"
+                    : "Ещё"}
+                </span>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+
+              {isMoreToolsOpen && (
+                <div className="absolute right-0 top-full mt-1.5 w-48 bg-[#0c0f18] border border-gray-700 rounded-xl shadow-2xl p-1.5 z-50 space-y-1">
+                  {stationUser.allowedTabs.includes("editor") && (
+                    <button
+                      onClick={() => {
+                        setActiveTab("editor");
+                        setIsMoreToolsOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        activeTab === "editor"
+                          ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                      }`}
+                    >
+                      <Code2 className="h-3.5 w-3.5 text-amber-400" />
+                      <span>Код QUANTEX Pro v8</span>
+                    </button>
+                  )}
+
+                  {stationUser.allowedTabs.includes("journal") && (
+                    <button
+                      onClick={() => {
+                        setActiveTab("journal");
+                        setIsMoreToolsOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        activeTab === "journal"
+                          ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
+                          : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                      }`}
+                    >
+                      <BookOpen className="h-3.5 w-3.5 text-indigo-400" />
+                      <span>Журнал сделок</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
+      </div>
+
+      {/* 🚀 MAIN CONTENT AREA */}
+      <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden relative">
+        
+        {/* ======================================================== */}
+        {/* 1. CHART & QUANTEX GRAPHICAL ENGINE TAB                  */}
+        {/* ======================================================== */}
+        {activeTab === "chart" && (
+          <div className="flex-1 flex flex-col min-h-0 h-full relative">
+            {/* Chart Sub-Bar: Timeframes, Types, Overlays (Visible on desktop; mobile uses compact top-bar) */}
+            <div
+              className="hidden md:flex border-b px-2 sm:px-3 py-1 items-center justify-between gap-1.5 shrink-0 transition-colors duration-200"
+              style={{ backgroundColor: curPalette.surfaceAlt, borderColor: curPalette.border }}
+            >
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Timeframes */}
+                <div className="flex items-center gap-0.5 bg-gray-950 p-0.5 rounded-lg border border-gray-800">
+                  {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
+                    <button
+                      key={tf}
+                      onClick={() => setActiveTf(tf)}
+                      className={`px-1.5 py-0.5 rounded text-[10.5px] font-mono font-bold transition cursor-pointer ${
+                        activeTf === tf ? "bg-cyan-600 text-white shadow-sm" : "text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      {tf.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Chart Style Switcher */}
+                <div className="flex items-center gap-0.5 bg-gray-950 p-0.5 rounded-lg border border-gray-800">
+                  {(["candles", "bars", "area", "line"] as ChartStyleType[]).map((st) => (
+                    <button
+                      key={st}
+                      onClick={() => setChartStyle(st)}
+                      className={`px-1.5 py-0.5 rounded text-[10.5px] font-semibold transition cursor-pointer whitespace-nowrap ${
+                        chartStyle === st ? "bg-gray-800 text-cyan-300 shadow-sm" : "text-gray-400 hover:text-white"
+                      }`}
+                    >
+                      {st === "candles" ? "Свечи" : st === "bars" ? "Бары" : st === "area" ? "Зона" : "Линия"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Indicators & HUD Controls */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Single Centralized Indicators Popup Modal Button */}
+                <button
+                  onClick={() => setIsIndicatorsModalOpen(true)}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-cyan-500/20 text-cyan-300 hover:text-white border border-cyan-500/40 hover:bg-cyan-500/30 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
+                  title="Окно индикаторов (EMA 50/100/200, MACD, RSI, Стохастик, GEX, SMC, HUD)"
+                >
+                  <Sliders className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>Индикаторы</span>
+                </button>
+
+
+                {/* Settings Tab Button for admins/privileged users */}
+                {stationUser.allowedTabs.includes("settings") && (
+                  <button
+                    onClick={() => {
+                      setSettingsInitialSection("indicator");
+                      setActiveTab("settings");
+                    }}
+                    className="px-2 py-0.5 rounded-lg text-[11px] sm:text-xs font-bold bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 flex items-center gap-1 transition cursor-pointer shadow-sm whitespace-nowrap shrink-0"
+                    title="Открыть параметры индикатора в Главной вкладке настроек"
+                  >
+                    <Settings className="h-3.5 w-3.5 text-gray-400" />
+                    <span>Система</span>
+                  </button>
+                )}
+
+                {/* AI Analyst Panel Toggle */}
+                <button
+                  onClick={() => setIsAiPanelCollapsed(!isAiPanelCollapsed)}
+                  className={`px-2 py-0.5 rounded-lg text-[11px] sm:text-xs font-bold flex items-center gap-1 transition cursor-pointer shadow-sm whitespace-nowrap shrink-0 ${
+                    !isAiPanelCollapsed
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                      : "bg-gray-900 text-gray-400 hover:text-white border border-gray-800"
+                  }`}
+                  title="Автономный ИИ-Аналитик справа от графика (Торговый план на день, GEX, макро-алерты)"
+                >
+                  <Bot className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>ИИ-Аналитик</span>
+                </button>
+
+                {/* Refresh */}
+                <button
+                  onClick={() => {
+                    fetchCandles(activeAsset, activeTf);
+                    fetchDayGexReport(activeAsset);
+                    fetchGexReport(activeAsset, gexHorizonRef.current);
+                  }}
+                  className="p-1 rounded-lg bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white transition cursor-pointer shrink-0"
+                  title="Обновить котировки и уровни"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isLoadingCandles ? "animate-spin text-cyan-400" : ""}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Ensure Lightweight Charts canvas never intercepts mobile touch scrolling */}
+            <style>{`
+              .tv-lightweight-charts,
+              .tv-lightweight-charts table,
+              .tv-lightweight-charts canvas {
+                touch-action: none !important;
+                -webkit-user-select: none !important;
+                user-select: none !important;
+              }
+            `}</style>
+
+            {/* Chart Area + Autonomous AI Analyst Docked on the Right */}
+            <div className="flex-1 min-h-0 w-full flex flex-row overflow-hidden relative">
+              {/* Canvas / Lightweight Chart Area */}
+              <div className="flex-1 min-w-0 relative bg-[#070a12] h-full w-full overflow-hidden flex flex-col">
+                <div ref={chartWrapperRef} className="w-full flex-1 relative min-h-[280px] sm:min-h-[400px] touch-none select-none">
+                <div
+                  ref={chartContainerRef}
+                  className="w-full h-full absolute inset-0 cursor-crosshair active:cursor-grabbing touch-none select-none"
+                  style={{ touchAction: "none" }}
+                />
+
+                {/* 📊 TRADINGVIEW-STYLE CANDLE OHLC HOVER INFO BAR (WITH MOSCOW TIME) */}
+                {(() => {
+                  const displayCandle = hoveredCandle || latestCandle;
+                  if (!displayCandle) return null;
+                  const isHover = !!hoveredCandle;
+                  const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+                  const o = displayCandle.open ?? displayCandle.close;
+                  const c = displayCandle.close;
+                  const h = displayCandle.high ?? Math.max(o, c);
+                  const l = displayCandle.low ?? Math.min(o, c);
+                  const chg = c - o;
+                  const chgPct = o !== 0 ? (chg / o) * 100 : 0;
+                  const isBull = c >= o;
+                  const toneClass = isBull ? "text-emerald-400" : "text-rose-400";
+
+                  // Moscow Time (UTC+3) formatting
+                  const mskTimeStr = new Intl.DateTimeFormat("ru-RU", {
+                    timeZone: "Europe/Moscow",
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: false
+                  }).format(new Date(displayCandle.time * 1000)).replace(",", "") + " МСК";
+
+                  return (
+                    <div className="absolute top-1.5 left-2 z-15 pointer-events-none flex items-center gap-1 sm:gap-2 text-[9.5px] sm:text-[10.5px] font-mono bg-[#0c101d]/90 backdrop-blur-xs px-2 py-0.5 sm:py-1 rounded-lg border border-gray-800 select-none shadow-md flex-wrap max-w-[94%]">
+                      <div className="flex items-center gap-1 font-bold">
+                        <span className="text-white">{activeAsset}</span>
+                        <span className="text-cyan-400 bg-cyan-950/80 px-1 py-0.2 rounded text-[9px] border border-cyan-800/60">{activeTf}</span>
+                        {marketStatus.isPremarket ? (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold flex items-center gap-1">
+                            <span className="w-1 h-1 rounded-full bg-amber-300 animate-ping" />
+                            <span>{marketStatus.statusBadge || "Премаркет"}</span>
+                          </span>
+                        ) : marketStatus.isClearing ? (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold">
+                            {marketStatus.statusBadge || "Клиринг"}
+                          </span>
+                        ) : !marketStatus.isOpen ? (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/90 text-slate-300 border border-slate-700 font-sans font-bold">
+                            {marketStatus.statusBadge || "⏸ Сейчас нет торгов"}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-sans font-bold">
+                            {marketStatus.statusBadge || "Торги онлайн"}
+                          </span>
+                        )}
+                        {isHover && (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            Свеча
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 sm:gap-2 flex-wrap">
+                        <span className="text-gray-400">О:<span className={toneClass}>{o.toFixed(dec)}</span></span>
+                        <span className="text-gray-400">В:<span className={toneClass}>{h.toFixed(dec)}</span></span>
+                        <span className="text-gray-400">Н:<span className={toneClass}>{l.toFixed(dec)}</span></span>
+                        <span className="text-gray-400">З:<span className={toneClass}>{c.toFixed(dec)}</span></span>
+
+                        <span className={`font-bold ${toneClass}`}>
+                          {chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)
+                        </span>
+
+                        {displayCandle.volume ? (
+                          <span className="text-gray-400 hidden md:inline">
+                            Объём: <span className="text-gray-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
+                          </span>
+                        ) : null}
+
+                        <span className="text-cyan-300 text-[9px] sm:text-[10px] font-mono font-bold flex items-center gap-1 border-l border-gray-700/80 pl-1.5">
+                          <Clock className="h-2.5 w-2.5 text-cyan-400 animate-pulse" />
+                          <span>Бар: {barCountdown.formatted}</span>
+                        </span>
+
+                        <span className="text-cyan-300/90 text-[9px] sm:text-[10px] flex items-center gap-1 border-l border-gray-700/80 pl-1.5 hidden sm:flex">
+                          <span>{mskTimeStr}</span>
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ⏱ TradingView-Style Bar Close Countdown Badge on Price Scale (docked directly under current price) */}
+                {priceCoordY !== null && priceCoordY >= 5 && priceCoordY <= ((chartWrapperRef.current?.clientHeight || 600) - 20) && (
+                  <div
+                    className="absolute z-20 pointer-events-none select-none flex justify-center"
+                    style={{
+                      top: `${priceCoordY + 13}px`,
+                      right: "2px",
+                      width: marketStatus.isOpen ? "58px" : "80px"
+                    }}
+                    title={marketStatus.isOpen ? `Отсчёт времени закрытия бара ${activeTf}: ${barCountdown.formatted}` : marketStatus.statusText}
+                  >
+                    {marketStatus.isOpen ? (
+                      <div className="bg-[#0f141f]/95 border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                        <span>{barCountdown.formatted}</span>
+                      </div>
+                    ) : marketStatus.isPremarket ? (
+                      <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-1 backdrop-blur-xs w-full text-center">
+                        <span className="w-1 h-1 rounded-full bg-amber-400 animate-ping" />
+                        <span>Премаркет</span>
+                      </div>
+                    ) : marketStatus.isClearing ? (
+                      <div className="bg-[#1c180b]/95 border border-yellow-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-yellow-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+                        <span>⏸ Клиринг</span>
+                      </div>
+                    ) : (
+                      <div className="bg-[#1c160b]/95 border border-amber-500/80 shadow-lg px-1 py-0.5 rounded text-[9px] font-sans font-bold text-amber-300 flex items-center justify-center gap-0.5 backdrop-blur-xs w-full text-center">
+                        <span>⏸ {marketStatus.statusBadge || "Стоп"}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 🖱️ Floating Chart Navigation Pill (Desktop & Mobile Touch) */}
+                <div className="absolute bottom-2.5 left-2.5 z-20 flex items-center gap-1 bg-[#0c101d]/95 backdrop-blur-md px-2 py-1 rounded-xl border border-gray-700/80 text-xs shadow-xl select-none">
+                  <button
+                    onClick={handlePanLeft}
+                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
+                    title="Прокрутить влево (◀)"
+                  >
+                    <ChevronLeft className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                  </button>
+                  <button
+                    onClick={handlePanRight}
+                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
+                    title="Прокрутить вправо (▶)"
+                  >
+                    <ChevronRight className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                  </button>
+                  <div className="w-[1px] h-4 bg-gray-700/60 mx-0.5" />
+                  <button
+                    onClick={handleZoomIn}
+                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
+                    title="Приблизить (+)"
+                  >
+                    <ZoomIn className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                  </button>
+                  <button
+                    onClick={handleZoomOut}
+                    className="p-1.5 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-cyan-500/20 text-gray-200 hover:text-cyan-300 transition cursor-pointer"
+                    title="Отдалить (-)"
+                  >
+                    <ZoomOut className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                  </button>
+                  <div className="w-[1px] h-4 bg-gray-700/60 mx-0.5" />
+                  <button
+                    onClick={handleResetChart}
+                    className="px-1.5 py-1 sm:p-1 rounded-lg hover:bg-gray-800/80 active:bg-amber-500/20 text-gray-200 hover:text-amber-300 transition cursor-pointer flex items-center gap-1 text-[11px]"
+                    title="Авто-масштаб / Центрировать"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 sm:h-3 sm:w-3" />
+                    <span className="font-mono font-bold">Авто</span>
+                  </button>
+                  <button
+                    onClick={handleScrollToRealtime}
+                    className="px-2 py-1 sm:px-1.5 sm:py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-[11px] sm:text-[10px] font-mono font-bold transition cursor-pointer"
+                    title="Перейти к текущей котировке"
+                  >
+                    Live ⇥
+                  </button>
+                </div>
+              </div>
+
+              {/* MACD Sub-Pane (Binance style with resizable height) */}
+              {showMacdPane && (
+                <div
+                  className="border-t relative shrink-0 transition-colors duration-200 group/macd"
+                  style={{ height: `${macdPaneHeight}px`, backgroundColor: curPalette.chartBg, borderColor: curPalette.border }}
+                >
+                  {/* Drag Resizer Bar */}
+                  <div
+                    onMouseDown={(e) => handleStartResizePane("macd", e)}
+                    onTouchStart={(e) => handleStartResizePane("macd", e)}
+                    className="h-2 w-full cursor-row-resize bg-transparent hover:bg-cyan-500/30 active:bg-cyan-500/60 transition-colors z-20 absolute top-0 left-0 flex items-center justify-center select-none"
+                    title="Зажмите и тяните вверх/вниз для изменения высоты панели MACD"
+                  >
+                    <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-cyan-400 transition-all" />
+                  </div>
+
+                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
+                    <span className="font-bold text-gray-300">MACD ({macdFast}, {macdSlow}, {macdSigLen})</span>
+                    <span className="text-[#facc15] font-bold">DIF</span>
+                    <span className="text-[#ec4899] font-bold">DEA</span>
+                    <span className="text-gray-400">HIST</span>
+                  </div>
+
+                  {/* Height Adjustment Buttons & Close */}
+                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
+                    <button
+                      type="button"
+                      onClick={() => setMacdPaneHeight(prev => Math.max(55, prev - 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Уменьшить высоту панели (-20px)"
+                    >
+                      -
+                    </button>
+                    <span
+                      onClick={() => setMacdPaneHeight(110)}
+                      className="text-gray-400 hover:text-cyan-300 cursor-pointer px-1 text-[9px]"
+                      title="Кликните для сброса высоты (110px)"
+                    >
+                      {macdPaneHeight}px
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMacdPaneHeight(prev => Math.min(350, prev + 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Увеличить высоту панели (+20px)"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowMacdPane(false)}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
+                      title="Скрыть панель MACD"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+
+                  <div ref={macdContainerRef} className="w-full h-full" />
+                </div>
+              )}
+
+              {/* RSI Sub-Pane (Separate 6 & 14 with resizable height) */}
+              {showRsiPane && (
+                <div
+                  className="border-t relative shrink-0 transition-colors duration-200 group/rsi"
+                  style={{ height: `${rsiPaneHeight}px`, backgroundColor: curPalette.chartBg, borderColor: curPalette.border }}
+                >
+                  {/* Drag Resizer Bar */}
+                  <div
+                    onMouseDown={(e) => handleStartResizePane("rsi", e)}
+                    onTouchStart={(e) => handleStartResizePane("rsi", e)}
+                    className="h-2 w-full cursor-row-resize bg-transparent hover:bg-amber-500/30 active:bg-amber-500/60 transition-colors z-20 absolute top-0 left-0 flex items-center justify-center select-none"
+                    title="Зажмите и тяните вверх/вниз для изменения высоты панели RSI"
+                  >
+                    <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-amber-400 transition-all" />
+                  </div>
+
+                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
+                    <span className="font-bold text-gray-300">RSI</span>
+                    <span className="text-[#38bdf8] font-bold">RSI(6)</span>
+                    <span className="text-[#f59e0b] font-bold">RSI(14)</span>
+                    <span className="text-gray-500 font-mono text-[9px] bg-gray-900/80 px-1 rounded border border-gray-800">
+                      70/30 (OB/OS)
+                    </span>
+                  </div>
+
+                  {/* Height Adjustment Buttons & Close */}
+                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
+                    <button
+                      type="button"
+                      onClick={() => setRsiPaneHeight(prev => Math.max(55, prev - 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Уменьшить высоту панели (-20px)"
+                    >
+                      -
+                    </button>
+                    <span
+                      onClick={() => setRsiPaneHeight(95)}
+                      className="text-gray-400 hover:text-amber-300 cursor-pointer px-1 text-[9px]"
+                      title="Кликните для сброса высоты (95px)"
+                    >
+                      {rsiPaneHeight}px
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRsiPaneHeight(prev => Math.min(350, prev + 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Увеличить высоту панели (+20px)"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowRsiPane(false)}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
+                      title="Скрыть панель RSI"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+
+                  <div ref={rsiContainerRef} className="w-full h-full" />
+                </div>
+              )}
+
+              {/* Stochastic Oscillator Sub-Pane (%K 14, %D 3 with resizable height) */}
+              {showStochPane && (
+                <div
+                  className="border-t relative shrink-0 transition-colors duration-200 group/stoch"
+                  style={{ height: `${stochPaneHeight}px`, backgroundColor: curPalette.chartBg, borderColor: curPalette.border }}
+                >
+                  {/* Drag Resizer Bar */}
+                  <div
+                    onMouseDown={(e) => handleStartResizePane("stoch", e)}
+                    onTouchStart={(e) => handleStartResizePane("stoch", e)}
+                    className="h-2 w-full cursor-row-resize bg-transparent hover:bg-rose-500/30 active:bg-rose-500/60 transition-colors z-20 absolute top-0 left-0 flex items-center justify-center select-none"
+                    title="Зажмите и тяните вверх/вниз для изменения высоты панели Стохастик"
+                  >
+                    <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-rose-400 transition-all" />
+                  </div>
+
+                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
+                    <span className="font-bold text-gray-300">STOCH (14, 3, 3)</span>
+                    <span className="text-[#06b6d4] font-bold">%K</span>
+                    <span className="text-[#f43f5e] font-bold">%D</span>
+                    <span className="text-gray-500 font-mono text-[9px] bg-gray-900/80 px-1 rounded border border-gray-800">
+                      80/20 (OB/OS)
+                    </span>
+                  </div>
+
+                  {/* Height Adjustment Buttons & Close */}
+                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
+                    <button
+                      type="button"
+                      onClick={() => setStochPaneHeight(prev => Math.max(55, prev - 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Уменьшить высоту панели (-20px)"
+                    >
+                      -
+                    </button>
+                    <span
+                      onClick={() => setStochPaneHeight(95)}
+                      className="text-gray-400 hover:text-rose-300 cursor-pointer px-1 text-[9px]"
+                      title="Кликните для сброса высоты (95px)"
+                    >
+                      {stochPaneHeight}px
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setStochPaneHeight(prev => Math.min(350, prev + 20))}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
+                      title="Увеличить высоту панели (+20px)"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowStochPane(false)}
+                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
+                      title="Скрыть панель Стохастик"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+
+                  <div ref={stochContainerRef} className="w-full h-full" />
+                </div>
+              )}
+
+              {/* 📊 TRADINGVIEW-STYLE HUD TABLE OVERLAY (DRAGGABLE & COLLAPSIBLE FOR MOBILE) */}
+              {showTables && (
+                isHudMinimized ? (
+                  <div
+                    onClick={() => setIsHudMinimized(false)}
+                    className="absolute top-10 left-2 z-30 flex items-center gap-2 bg-[#0f172a]/95 border border-cyan-500/50 rounded-xl px-2.5 py-1.5 text-[11px] font-mono shadow-xl backdrop-blur-md cursor-pointer hover:border-cyan-400 select-none transition-all max-w-[calc(100vw-130px)]"
+                    title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
+                  >
+                    <GripHorizontal className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                    <span className="font-bold text-white shrink-0">📊 HUD:</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                      indicatorOutput?.forecast.isBull
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                        : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                    }`}>
+                      {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 74}%)
+                    </span>
+                    <span className="text-gray-300 truncate">
+                      Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+                    </span>
+                    <span className="text-emerald-400 hidden sm:inline shrink-0">
+                      TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+                    </span>
+                    <span className="text-cyan-400 font-bold shrink-0 ml-1">▾</span>
+                  </div>
+                ) : (
+                  <div
+                    ref={hudCardRef}
+                    style={{
+                      left: hudPos ? `${hudPos.x}px` : undefined,
+                      top: hudPos ? `${hudPos.y}px` : undefined,
+                      bottom: hudPos ? undefined : (
+                        (tablePos.startsWith("Нижний") || tablePos === "Внизу по центру")
+                          ? (`${(showMacdPane ? macdPaneHeight : 0) + (showRsiPane ? rsiPaneHeight : 0) + (showStochPane ? stochPaneHeight : 0) + 20}px`)
+                          : undefined
+                      ),
+                      touchAction: "none",
+                      zIndex: isDraggingHud ? 40 : 25,
+                      transform: hudScale !== 100 ? `scale(${hudScale / 100})` : undefined,
+                      transformOrigin: "top left",
+                      fontSize: `${hudFontSize}px`
+                    }}
+                    className={`absolute font-mono shadow-2xl rounded-xl border border-gray-700/80 bg-[#0f172a]/95 backdrop-blur-md text-xs select-none transition-shadow max-w-[calc(100vw-16px)] ${
+                      isDraggingHud ? "shadow-cyan-500/20 ring-2 ring-cyan-500/50" : ""
+                    } ${
+                      hudPos ? "" : (
+                        tablePos === "Верхний левый" ? "top-9 left-2 sm:top-3 sm:left-3" :
+                        tablePos === "Верхний правый" ? "top-9 right-2 sm:top-3 sm:right-3" :
+                        tablePos === "Вверху по центру" ? "top-9 left-1/2 -translate-x-1/2" :
+                        tablePos === "Внизу по центру" ? "left-1/2 -translate-x-1/2" :
+                        tablePos === "Нижний правый" ? "right-2 sm:right-3" :
+                        "left-2 sm:left-3"
+                      )
+                    } ${tblViewMode.includes("Ультра-Микро") ? "w-64" : tblViewMode.includes("Мини") ? "w-80" : "w-[360px] sm:w-[420px]"}`}
+                  >
+                    {/* Table Draggable Header */}
+                    <div
+                      onMouseDown={handleHudMouseDown}
+                      onTouchStart={handleHudTouchStart}
+                      onDoubleClick={() => setHudPos(null)}
+                      className="px-3 py-1.5 border-b border-gray-700 flex items-center justify-between bg-[#1e293b] rounded-t-xl text-[11px] cursor-grab active:cursor-grabbing select-none hover:bg-[#25334a] transition-colors"
+                      title="Зажмите и перетаскивайте панель в любое место экрана. Двойной клик — сброс позиции"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <GripHorizontal className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                        <span className="text-[#38bdf8] font-bold">{activeAsset}</span>
+                        <span className="text-gray-400 text-[10px]">
+                          {new Intl.DateTimeFormat("ru-RU", {
+                            timeZone: "Europe/Moscow",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hour12: false
+                          }).format(new Date())} МСК
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[10px]">
+                        <span className="text-white font-bold bg-gray-800 px-1 py-0.2 rounded">{activeTf.toUpperCase()}</span>
+                        <span className="text-emerald-400 font-bold">1Д🟢</span>
+                        <span>{dayOfWeekInfo.dowName} {dayOfWeekInfo.dowEmoji}</span>
+                        {hudPos && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setHudPos(null);
+                            }}
+                            className="text-gray-400 hover:text-cyan-300 p-0.5 rounded cursor-pointer ml-1"
+                            title="Сбросить положение таблицы (вернуть в угол)"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsHudMinimized(true);
+                          }}
+                          className="text-cyan-400 hover:text-white bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer ml-0.5 font-bold flex items-center gap-0.5"
+                          title="Свернуть таблицу в компактную строку (освободить график)"
+                        >
+                          <Minus className="h-3 w-3" />
+                          <span className="text-[9px] sm:hidden">Свернуть</span>
+                        </button>
+                        {/* Zoom / Scale HUD Table */}
+                        <div className="flex items-center gap-0.5 bg-gray-900 border border-gray-700/80 rounded px-1 py-0.5 text-[9px] font-mono ml-0.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setHudScale(prev => Math.max(70, prev - 10));
+                            }}
+                            className="text-gray-400 hover:text-white px-0.5 font-bold cursor-pointer transition hover:bg-gray-800 rounded"
+                            title="Уменьшить масштаб таблицы (-10%)"
+                          >
+                            -
+                          </button>
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setHudScale(100);
+                            }}
+                            className="text-cyan-300 cursor-pointer font-bold px-0.5 hover:underline"
+                            title="Сбросить масштаб (100%)"
+                          >
+                            {hudScale}%
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setHudScale(prev => Math.min(150, prev + 10));
+                            }}
+                            className="text-gray-400 hover:text-white px-0.5 font-bold cursor-pointer transition hover:bg-gray-800 rounded"
+                            title="Увеличить масштаб таблицы (+10%)"
+                          >
+                            +
+                          </button>
+                        </div>
+                        {/* Settings Gear Button for HUD Options */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsUserSettingsModalOpen(true);
+                          }}
+                          className="text-gray-400 hover:text-amber-300 p-0.5 rounded cursor-pointer ml-0.5 hover:bg-gray-800 transition"
+                          title="Настройки таблицы HUD (шрифт, масштаб, позиция, алерты)"
+                        >
+                          <Settings className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowTables(false);
+                          }}
+                          className="text-gray-400 hover:text-red-400 p-0.5 rounded cursor-pointer"
+                          title="Скрыть панель"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Table Content (Complete 11 Rows Matching Pine Script & GEX - all rows visible without scrolling) */}
+                    <div className="p-2.5 space-y-1 divide-y divide-gray-800/80">
+                      {/* Row 1: 🎯 СЕГОДНЯ & СТАТУС */}
+                      <div className="pt-1 flex items-center justify-between gap-1">
+                        <span className="text-gray-400 font-bold shrink-0">🎯 СЕГОДНЯ:</span>
+                        <span
+                          className="font-bold px-1.5 py-0.5 rounded text-[10px] text-right truncate"
+                          style={{
+                            backgroundColor: indicatorOutput?.forecast.isPlanBActive
+                              ? "rgba(239, 68, 68, 0.2)"
+                              : indicatorOutput?.forecast.leg3Hit
+                              ? "rgba(16, 185, 129, 0.2)"
+                              : indicatorOutput?.forecast.leg2Hit
+                              ? "rgba(56, 189, 248, 0.2)"
+                              : indicatorOutput?.forecast.leg1Hit
+                              ? "rgba(251, 191, 36, 0.2)"
+                              : "rgba(245, 158, 11, 0.2)",
+                            color: indicatorOutput?.hud.recCol || "#ffffff"
+                          }}
+                        >
+                          {indicatorOutput?.hud.recActionStr ||
+                            `⏳ Ждём вход @${indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? candles[candles.length - 1]?.close?.toFixed(1)} (${indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"})`}
+                        </span>
+                      </div>
+
+                      {/* Row 2: 📍 ПОЗИЦИЯ & УРОВНИ ВХОДА / ВЫХОДА */}
+                      <div className="pt-1 flex items-center justify-between text-[10.5px]">
+                        <span className="text-gray-400 font-bold flex items-center gap-1 shrink-0">
+                          <span>📍 Позиция:</span>
+                          <span className={`px-1 py-0.2 rounded text-[9.5px] font-bold ${
+                            indicatorOutput?.forecast.isBull
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                              : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                          }`}>
+                            {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 84}%)
+                          </span>
+                        </span>
+                        <div className="flex items-center gap-1.5 font-mono text-[10px] text-right">
+                          <span className="text-gray-300" title="Точка входа">
+                            Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+                          </span>
+                          <span className="text-emerald-400" title="Тейк-профит 1">
+                            TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+                          </span>
+                          <span className="text-cyan-400" title="Тейк-профит 2">
+                            TP2: <strong>{indicatorOutput?.forecast.p3Tp2?.toFixed(1) ?? "-"}</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Row 3: 🛡️ СТОП & ТРЕЙЛИНГ */}
+                      <div className="pt-1 flex items-center justify-between text-[10px]">
+                        <span className="text-gray-400 shrink-0">🛡️ Защита &amp; SL:</span>
+                        <div className="flex items-center gap-1.5 text-right font-mono">
+                          <span className="text-rose-400 font-bold">
+                            SL: {indicatorOutput?.forecast.activeTrailingSl?.toFixed(1) || indicatorOutput?.forecast.invalidLevelSl?.toFixed(1) || "-"}
+                          </span>
+                          <span className="text-amber-300 text-[9.5px] bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/30">
+                            {indicatorOutput?.forecast.trailingStageStr || "🛡️ Начальный SL"}
+                          </span>
+                          {indicatorOutput?.forecast.altTp1 && (
+                            <span className="text-gray-400 text-[9px] hidden sm:inline" title="План Б при сломе стопа">
+                              (План Б: {indicatorOutput.forecast.altTp1.toFixed(1)})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Row 4: 🏛️ Сила рынка & Режим GEX */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">🏛️ Сила рынка:</span>
+                        <span
+                          className="font-bold text-[10px] text-right truncate"
+                          style={{ color: indicatorOutput?.hud.gexRegimeCol || "#10b981" }}
+                        >
+                          {indicatorOutput?.hud.gexRegimeStr ||
+                            (gexReport?.netGexRegime === "POSITIVE_GAMMA"
+                              ? "🟢 Положительная Гамма — дилеры гасят движение"
+                              : "🔴 Отрицательная Гамма — дилеры ускоряют тренд")}
+                        </span>
+                      </div>
+
+                      {/* Row 5: 🎯 Куда идёт (Стены Дилеров) */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">🎯 Куда идёт:</span>
+                        <span
+                          className="font-bold text-[10px] text-right truncate"
+                          style={{ color: indicatorOutput?.hud.dayTargetCol || "#10b981" }}
+                        >
+                          {indicatorOutput?.hud.dayTargetStr ||
+                            `🏰 Потолок ${dayGexReport?.callWall || gexReport?.callWall || 4200} | 🎯 Магнит ${dayGexReport?.maxPain || gexReport?.maxPain || 4150} | 🛡️ ${dayGexReport?.putWall || gexReport?.putWall || 4100}`}
+                        </span>
+                      </div>
+
+                      {/* Row 6: 📐 Дневной коридор ММ (68% и 95%) */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">📐 Дневной коридор:</span>
+                        <span className="text-[#38bdf8] font-bold text-[10px] text-right">
+                          {indicatorOutput?.hud.dayRangeTxt
+                            ? `${indicatorOutput.hud.dayRangeTxt} | 68% вероят.`
+                            : `${(dayGexReport?.expectedMove68.low || gexReport?.expectedMove68.low || 4110).toFixed(1)}–${(dayGexReport?.expectedMove68.high || gexReport?.expectedMove68.high || 4210).toFixed(1)} | 68%`}
+                        </span>
+                      </div>
+
+                      {/* Row 7: 📈 Контекст & Скорость */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">📈 Контекст:</span>
+                        <span className="text-amber-300 font-semibold text-[10px] text-right truncate">
+                          {indicatorOutput?.hud.speedStr || indicatorOutput?.hud.dowVerdictStr ||
+                            `⚡ Ускорение тренда | ${dayOfWeekInfo.dowEmoji} ${dayOfWeekInfo.dowVerdict}`}
+                        </span>
+                      </div>
+
+                      {/* Row 8: 📊 Направление рынка & Уклон */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">📊 Уклон:</span>
+                        <span
+                          className="font-bold text-[10px] text-right truncate"
+                          style={{ color: indicatorOutput?.hud.dayBiasCol || "#10b981" }}
+                        >
+                          {indicatorOutput?.hud.dayBiasStr || "🟢 Уклон LONG (Гамма↑ + Макро↑) | Бычий 80%"}
+                        </span>
+                      </div>
+
+                      {/* Row 9: 📊 Δ Поток (Delta / CVD) */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">📊 Δ Поток:</span>
+                        <span className="font-bold text-[10px] text-right font-mono" style={{ color: indicatorOutput?.hud.flowsDeltaCol || "#10b981" }}>
+                          {indicatorOutput?.hud.flowsDeltaStr ||
+                            `${volumeDeltaState.isPositive ? "🟢" : "🔴"} Δ ${volumeDeltaState.delta} | CVD ↑ +3.8K`}
+                        </span>
+                      </div>
+
+                      {/* Row 10: 📊 PCR & Vol */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">📊 PCR / Vol:</span>
+                        <span className="text-amber-300 font-bold text-[10px] text-right font-mono" style={{ color: indicatorOutput?.hud.pcrRvCol || "#f59e0b" }}>
+                          {indicatorOutput?.hud.pcrRvFull ||
+                            `PCR ${(dayGexReport?.pcrOi || gexReport?.pcrOi || 0.85).toFixed(2)}🤖 | Vol ${(dayGexReport?.impliedVolAvg || gexReport?.impliedVolAvg || 0.85).toFixed(1)}%🤖`}
+                        </span>
+                      </div>
+
+                      {/* Row 11: 🔬 GEX Audit */}
+                      <div className="pt-1 flex items-center justify-between">
+                        <span className="text-gray-400 shrink-0">🔬 GEX Audit:</span>
+                        <span className="text-cyan-300 font-bold text-[10px] text-right font-mono" style={{ color: indicatorOutput?.hud.auditCol || "#06b6d4" }}>
+                          {indicatorOutput?.hud.auditStr || "🎯 CW 78% | PW 82% | Flip 74% (n=142)"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+
+            {/* 🎚️ Vertical Split Drag Resizer between Chart and AI Analyst */}
+            {!isAiPanelCollapsed && (
+              <div
+                onMouseDown={handleStartResizeAi}
+                onTouchStart={handleStartResizeAi}
+                className={`w-1.5 h-full cursor-col-resize hover:bg-cyan-500/50 active:bg-cyan-400 transition-colors z-20 shrink-0 relative flex items-center justify-center select-none bg-gray-900 border-l border-r border-gray-800 ${
+                  isDraggingAiWidth ? "bg-cyan-500 shadow-md shadow-cyan-500/50" : ""
+                }`}
+                title="Зажмите и тяните влево/вправо для изменения ширины панели ИИ-Аналитика"
+              >
+                <div className="h-8 w-0.5 rounded-full bg-gray-500 group-hover:bg-cyan-300" />
+              </div>
+            )}
+
+            {/* 🤖 AUTONOMOUS AI ANALYST (DOCKED PERMANENTLY RIGHT OF CHART, NEVER OVERLAPPING) */}
+            <div
+              className="flex h-full shrink-0 relative z-10"
+              style={{
+                width: isAiPanelCollapsed ? "48px" : `${aiPanelWidth}px`,
+                maxWidth: isAiPanelCollapsed ? "48px" : "calc(100vw - 80px)"
+              }}
+            >
+              <AutonomousAiAnalystPanel
+                activeAsset={activeAsset}
+                activeTf={activeTf}
+                currentPrice={latestCandle ? latestCandle.close : 4165.0}
+                candles={candles}
+                indicatorOutput={indicatorOutput}
+                gexReport={gexReport}
+                dayGexReport={dayGexReport}
+                calendarEvents={calendarEvents}
+                newsItems={marketNews}
+                isNewsLoading={isNewsLoading}
+                onRefreshNews={refreshMarketNews}
+                isCollapsed={isAiPanelCollapsed}
+                onToggleCollapse={() => setIsAiPanelCollapsed(!isAiPanelCollapsed)}
+                onOpenSettingsTab={() => {
+                  setSettingsInitialSection("ai");
+                  setActiveTab("settings");
+                }}
+                width={aiPanelWidth}
+                onWidthChange={(w) => {
+                  setAiPanelWidth(w);
+                  try {
+                    localStorage.setItem("quantex_ai_panel_width", String(w));
+                  } catch {}
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+        {/* ======================================================== */}
+        {/* 2. REAL-TIME GEX ANALYTICS TAB                           */}
+        {/* ======================================================== */}
+        {activeTab === "gex" && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+            
+            {/* Header & Source Banner */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800 pb-4">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="p-1.5 rounded-lg bg-gradient-to-tr from-purple-600 via-pink-600 to-amber-500 text-white shadow-md shadow-purple-500/20">
+                    <Activity className="h-4 w-4" />
+                  </div>
+                  <h3 className="font-display font-bold text-base text-white tracking-wide flex items-center gap-2">
+                    <span>Опционная GEX-Аналитика &amp; Стены Дилеров</span>
+                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                      {activeAsset === "MOEX_GOLD"
+                        ? `${moexContracts?.large?.secId || "GDZ6"} (FORTS)`
+                        : activeAsset === "MOEX_MINI"
+                        ? `${moexContracts?.mini?.secId || "GNZ6"} (Мини)`
+                        : activeAsset === "XAUUSD"
+                        ? "XAU/USD OANDA (24/7 Spot)"
+                        : activeAsset}
+                    </span>
+                  </h3>
+                  <span className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    CME &amp; FORTS Institutional Flow
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  Прямой расчет распределения дилерской Гаммы (Gamma Exposure), открытого интереса (OI), объемов торгов и магнитов экспирации
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => {
+                    setUseGex(true);
+                    setShowGexWalls(true);
+                    setShowGexFlip(true);
+                    setShowGexPain(true);
+                    setShowGexBars(true);
+                    setActiveTab("chart");
+                  }}
+                  className="flex items-center gap-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer shadow-md shadow-purple-600/20"
+                  title="Открыть свечной график с автоматически наложенными линиями Call Wall, Put Wall, Gamma Flip и профилем"
+                >
+                  <BarChart2 className="h-3.5 w-3.5" />
+                  <span>🕯️ Смотреть GEX на графике свечей</span>
+                </button>
+
+                <button
+                  onClick={() => fetchGexReport(activeAsset, gexHorizon)}
+                  disabled={isLoadingGex}
+                  className="flex items-center gap-1.5 bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-800 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isLoadingGex ? "animate-spin text-purple-400" : ""}`} />
+                  <span>Обновить GEX</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Horizon Selection Bar (ДЕНЬ, НЕДЕЛЯ, МЕСЯЦ, ВСЕ) */}
+            <div className="bg-[#0b0e17] border border-gray-800/90 rounded-2xl p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xl">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-purple-500/20 text-purple-300">
+                  <Calendar className="h-4 w-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-white uppercase tracking-wider block">
+                    Горизонт экспирации опционов:
+                  </span>
+                  <span className="text-[11px] text-gray-400">
+                    Определяет плотность страйков, положение стен и открытый интерес
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 bg-[#121624] p-1 rounded-xl border border-gray-800 text-xs font-semibold flex-wrap">
+                <button
+                  onClick={() => handleSelectGexHorizon("DAY")}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                    gexHorizon === "DAY"
+                      ? "bg-gradient-to-r from-amber-600 to-amber-500 text-white font-bold shadow-md shadow-amber-500/25"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                  title="0DTE / Интрадей: ближайшие внутридневные опционы с шагом 5-10$ прямо у текущей цены"
+                >
+                  <span>⚡</span>
+                  <span>ДЕНЬ (Интрадей)</span>
+                </button>
+
+                <button
+                  onClick={() => handleSelectGexHorizon("WEEK")}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                    gexHorizon === "WEEK"
+                      ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold shadow-md shadow-purple-500/25"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                  title="Недельная серия: экспирация текущей пятницы — основной коридор для свингов на 2-5 дней"
+                >
+                  <span>📅</span>
+                  <span>НЕДЕЛЯ (Свинг)</span>
+                </button>
+
+                <button
+                  onClick={() => handleSelectGexHorizon("MONTH")}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                    gexHorizon === "MONTH"
+                      ? "bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold shadow-md shadow-cyan-500/25"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                  title="Месячная серия: институциональные позиции фондов и хеджеров (шаг 20-25$)"
+                >
+                  <span>🗓️</span>
+                  <span>МЕСЯЦ (Фонды)</span>
+                </button>
+
+                <button
+                  onClick={() => handleSelectGexHorizon("ALL")}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                    gexHorizon === "ALL"
+                      ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold shadow-md shadow-emerald-500/25"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                  title="Все экспирации: совокупный открытый интерес всех серий книги заявок"
+                >
+                  <span>🌐</span>
+                  <span>ВСЕ (Total GEX)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* GEX Metrics Grid */}
+            {gexReport ? (
+              <div className="space-y-6">
+                
+                {/* 4 Key Institutional Diagnostic Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  
+                  {/* Card 1: Net GEX Regime */}
+                  <div className="bg-[#0b0e17] border border-gray-800/90 rounded-xl p-3.5 space-y-2 relative overflow-hidden">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Режим Дилеров</span>
+                      <span className="text-[10px] text-gray-500 font-mono">Net GEX</span>
+                    </div>
+                    <div>
+                      <span
+                        className={`text-xs font-extrabold px-2 py-1 rounded inline-block ${
+                          gexReport.netGexRegime === "POSITIVE_GAMMA"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                        }`}
+                      >
+                        {gexReport.netGexRegime === "POSITIVE_GAMMA" ? "🟢 ПОЛОЖИТЕЛЬНАЯ (+GEX)" : "🔴 ОТРИЦАТЕЛЬНАЯ (-GEX)"}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-300 leading-snug">
+                      {gexReport.netGexRegime === "POSITIVE_GAMMA" ? (
+                        <span><b className="text-emerald-400">Спокойный коридор:</b> Дилеры гасят резкие рывки, продавая на росте и выкупая проливы.</span>
+                      ) : (
+                        <span><b className="text-rose-400">Штормовой тренд:</b> Дилеры усиливают движение, высокая турбулентность и риск импульсов.</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-gray-500 block font-mono">
+                      Индекс гаммы: <b className="text-white">{gexReport.netGexTotal > 0 ? `+${gexReport.netGexTotal}` : gexReport.netGexTotal}</b> $M/pt
+                    </span>
+                  </div>
+
+                  {/* Card 2: Call Wall (Потолок) */}
+                  <div className="bg-[#0b0e17] border border-emerald-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden shadow-sm shadow-emerald-500/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                        🏰 Потолок (Call Wall)
+                      </span>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-mono font-bold">
+                        Сопротивление
+                      </span>
+                    </div>
+                    <div className="text-2xl font-mono font-bold text-emerald-400">
+                      {activeAsset === "MOEX_MINI" ? `${gexReport.callWall} ₽` : `$${gexReport.callWall}`}
+                    </div>
+                    <div className="text-[11px] text-gray-300">
+                      {gexReport.callWall >= gexReport.spotPrice ? (
+                        <span>Выше спота на <b className="text-emerald-300 font-mono">+{(gexReport.callWall - gexReport.spotPrice).toFixed(1)} (+{(((gexReport.callWall - gexReport.spotPrice) / gexReport.spotPrice) * 100).toFixed(1)}%)</b></span>
+                      ) : (
+                        <span className="text-amber-300 font-bold">⚠️ Спот пробил потолок! Риск шорт-сквиза!</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-gray-400">
+                      Главный барьер для роста. Здесь маркетмейкеры массово продают базовый актив для хеджа.
+                    </p>
+                  </div>
+
+                  {/* Card 3: Put Wall (Поддержка) */}
+                  <div className="bg-[#0b0e17] border border-rose-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden shadow-sm shadow-rose-500/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                        🛡️ Поддержка (Put Wall)
+                      </span>
+                      <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.2 rounded font-mono font-bold">
+                        Пол рынка
+                      </span>
+                    </div>
+                    <div className="text-2xl font-mono font-bold text-rose-400">
+                      {activeAsset === "MOEX_MINI" ? `${gexReport.putWall} ₽` : `$${gexReport.putWall}`}
+                    </div>
+                    <div className="text-[11px] text-gray-300">
+                      {gexReport.putWall <= gexReport.spotPrice ? (
+                        <span>Ниже спота на <b className="text-rose-300 font-mono">-{(gexReport.spotPrice - gexReport.putWall).toFixed(1)} (-{(((gexReport.spotPrice - gexReport.putWall) / gexReport.spotPrice) * 100).toFixed(1)}%)</b></span>
+                      ) : (
+                        <span className="text-rose-400 font-bold">⚠️ Спот провалился под пол!</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-gray-400">
+                      Главный пол рынка. На этом страйке дилеры обязаны агрессивно выкупать рынок своими миллионами.
+                    </p>
+                  </div>
+
+                  {/* Card 4: Gamma Flip & Max Pain */}
+                  <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                        ⚡ Граница Гаммы (Flip)
+                      </span>
+                      <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.2 rounded font-mono font-bold">
+                        Zero Level
+                      </span>
+                    </div>
+                    <div className="text-2xl font-mono font-bold text-purple-400">
+                      {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+                    </div>
+                    <div className="text-[11px] text-gray-300 flex items-center justify-between">
+                      <span>Магнит экспирации (Max Pain):</span>
+                      <b className="text-cyan-300 font-mono">{activeAsset === "MOEX_MINI" ? `${gexReport.maxPain} ₽` : `$${gexReport.maxPain}`}</b>
+                    </div>
+                    <p className="text-[10px] text-gray-400">
+                      Рубеж смены режима: пока цена выше Flip — рынок управляем. Пробой вниз включает режим паники.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Additional Institutional Flow Bar (PCR & Greeks) */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#080b12] border border-gray-800/80 rounded-xl p-3 text-xs font-mono">
+                  <div className="flex flex-col">
+                    <span className="text-gray-500 text-[10px] uppercase">Put/Call Ratio (По OI)</span>
+                    <span className={`font-bold text-sm ${gexReport.pcrOi > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
+                      {gexReport.pcrOi.toFixed(2)} {gexReport.pcrOi > 1.0 ? "(Перевес путов)" : "(Перевес коллов)"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-gray-500 text-[10px] uppercase">Put/Call Ratio (По Объему)</span>
+                    <span className={`font-bold text-sm ${(gexReport.pcrVol || 0.94) > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
+                      {(gexReport.pcrVol || 0.94).toFixed(2)} {(gexReport.pcrVol || 0.94) > 1.0 ? "(Давление продаж)" : "(Покупки опционов)"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-gray-500 text-[10px] uppercase">IV vs RV Волатильность</span>
+                    <span className="font-bold text-sm text-amber-300">
+                      IV: {gexReport.impliedVolAvg.toFixed(1)}% • RV: {gexReport.realizedVol30d.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-gray-500 text-[10px] uppercase">Ожидаемый диапазон 1σ (68%)</span>
+                    <span className="font-bold text-sm text-cyan-300">
+                      ${gexReport.expectedMove68.low} — ${gexReport.expectedMove68.high} (±{gexReport.expectedMove68.rangePct}%)
+                    </span>
+                  </div>
+                </div>
+
+
+                {/* ======================================================== */}
+                {/* 1. САМЫЙ ВЕРХНИЙ БЛОК: Двусторонний Профиль Гаммы, ОИ и Объемов */}
+                {/* ======================================================== */}
+                <div className="bg-[#080a11] border border-gray-800/90 rounded-2xl p-4 md:p-5 space-y-4 shadow-2xl">
+                  
+                  {/* Controls Header */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800/80 pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <BarChart2 className="h-4 w-4 text-cyan-400" />
+                        <h4 className="font-bold text-sm text-white">
+                          Двусторонний Профиль Гаммы, Открытого Интереса и Объемов
+                        </h4>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Вертикальная шкала цен: <b className="text-emerald-400">вверху высокие цены (сопротивление)</b>, <b className="text-rose-400">внизу низкие цены (поддержка)</b>. Кликните по любому страйку для подробного анализа.
+                      </p>
+                    </div>
+
+                    {/* Filter & Metric Switchers */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* Metric Mode */}
+                      <div className="flex items-center bg-[#101420] p-0.5 rounded-lg border border-gray-800 text-xs">
+                        <button
+                          onClick={() => setGexMetricMode("gex")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexMetricMode === "gex"
+                              ? "bg-purple-600/40 text-purple-200 border border-purple-500/60 shadow-xs"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          Гамма ($M/pt)
+                        </button>
+                        <button
+                          onClick={() => setGexMetricMode("oi")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexMetricMode === "oi"
+                              ? "bg-cyan-600/40 text-cyan-200 border border-cyan-500/60 shadow-xs"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          Открытый интерес (OI)
+                        </button>
+                        <button
+                          onClick={() => setGexMetricMode("volume")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexMetricMode === "volume"
+                              ? "bg-emerald-600/40 text-emerald-200 border border-emerald-500/60 shadow-xs"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                        >
+                          Объем (Volume)
+                        </button>
+                      </div>
+
+                      {/* Strike Filter Mode */}
+                      <div className="flex items-center bg-[#101420] p-0.5 rounded-lg border border-gray-800 text-xs">
+                        <button
+                          onClick={() => setGexFilterMode("atm")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexFilterMode === "atm"
+                              ? "bg-amber-500/30 text-amber-200 border border-amber-500/50"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                          title="Около денег (ATM ±3.5%) — наиболее активные для внутридневной торговли"
+                        >
+                          ATM (±3.5%)
+                        </button>
+                        <button
+                          onClick={() => setGexFilterMode("walls")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexFilterMode === "walls"
+                              ? "bg-amber-500/30 text-amber-200 border border-amber-500/50"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                          title="Только ключевые опционные стены (Call Wall, Put Wall, Flip, Max Pain)"
+                        >
+                          Только Стены
+                        </button>
+                        <button
+                          onClick={() => setGexFilterMode("all")}
+                          className={`px-2.5 py-1 rounded font-bold transition cursor-pointer ${
+                            gexFilterMode === "all"
+                              ? "bg-amber-500/30 text-amber-200 border border-amber-500/50"
+                              : "text-gray-400 hover:text-white"
+                          }`}
+                          title="Все страйковые уровни цепочки"
+                        >
+                          Все страйки ({gexReport.strikes?.length || 0})
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Visual Chart Header Columns */}
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#0e121c] border border-gray-800/80 text-[11px] font-mono text-gray-400">
+                    <div className="flex items-center gap-1.5 text-rose-400 font-bold">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block" />
+                      <span>
+                        {gexMetricMode === "volume"
+                          ? "◀ PUT VOLUME (Дневной объем путов)"
+                          : gexMetricMode === "oi"
+                          ? "◀ PUT OI (Открытый интерес путов)"
+                          : "◀ PUT GEX (Поддержка продавцов путов)"}
+                      </span>
+                    </div>
+                    <div className="text-center font-bold text-gray-200 tracking-wider">
+                      СТРАЙК &amp; УРОВЕНЬ
+                    </div>
+                    <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                      <span>
+                        {gexMetricMode === "volume"
+                          ? "CALL VOLUME (Дневной объем коллов) ▶"
+                          : gexMetricMode === "oi"
+                          ? "CALL OI (Открытый интерес коллов) ▶"
+                          : "CALL GEX (Сопротивление покупателей коллов) ▶"}
+                      </span>
+                      <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
+                    </div>
+                  </div>
+
+                  {/* Profile Rows (Top to Bottom: Strictly Descending Strike Price) */}
+                  <div className="space-y-1 overflow-x-auto min-w-[700px] max-h-[580px] overflow-y-auto pr-1">
+                    {gexStrikesDescending.map((s) => {
+                      const isCallWall = s.strike === gexReport.callWall;
+                      const isPutWall = s.strike === gexReport.putWall;
+                      const isZeroFlip = s.strike === gexReport.gammaFlip;
+                      const isMaxPain = s.strike === gexReport.maxPain;
+                      const isSleeperMagnet = s.strike === gexReport.sleeperMagnet;
+                      const isExactSpotStrike = s.strike === closestStrikeToSpot;
+
+                      const putVal = gexMetricMode === "volume" ? (s.putVolume || 0) : gexMetricMode === "oi" ? s.putOi : Math.abs(s.putGex);
+                      const callVal = gexMetricMode === "volume" ? (s.callVolume || 0) : gexMetricMode === "oi" ? s.callOi : s.callGex;
+
+                      const putWidthPct = Math.min((putVal / maxAbsGex) * 100, 100);
+                      const callWidthPct = Math.min((callVal / maxAbsGex) * 100, 100);
+
+                      const distFromSpotPct = ((s.strike - gexReport.spotPrice) / gexReport.spotPrice) * 100;
+
+                      return (
+                        <div
+                          key={s.strike}
+                          onClick={() => setSelectedStrikeDetail(s)}
+                          className={`flex items-center gap-2 py-1.5 px-2.5 rounded-lg font-mono text-xs transition cursor-pointer relative group ${
+                            isExactSpotStrike
+                              ? "bg-amber-500/15 border-2 border-amber-400/80 shadow-md shadow-amber-500/10"
+                              : isCallWall
+                              ? "bg-emerald-500/20 border-2 border-emerald-400 shadow-md shadow-emerald-500/15"
+                              : isPutWall
+                              ? "bg-rose-500/20 border-2 border-rose-400 shadow-md shadow-rose-500/15"
+                              : isZeroFlip
+                              ? "bg-purple-500/20 border-2 border-purple-400/80 shadow-md shadow-purple-500/15"
+                              : isMaxPain
+                              ? "bg-cyan-500/20 border-2 border-cyan-400/80 shadow-md shadow-cyan-500/15"
+                              : isSleeperMagnet
+                              ? "bg-amber-500/20 border-2 border-amber-400/80 shadow-md shadow-amber-500/15"
+                              : "hover:bg-[#121624] border border-transparent"
+                          }`}
+                        >
+                          {/* Left: Put Bar (Grows from Center to Left) */}
+                          <div className="flex-1 flex justify-end items-center h-6 bg-[#0a0d16] rounded-l-md overflow-hidden border-r border-gray-700 relative">
+                            <div
+                              className={`h-full transition-all flex items-center justify-start pl-1 text-[10px] font-bold text-white/90 ${
+                                isPutWall
+                                  ? "bg-gradient-to-l from-rose-500 via-rose-600 to-rose-700 shadow-sm shadow-rose-500/50"
+                                  : "bg-gradient-to-l from-rose-600 to-rose-900"
+                              }`}
+                              style={{ width: `${putWidthPct}%` }}
+                            >
+                              {putWidthPct > 15 && (
+                                <span className="drop-shadow-xs">
+                                  {gexMetricMode === "volume"
+                                    ? `${(s.putVolume || 0).toLocaleString()} Vol`
+                                    : gexMetricMode === "oi"
+                                    ? `${s.putOi.toLocaleString()} OI`
+                                    : `${s.putGex} $M`}
+                                </span>
+                              )}
+                            </div>
+                            {putWidthPct <= 15 && (
+                              <span className="text-[10px] text-gray-500 pr-1.5 font-mono">
+                                {gexMetricMode === "volume"
+                                  ? `${(s.putVolume || 0).toLocaleString()}`
+                                  : gexMetricMode === "oi"
+                                  ? `${s.putOi.toLocaleString()}`
+                                  : `${s.putGex}`}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Center: Strike Price Column with Badges */}
+                          <div className="w-64 flex items-center justify-between px-2.5 shrink-0 bg-[#0e121d] py-1 rounded-md border border-gray-800 shadow-inner">
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className={`font-bold text-sm ${
+                                isCallWall
+                                  ? "text-emerald-400 font-extrabold"
+                                  : isPutWall
+                                  ? "text-rose-400 font-extrabold"
+                                  : isZeroFlip
+                                  ? "text-purple-300 font-extrabold"
+                                  : isMaxPain
+                                  ? "text-cyan-300 font-extrabold"
+                                  : isSleeperMagnet
+                                  ? "text-amber-400 font-extrabold"
+                                  : isExactSpotStrike
+                                  ? "text-amber-300 font-extrabold"
+                                  : "text-gray-200"
+                              }`}>
+                                {activeAsset === "MOEX_MINI" ? `${s.strike} ₽` : `$${s.strike}`}
+                              </span>
+                              <span className={`text-[10px] font-mono ${distFromSpotPct > 0 ? "text-emerald-400/80" : distFromSpotPct < 0 ? "text-rose-400/80" : "text-amber-400"}`}>
+                                {distFromSpotPct > 0 ? `+${distFromSpotPct.toFixed(1)}%` : `${distFromSpotPct.toFixed(1)}%`}
+                              </span>
+                            </div>
+
+                            {/* Badges Container */}
+                            <div className="flex items-center gap-1 justify-end flex-wrap max-w-[155px]">
+                              {isCallWall && (
+                                <span className="text-[9px] bg-emerald-500 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Потолок рынка (Call Wall): ключевое сопротивление">
+                                  Потолок CW
+                                </span>
+                              )}
+                              {isPutWall && (
+                                <span className="text-[9px] bg-rose-500 text-white font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Поддержка рынка (Put Wall): ключевой пол">
+                                  Поддержка PW
+                                </span>
+                              )}
+                              {isZeroFlip && (
+                                <span className="text-[9px] bg-purple-600 text-white font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs border border-purple-400/50" title="Граница Гаммы (Gamma Flip): рубеж перехода в отрицательную гамму">
+                                  ⚡ Гамма (Flip)
+                                </span>
+                              )}
+                              {isMaxPain && (
+                                <span className="text-[9px] bg-cyan-400 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Магнит экспирации (Max Pain): точка максимального сгорания премий">
+                                  🎯 Магнит
+                                </span>
+                              )}
+                              {isSleeperMagnet && (
+                                <span className="text-[9px] bg-amber-500 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Спящий институциональный магнит (Sleeper Magnet)">
+                                  🧲 Спящий магнит
+                                </span>
+                              )}
+                              {isExactSpotStrike && (
+                                <span className="text-[9px] bg-amber-400 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs animate-pulse" title={`Текущая биржевая цена спота: $${gexReport.spotPrice}`}>
+                                  📍 Спот ${gexReport.spotPrice.toFixed(1)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Right: Call Bar (Grows from Center to Right) */}
+                          <div className="flex-1 flex justify-start items-center h-6 bg-[#0a0d16] rounded-r-md overflow-hidden border-l border-gray-700 relative">
+                            <div
+                              className={`h-full transition-all flex items-center justify-end pr-1 text-[10px] font-bold text-white/90 ${
+                                isCallWall
+                                  ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-sm shadow-emerald-500/50"
+                                  : "bg-gradient-to-r from-emerald-600 to-emerald-900"
+                              }`}
+                              style={{ width: `${callWidthPct}%` }}
+                            >
+                              {callWidthPct > 15 && (
+                                <span className="drop-shadow-xs">
+                                  {gexMetricMode === "volume"
+                                    ? `${(s.callVolume || 0).toLocaleString()} Vol`
+                                    : gexMetricMode === "oi"
+                                    ? `${s.callOi.toLocaleString()} OI`
+                                    : `+${s.callGex} $M`}
+                                </span>
+                              )}
+                            </div>
+                            {callWidthPct <= 15 && (
+                              <span className="text-[10px] text-gray-500 pl-1.5 font-mono">
+                                {gexMetricMode === "volume"
+                                  ? `${(s.callVolume || 0).toLocaleString()}`
+                                  : gexMetricMode === "oi"
+                                  ? `${s.callOi.toLocaleString()}`
+                                  : `+${s.callGex}`}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Net GEX indicator at far right */}
+                          <div className="w-24 text-right text-[11px] shrink-0 font-mono hidden sm:block">
+                            <span className={s.netGex >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                              {s.netGex > 0 ? `+${s.netGex}` : s.netGex} $M
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* ======================================================== */}
+                {/* 2. 🏛️ АНАЛИТИЧЕСКИЕ МОДУЛИ: ТЕРМОМЕТР, УДАРЫ, ЭКСПИРАЦИИ, ГАММА-ПРОФИЛЬ */}
+                {/* ======================================================== */}
+                <GexAdvancedModules
+                  gexReport={gexReport}
+                  dayGexReport={dayGexReport}
+                  candles={candles}
+                  activeAsset={activeAsset}
+                  activeTf={activeTf}
+                />
+
+                {/* ======================================================== */}
+                {/* 3. 🏛️ ДИНАМИЧЕСКИЕ СЦЕНАРИИ, СЛОВАРЬ И ЧЕК-ЛИСТ ТРЕЙДЕРА */}
+                {/* ======================================================== */}
+                <div className="bg-[#0b0e17] border border-gray-800 rounded-2xl p-5 md:p-6 space-y-5 shadow-xl">
+                  
+                  {/* Explanations Header with Subtabs */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800 pb-4">
+                    <div>
+                      <h4 className="font-display font-bold text-base text-white flex items-center gap-2">
+                        <Info className="h-5 w-5 text-amber-400" />
+                        <span>Опционная Аналитика и Предположения Движения Цены</span>
+                      </h4>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Понятные объяснения механики дилеров, расчетные сценарии движения и практический чек-лист
+                      </p>
+                    </div>
+
+                    {/* Sub-tabs selector */}
+                    <div className="flex items-center gap-1 bg-[#101420] p-1 rounded-xl border border-gray-800 text-xs font-semibold flex-wrap">
+                      <button
+                        onClick={() => setGexExplTab("simple")}
+                        className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                          gexExplTab === "simple"
+                            ? "bg-amber-500/25 text-amber-200 border border-amber-500/50 shadow-xs"
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <span>🧠</span>
+                        <span>Простыми словами</span>
+                      </button>
+                      <button
+                        onClick={() => setGexExplTab("scenarios")}
+                        className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                          gexExplTab === "scenarios"
+                            ? "bg-cyan-500/25 text-cyan-200 border border-cyan-500/50 shadow-xs"
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <span>🎯</span>
+                        <span>Куда пойдет цена? (Сценарии)</span>
+                      </button>
+                      <button
+                        onClick={() => setGexExplTab("guide")}
+                        className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                          gexExplTab === "guide"
+                            ? "bg-purple-500/25 text-purple-200 border border-purple-500/50 shadow-xs"
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <span>📖</span>
+                        <span>Словарь уровней &amp; Логика</span>
+                      </button>
+                      <button
+                        onClick={() => setGexExplTab("rules")}
+                        className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                          gexExplTab === "rules"
+                            ? "bg-emerald-500/25 text-emerald-200 border border-emerald-500/50 shadow-xs"
+                            : "text-gray-400 hover:text-white"
+                        }`}
+                      >
+                        <span>📋</span>
+                        <span>Чек-лист трейдера</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* TAB 1: ПРОСТЫМИ СЛОВАМИ ДЛЯ ЧЕЛОВЕКА */}
+                  {gexExplTab === "simple" && (
+                    <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                      <div className="bg-gradient-to-r from-amber-500/10 via-purple-500/10 to-transparent p-4 rounded-xl border border-amber-500/30">
+                        <span className="font-bold text-amber-300 text-sm block mb-1">
+                          💡 В чем главная суть опционной аналитики GEX для простого трейдера?
+                        </span>
+                        <p>
+                          На бирже торгуют не только обычные люди, но и <b>маркетмейкеры (дилеры)</b> — гигантские банки и фонды. Когда толпа покупает опционы, дилеры обязаны продать их и одновременно хеджировать свои риски на спотовом рынке золота/фьючерсов. Из-за формул дельты и гаммы они <b>вынуждены покупать или продавать актив строго на определенных уровнях цен</b>. Зная эти уровни, мы заранее знаем, где рынок встретит железобетонную стену, а где полетит ракетой!
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        
+                        {/* Level 1: Call Wall */}
+                        <div className="p-4 rounded-xl bg-[#0e121c] border border-emerald-500/30 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-emerald-400 text-sm flex items-center gap-1.5">
+                              🏰 Потолок (Call Wall) — ${gexReport.callWall}
+                            </span>
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono font-bold">
+                              Бетонное сопротивление
+                            </span>
+                          </div>
+                          <p>
+                            <b>Что это простыми словами:</b> Это самый высокий «потолок» на графике. Толпа накупила здесь тонны опционов Call, надеясь на рост. Дилеры, чтобы не платить миллионы долларов, обязаны при росте цены к этому уровню продавать физическое золото/фьючерсы, <b>сбивая цену вниз</b>.
+                          </p>
+                          <div className="bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-500/20 text-emerald-200">
+                            <b>Вывод для вас:</b> Покупать вблизи уровня ${gexReport.callWall} категорически нельзя — велик шанс купить на самом пике и получить откат вниз. Здесь нужно фиксировать прибыль по лонгам или искать разворот вниз!
+                          </div>
+                        </div>
+
+                        {/* Level 2: Put Wall */}
+                        <div className="p-4 rounded-xl bg-[#0e121c] border border-rose-500/30 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-rose-400 text-sm flex items-center gap-1.5">
+                              🛡️ Поддержка (Put Wall) — ${gexReport.putWall}
+                            </span>
+                            <span className="text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-mono font-bold">
+                              Надежный пол
+                            </span>
+                          </div>
+                          <p>
+                            <b>Что это простыми словами:</b> Это железобетонный «пол» рынка. Здесь скопилось огромное количество страховок от падения (опционов Put). Если цена падает к этому уровню, маркетмейкеры обязаны влить миллиарды долларов на покупку базового актива, чтобы компенсировать риски, <b>толкая цену обратно вверх</b>.
+                          </p>
+                          <div className="bg-rose-950/40 p-2.5 rounded-lg border border-rose-500/20 text-rose-200">
+                            <b>Вывод для вас:</b> Уровень ${gexReport.putWall} — лучшая и самая безопасная зона для покупки (Лонга) с коротким стопом чуть ниже стены.
+                          </div>
+                        </div>
+
+                        {/* Level 3: Gamma Flip */}
+                        <div className="p-4 rounded-xl bg-[#0e121c] border border-purple-500/30 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-purple-400 text-sm flex items-center gap-1.5">
+                              ⚡ Граница Гаммы (Gamma Flip / Zero Level) — ${gexReport.gammaFlip}
+                            </span>
+                            <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded font-mono font-bold">
+                              Рубильник паники
+                            </span>
+                          </div>
+                          <p>
+                            <b>Что это простыми словами:</b> Это граница между спокойным рынком и штормом.
+                          </p>
+                          <ul className="list-disc list-inside space-y-1 text-gray-400 pl-1">
+                            <li><b className="text-white">Пока цена ВЫШЕ ${gexReport.gammaFlip}:</b> Рынок спокойный, любые проливы выкупаются, идеальное время торговать отбой от уровней.</li>
+                            <li><b className="text-white">Если цена упала НИЖЕ ${gexReport.gammaFlip}:</b> Включается режим паники! Дилеры перестают защищать рынок и сами начинают продавать на опережение, ускоряя падение.</li>
+                          </ul>
+                        </div>
+
+                        {/* Level 4: Max Pain */}
+                        <div className="p-4 rounded-xl bg-[#0e121c] border border-cyan-500/30 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-cyan-400 text-sm flex items-center gap-1.5">
+                              🎯 Магнит экспирации (Max Pain) — ${gexReport.maxPain}
+                            </span>
+                            <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded font-mono font-bold">
+                              Точка максимальной боли
+                            </span>
+                          </div>
+                          <p>
+                            <b>Что это простыми словами:</b> Это уровень цены, при котором покупатели опционов (толпа) теряют максимальное количество денег, а маркетмейкеры забирают всю премию себе в карман.
+                          </p>
+                          <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-500/20 text-cyan-200">
+                            <b>Вывод для вас:</b> Чем ближе экспирация опционов (в четверг-пятницу), тем сильнее цена притягивается к уровню ${gexReport.maxPain} как магнитом!
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB 2: КУДА ПОЙДЕТ ЦЕНА? (СЦЕНАРИИ ДВИЖЕНИЯ) */}
+                  {gexExplTab === "scenarios" && (() => {
+                    const spot = gexReport.spotPrice;
+                    const cw = gexReport.callWall;
+                    const pw = gexReport.putWall;
+                    const flip = gexReport.gammaFlip;
+                    const mp = gexReport.maxPain;
+
+                    const range = Math.max(1, cw - pw);
+                    const distToPw = Math.abs(spot - pw);
+                    const distToCw = Math.abs(spot - cw);
+                    const proximityThreshold = Math.max(4, range * 0.16); // near wall if within ~16% of range
+
+                    let dynamicType: "AT_PW" | "AT_CW" | "IN_CORRIDOR" | "BREAK_FLIP";
+                    let dynamicVerdict = "";
+                    let dynamicExplanation = "";
+                    let dynamicBadge = "";
+                    let dynamicCardBorder = "";
+                    let dynamicCardBg = "";
+
+                    if (spot < flip) {
+                      dynamicType = "BREAK_FLIP";
+                      dynamicVerdict = "Пробой границы гаммы! Начинается режим паники. Тренд вниз.";
+                      dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) пробила вниз Zero-Flip ($${flip}). Рынок перешел в зону отрицательной гаммы. Дилеры перестали поддерживать рынок и обязаны продавать физический актив, ускоряя падение. Ожидаем быстрое движение вниз прямо к уровню поддержки Put Wall ($${pw}).`;
+                      dynamicBadge = "🚨 Режим паники: Тренд вниз";
+                      dynamicCardBorder = "border-rose-500/80 shadow-rose-950/50 shadow-lg";
+                      dynamicCardBg = "bg-rose-950/20";
+                    } else if (distToPw <= proximityThreshold || spot <= pw) {
+                      dynamicType = "AT_PW";
+                      dynamicVerdict = `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`;
+                      dynamicExplanation = `Цена подошла вплотную к полу рынка (Put Wall $${pw}). Здесь сосредоточена максимальная концентрация страховок от падения. Маркетмейкеры обязаны агрессивно покупать базовый актив для дельта-хеджирования, выталкивая цену обратно вверх к уровню Max Pain ($${mp}).`;
+                      dynamicBadge = "🛡️ Зона покупки: Отскок от поддержки";
+                      dynamicCardBorder = "border-emerald-500/80 shadow-emerald-950/50 shadow-lg";
+                      dynamicCardBg = "bg-emerald-950/20";
+                    } else if (distToCw <= proximityThreshold || spot >= cw) {
+                      dynamicType = "AT_CW";
+                      dynamicVerdict = "Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз.";
+                      dynamicExplanation = `Цена достигла верхнего потолка рынка (Call Wall $${cw}). Дилеры хеджируют проданные опционы Call массивными продажами базового актива, принудительно гася движение. Покупать на этом уровне крайне опасно. Ждем откат вниз к Магниту ($${mp}) или фиксируем прибыль.`;
+                      dynamicBadge = "🏰 Зона фиксации: Откат от потолка";
+                      dynamicCardBorder = "border-amber-500/80 shadow-amber-950/50 shadow-lg";
+                      dynamicCardBg = "bg-amber-950/20";
+                    } else {
+                      dynamicType = "IN_CORRIDOR";
+                      dynamicVerdict = `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`;
+                      dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) находится в нейтральной полосе между полом $${pw} и потолком $${cw}. Дилеры сглаживают любые колебания (Штиль). Лучшая тактика — не открывать импульсивных позиций в центре, а дождаться подхода цены к одной из ключевых стен.`;
+                      dynamicBadge = "⚖️ Нейтральная зона: Торговля в диапазоне";
+                      dynamicCardBorder = "border-cyan-500/80 shadow-cyan-950/50 shadow-lg";
+                      dynamicCardBg = "bg-cyan-950/20";
+                    }
+
+                    return (
+                      <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                        {/* Dynamic Live Status Alert Banner */}
+                        <div className={`p-4 rounded-xl border ${dynamicCardBorder} ${dynamicCardBg} flex flex-col md:flex-row items-start md:items-center justify-between gap-3`}>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-mono font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-black/50 border border-gray-700 text-white">
+                                🎯 ТЕКУЩИЙ АКТИВНЫЙ СЦЕНАРИЙ
+                              </span>
+                              <span className="text-[11px] font-mono text-gray-400">
+                                Спот: <b className="text-white">${spot.toFixed(1)}</b> • Flip: <b className="text-purple-400">${flip}</b>
+                              </span>
+                            </div>
+                            <div className="text-sm font-bold text-white pt-0.5">
+                              {dynamicVerdict}
+                            </div>
+                            <p className="text-gray-300 text-[11px] leading-relaxed max-w-3xl">
+                              {dynamicExplanation}
+                            </p>
+                          </div>
+                          <div className="shrink-0 px-3 py-2 rounded-xl bg-black/60 border border-gray-700 text-right">
+                            <span className="text-[10px] text-gray-400 block uppercase font-mono">Статус дилеров:</span>
+                            <span className="font-bold text-xs text-cyan-300 block">{dynamicBadge}</span>
+                          </div>
+                        </div>
+
+                        {/* 3 Scenarios Cards with Dynamic Active Tag */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          
+                          {/* Scenario 1: Range Trading (Main) */}
+                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
+                            dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW"
+                              ? "bg-[#0d141e] border-2 border-emerald-500 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-500/40"
+                              : "bg-[#0e121c] border border-gray-800 opacity-80"
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-extrabold text-emerald-400 text-sm flex items-center gap-1.5">
+                                📈 Сценарий 1 (Коридор / Отскок)
+                              </span>
+                              {dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW" ? (
+                                <span className="text-[10px] bg-emerald-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                  АКТИВЕН СЕЙЧАС
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded">
+                                  Вероятность 70%
+                                </span>
+                              )}
+                            </div>
+                            <h5 className="font-bold text-white text-xs">
+                              {dynamicType === "AT_PW"
+                                ? `Отскок от пола Put Wall ($${pw}) к центру`
+                                : `Коридорное движение между $${pw} и $${cw}`}
+                            </h5>
+                            <p>
+                              {dynamicType === "AT_PW"
+                                ? `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`
+                                : `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`}
+                            </p>
+                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
+                              <div><b>Цель движения вверх:</b> Потолок ${cw} или Магнит ${mp}.</div>
+                              <div><b>Цель движения вниз:</b> Поддержка ${pw} (зона надежного выкупа).</div>
+                              <div className="text-emerald-300 font-semibold pt-1 border-t border-gray-800">
+                                👉 <b>Торговый план:</b> Покупать у ${pw}, продавать у ${cw}.
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Scenario 2: Call Wall Ceiling / Squeeze */}
+                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
+                            dynamicType === "AT_CW"
+                              ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500/40"
+                              : "bg-[#0e121c] border border-gray-800 opacity-80"
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-extrabold text-amber-400 text-sm flex items-center gap-1.5">
+                                🏰 Сценарий 2 (Потолок Call Wall)
+                              </span>
+                              {dynamicType === "AT_CW" ? (
+                                <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                  АКТИВЕН СЕЙЧАС
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded">
+                                  Вероятность 15%
+                                </span>
+                              )}
+                            </div>
+                            <h5 className="font-bold text-white text-xs">
+                              Откат вниз от потолка либо гамма-сквиз
+                            </h5>
+                            <p>
+                              Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз. Если свеча H1 пробьет ${cw} — начнется шорт-сквиз.
+                            </p>
+                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
+                              <div><b>Основной исход:</b> Откат вниз к Магниту ${mp}.</div>
+                              <div><b>Сквиз-триггер:</b> Закрепление H1 выше ${cw} (+20-40$ ракетой).</div>
+                              <div className="text-amber-300 font-semibold pt-1 border-t border-gray-800">
+                                👉 <b>Торговый план:</b> Фиксировать покупки у ${cw}, не шортить вслепую.
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Scenario 3: Waterfall Dump / Flip Breakdown */}
+                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
+                            dynamicType === "BREAK_FLIP"
+                              ? "bg-[#180a0e] border-2 border-rose-500 shadow-lg shadow-rose-950/50 ring-1 ring-rose-500/40"
+                              : "bg-[#0e121c] border border-gray-800 opacity-80"
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-extrabold text-rose-400 text-sm flex items-center gap-1.5">
+                                🩸 Сценарий 3 (Срыв под Zero-Flip)
+                              </span>
+                              {dynamicType === "BREAK_FLIP" ? (
+                                <span className="text-[10px] bg-rose-500 text-white font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                  АКТИВЕН СЕЙЧАС
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-1.5 py-0.5 rounded">
+                                  Вероятность 15%
+                                </span>
+                              )}
+                            </div>
+                            <h5 className="font-bold text-white text-xs">
+                              Пробой границы гаммы (Паника дилеров)
+                            </h5>
+                            <p>
+                              Пробой границы гаммы! Начинается режим паники. Тренд вниз. Дилеры сбрасывают лонги и усиливают падение.
+                            </p>
+                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
+                              <div><b>Триггер активации:</b> Цена ниже ${flip}.</div>
+                              <div><b>Ориентир падения:</b> Поддержка Put Wall ${pw}.</div>
+                              <div className="text-rose-300 font-semibold pt-1 border-t border-gray-800">
+                                👉 <b>Торговый план:</b> Не ловить ножи! Лонги только после теста ${pw}.
+                              </div>
+                            </div>
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* TAB 3: СЛОВАРЬ УРОВНЕЙ & ТОРГОВОЕ РУКОВОДСТВО */}
+                  {gexExplTab === "guide" && (
+                    <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                      <div className="bg-[#0e121c] p-3.5 rounded-xl border border-gray-800 text-gray-300 space-y-1">
+                        <span className="font-bold text-white text-sm block">
+                          📖 Практическое руководство по торговле опционными уровнями:
+                        </span>
+                        <p className="text-gray-400 text-xs">
+                          Опционные уровни показывают не предположения аналитиков, а <b>реальные обязательства маркетмейкеров</b> по хеджированию миллиардных портфелей. В таблице ниже описано, как читать эти уровни и что делать в терминале:
+                        </p>
+                      </div>
+
+                      <div className="overflow-x-auto rounded-xl border border-gray-800">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-[#121624] border-b border-gray-800 text-[11px] font-mono text-gray-400">
+                              <th className="p-3 w-1/4">Биржевой уровень / Индикатор</th>
+                              <th className="p-3 w-5/12 text-emerald-400">Что это значит простыми словами</th>
+                              <th className="p-3 w-1/3 text-amber-300">Точное действие трейдера</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-800/60 font-sans">
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-emerald-400 font-mono font-bold text-xs">
+                                Call Wall (Потолок)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Страйк максимального скопления опционов Call. При приближении к нему маркетмейкеры обязаны агрессивно продавать золото/фьючерсы, останавливая рост цены.
+                              </td>
+                              <td className="p-3 text-emerald-300 font-semibold">
+                                Фиксировать прибыль по покупкам. Искать вход в шорт при развороте со стопом за уровнем. Не покупать в лоб стены!
+                              </td>
+                            </tr>
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-rose-400 font-mono font-bold text-xs">
+                                Put Wall (Поддержка)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Страйк максимального открытого интереса по путам. Здесь маркетмейкеры выкупают проливы своими миллиардами, выступая естественным железобетонным полом.
+                              </td>
+                              <td className="p-3 text-rose-300 font-semibold">
+                                Идеальная зона для открытия лонгов. Стоп-лосс выставлять на 0.5–0.8% ниже уровня стены.
+                              </td>
+                            </tr>
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-purple-400 font-mono font-bold text-xs">
+                                Gamma Flip (Zero Level)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Рубеж между спокойным рынком (положительная гамма) и лавинной паникой (отрицательная гамма). Выше него рынок стабилен, ниже — начинается бегство инвесторов.
+                              </td>
+                              <td className="p-3 text-purple-300 font-semibold">
+                                Пока выше — смело торговать отскоки от уровней в канале. Если закрытие свечи ниже — отменить все покупки и ставить стопы.
+                              </td>
+                            </tr>
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-cyan-400 font-mono font-bold text-xs">
+                                Max Pain (Точка боли)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Уровень максимального сгорания премий покупателей опционов. К экспирации цена притягивается к этому уровню, чтобы сжечь опционы толпы в ноль.
+                              </td>
+                              <td className="p-3 text-cyan-300 font-semibold">
+                                К пятничной экспирации выставлять тейк-профиты вблизи этого страйка — туда с высокой вероятностью притянут цену.
+                              </td>
+                            </tr>
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-amber-300 font-mono font-bold text-xs">
+                                Разница горизонтов (День / Неделя / Месяц)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Внутри дня (День/Неделя) опционы плотно сжаты вокруг текущей цены. В месячной серии участвуют крупные хеджи фондов с более широкими страйками (потолок выше, пол ниже).
+                              </td>
+                              <td className="p-3 text-amber-300 font-semibold">
+                                Для интрадея используйте «ДЕНЬ» и «НЕДЕЛЯ». Для удержания позиций от 3 дней до месяца ориентируйтесь на «МЕСЯЦ».
+                              </td>
+                            </tr>
+                            <tr className="hover:bg-gray-900/40">
+                              <td className="p-3 text-blue-300 font-mono font-bold text-xs">
+                                Объем vs Открытый интерес (OI)
+                              </td>
+                              <td className="p-3 text-gray-300">
+                                Открытый интерес (OI) — это накопленный капитал в позициях. Дневной объем (Volume) — активность именно за сегодняшнюю торговую сессию.
+                              </td>
+                              <td className="p-3 text-blue-300 font-semibold">
+                                Всплеск объема на дальнем страйке означает, что крупный фонд начал готовить новый тренд. Переключайте вкладку «Объем (Volume)» для поиска аномалий.
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB 4: ЧЕК-ЛИСТ ДЕЙСТВИЙ ТРЕЙДЕРА */}
+                  {gexExplTab === "rules" && (
+                    <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        
+                        {/* Buying Rules */}
+                        <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/40 space-y-2">
+                          <span className="font-bold text-emerald-400 text-sm flex items-center gap-1.5">
+                            🟢 Где и как безопасно покупать (Лонг):
+                          </span>
+                          <ul className="space-y-1.5 pl-1">
+                            <li className="flex items-start gap-1.5">
+                              <span>✅</span>
+                              <span><b>Точка входа:</b> Откат цены вплотную к поддержке (Put Wall) <b>${gexReport.putWall}</b>.</span>
+                            </li>
+                            <li className="flex items-start gap-1.5">
+                              <span>✅</span>
+                              <span><b>Стоп-лосс:</b> Выставлять строго на 0.5-0.8% ниже Put Wall (например, ${Math.round(gexReport.putWall * 0.993)}).</span>
+                            </li>
+                            <li className="flex items-start gap-1.5">
+                              <span>✅</span>
+                              <span><b>Тейк-профит:</b> Частичная фиксация на Zero Flip (${gexReport.gammaFlip}) и финальная у Call Wall (${gexReport.callWall}).</span>
+                            </li>
+                          </ul>
+                        </div>
+
+                        {/* Selling Rules */}
+                        <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/40 space-y-2">
+                          <span className="font-bold text-rose-400 text-sm flex items-center gap-1.5">
+                            🔴 Где и как продавать (Шорт / Фиксация):
+                          </span>
+                          <ul className="space-y-1.5 pl-1">
+                            <li className="flex items-start gap-1.5">
+                              <span>🛑</span>
+                              <span><b>Точка фиксации:</b> При касании потолка (Call Wall) <b>${gexReport.callWall}</b> закрывать лонги.</span>
+                            </li>
+                            <li className="flex items-start gap-1.5">
+                              <span>🛑</span>
+                              <span><b>Вход в шорт:</b> Отбой от Call Wall вниз с коротким стопом за уровнем (${Math.round(gexReport.callWall * 1.005)}).</span>
+                            </li>
+                            <li className="flex items-start gap-1.5">
+                              <span>⚠️</span>
+                              <span><b>Критическое правило:</b> Никогда не шортить в упор к Put Wall и не покупать в упор к Call Wall!</span>
+                            </li>
+                          </ul>
+                        </div>
+
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-[#0e121c] border border-amber-500/30 text-amber-200">
+                        <b>Золотое правило сохранения депозита:</b> Если свеча закрылась ниже Gamma Flip (${gexReport.gammaFlip}), немедленно отмените все отложенные лонги. В этой зоне дилеры не спасают рынок, а усиливают падение до следующей мощной стены!
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+
+              </div>
+            ) : (
+              <div className="p-12 text-center text-gray-500 space-y-3">
+                <RefreshCw className="h-8 w-8 animate-spin mx-auto text-purple-400" />
+                <p>Загрузка реальных опционных данных COMEX/FORTS и расчет GEX-профиля...</p>
+              </div>
+            )}
+          </div>
+        )}
+
+
+        {/* ======================================================== */}
+        {/* 3. PINE SCRIPT v6 / QUANTEX PRO v8 EDITOR TAB            */}
+        {/* ======================================================== */}
+        {activeTab === "editor" && (
+          <div className="flex-1 flex flex-col p-4 md:p-6 space-y-4 overflow-hidden h-full">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-800 pb-3 shrink-0">
+              <div>
+                <h3 className="font-display font-bold text-base text-white uppercase tracking-wider flex items-center gap-2">
+                  <Code2 className="h-5 w-5 text-amber-400" />
+                  <span>Редактор Индикатора QUANTEX Pro v8 (Pine Script v6)</span>
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Полный предустановленный код QUANTEX Pro v8 с возможностью модификации и сохранения на сервере
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(indicatorCode);
+                    setCopiedCode(true);
+                    setTimeout(() => setCopiedCode(false), 2000);
+                  }}
+                  className="flex items-center gap-1.5 bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-800 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                >
+                  {copiedCode ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  <span>{copiedCode ? "Скопировано!" : "Копировать"}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const blob = new Blob([indicatorCode], { type: "text/plain;charset=utf-8" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `QUANTEX_Pro_v8_${activeAsset}.pine`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="flex items-center gap-1.5 bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-800 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Скачать .pine</span>
+                </button>
+
+                <button
+                  onClick={fetchIndicatorCode}
+                  className="flex items-center gap-1.5 bg-gray-900 hover:bg-gray-800 text-gray-200 border border-gray-800 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                  title="Сбросить код к сохраненному на диске"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>Сброс</span>
+                </button>
+
+                <button
+                  onClick={handleSaveIndicatorCode}
+                  disabled={isScriptSaved}
+                  className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-black font-bold px-4 py-1.5 rounded-lg text-xs transition cursor-pointer shadow-md"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>{isScriptSaved ? "Сохранение..." : "💾 Сохранить на сервере"}</span>
+                </button>
+              </div>
+            </div>
+
+            {saveSuccessMsg && (
+              <div className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 px-3 py-2 rounded-lg text-xs flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                <span>{saveSuccessMsg}</span>
+              </div>
+            )}
+
+            {/* Code Textarea with Dark Terminal Theme */}
+            <div className="flex-1 min-h-0 relative bg-black/90 border border-gray-800 rounded-xl overflow-hidden flex flex-col">
+              <div className="bg-gray-900/90 px-4 py-2 border-b border-gray-800 flex items-center justify-between text-xs text-gray-400 shrink-0">
+                <span className="font-mono">QUANTEX_Pro_v8.pine (Pine Script v6)</span>
+                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Встроен в автономную торговую станцию ({indicatorCode.split("\n").length} строк)</span>
+                </span>
+              </div>
+              <textarea
+                value={indicatorCode}
+                onChange={(e) => setIndicatorCode(e.target.value)}
+                className="flex-1 w-full p-4 bg-transparent text-gray-200 font-mono text-xs leading-relaxed resize-none focus:outline-none selection:bg-amber-500/30 overflow-y-auto"
+                spellCheck={false}
+                placeholder="Загрузка кода индикатора QUANTEX Pro v8..."
+              />
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* 5. ECONOMIC CALENDAR & LIVE NEWS TAB                     */}
+        {/* ======================================================== */}
+        {activeTab === "calendar" && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800 pb-3">
+              <div>
+                <h3 className="font-display font-bold text-base text-white uppercase tracking-wider flex items-center gap-2 flex-wrap">
+                  <Calendar className="h-5 w-5 text-blue-400" />
+                  <span>Новости &amp; События Дня (Все • Золото • Геополитика • MOEX • Крипта)</span>
+                  <span className="font-mono text-[11px] font-bold px-2.5 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 normal-case">
+                    🔄 Синхронизировано МСК: {calendarSyncMeta.date} • {calendarSyncMeta.timeMsk}
+                  </span>
+                  {calendarSyncMeta.receivedAt && (
+                    <span className="font-mono text-[11px] font-bold px-2.5 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 normal-case">
+                      📥 Получено сборщиком: {calendarSyncMeta.receivedAt}
+                    </span>
+                  )}
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Московское время (UTC+3) • Двусторонний обмен данными и синхронизация • Сверху самые свежие новости и далее по убыванию • У каждой новости и события доступна прямая проверенная ссылка на первоисточник
+                </p>
+              </div>
+
+              {/* Action & Sub-tab switches */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center bg-[#0d1220] p-1 rounded-xl border border-gray-800">
+                  <button
+                    onClick={() => setCalendarSubTab("news")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      calendarSubTab === "news"
+                        ? "bg-emerald-500 text-black shadow-sm"
+                        : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <Flame className="h-3.5 w-3.5" />
+                    <span>Лента новостей ({sortedMarketNews.length})</span>
+                  </button>
+
+                  <button
+                    onClick={() => setCalendarSubTab("calendar")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      calendarSubTab === "calendar"
+                        ? "bg-blue-500 text-black shadow-sm"
+                        : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <Calendar className="h-3.5 w-3.5" />
+                    <span>События дня ({calendarEvents.length})</span>
+                  </button>
+                </div>
+
+                {/* Refresh news button */}
+                <button
+                  onClick={refreshMarketNews}
+                  disabled={isNewsLoading}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-md cursor-pointer ${
+                    isNewsLoading
+                      ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                      : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20 active:scale-95"
+                  }`}
+                  title="Обновить свежие новости и синхронизировать события дня"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isNewsLoading ? "animate-spin text-emerald-300" : ""}`} />
+                  <span>{isNewsLoading ? "Синхронизация..." : "Обновить и синхронизировать"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* SUB-VIEW 1: LIVE NEWS FEED (STRICTLY SORTED NEWEST FIRST DESCENDING, DIVIDED INTO 4 SECTIONS: ВСЕ, ЗОЛОТО, MOEX, КРИПТА) */}
+            {calendarSubTab === "news" && (
+              <div className="space-y-4">
+                {/* Key Price-Impacting Events of the Day Quick Strip (with Date & Original Source Badge) */}
+                {calendarEvents.length > 0 && (
+                  <div className="bg-gradient-to-r from-blue-950/40 via-[#0d1324] to-indigo-950/40 border border-blue-500/30 rounded-2xl p-3 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded bg-blue-500/20 border border-blue-500/40 text-blue-300 font-mono text-[10px] font-bold uppercase">
+                          ⚡ Драйверы цены сегодня ({calendarSyncMeta.date})
+                        </span>
+                        <span className="text-xs font-bold text-white">
+                          Ключевые события дня (Статистика, Геополитика, ФРС, МосБиржа и Крипторынок)
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setCalendarSubTab("calendar")}
+                        className="text-xs font-mono font-bold text-blue-300 hover:text-white bg-blue-500/15 hover:bg-blue-500/30 border border-blue-500/30 px-2.5 py-1 rounded-lg transition cursor-pointer flex items-center gap-1"
+                      >
+                        <span>Все события дня ({calendarEvents.length})</span>
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      {calendarEvents
+                        .filter((ev) => matchesMarketSection(ev, stationNewsCategory))
+                        .slice(0, 3)
+                        .map((ev) => {
+                          const secBadge = getSectionBadgeMeta(ev);
+                          return (
+                            <div
+                              key={ev.id}
+                              onClick={() => setCalendarSubTab("calendar")}
+                              className="p-2.5 rounded-xl bg-[#0a0e19]/90 border border-gray-800 hover:border-blue-500/40 transition cursor-pointer space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-1.5 text-[10px] font-mono flex-wrap">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-cyan-300 font-bold">📅 {ev.date || calendarSyncMeta.date}</span>
+                                  <span className="text-amber-400 font-bold">⏰ {ev.timeMsk}</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${secBadge.className}`}>
+                                    {secBadge.label}
+                                  </span>
+                                  <span
+                                    className={`px-1.5 py-0.2 rounded font-bold uppercase ${
+                                      ev.importance === "CRITICAL"
+                                        ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                        : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                    }`}
+                                  >
+                                    {ev.importance}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="text-xs font-bold text-white line-clamp-1">{ev.title}</div>
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-gray-400">
+                                <span className="truncate">
+                                  Прогноз: <span className="text-gray-200 font-mono">{ev.forecast}</span> • Пред:{" "}
+                                  <span className="text-gray-300 font-mono">{ev.previous}</span>
+                                </span>
+                                <a
+                                  href={ev.url || "https://ru.tradingview.com/economic-calendar/"}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 hover:text-white border border-blue-500/30 font-mono text-[9px] font-bold transition shrink-0"
+                                  title={`Перейти на оригинал источника: ${ev.source || "Официальный источник"}`}
+                                >
+                                  <ExternalLink className="h-2.5 w-2.5" />
+                                  <span>🔗 {ev.source || "Источник"}</span>
+                                </a>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Search, Sort Indicator & 5-Section Filter Bar (Все, Золото, Геополитика, MOEX, Крипта) */}
+                <div className="bg-[#0b0e17] border border-gray-800/90 rounded-2xl p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-md">
+                  <div className="flex items-center gap-2 flex-1 flex-wrap">
+                    <div className="relative flex-1 min-w-[220px] max-w-md">
+                      <input
+                        type="text"
+                        value={stationNewsSearch}
+                        onChange={(e) => setStationNewsSearch(e.target.value)}
+                        placeholder="Поиск по новостям (золото, ФРС, МосБиржа, биткоин, инфляция)..."
+                        className="w-full bg-[#111625] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+                      />
+                      {stationNewsSearch && (
+                        <button
+                          onClick={() => setStationNewsSearch("")}
+                          className="absolute right-2.5 top-2 text-gray-400 hover:text-white text-xs"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono font-bold">
+                      ↓ Сначала свежие (по убыванию)
+                    </span>
+                  </div>
+
+                  {/* Unified 5-Section Filter Buttons: Все, Золото, Геополитика, MOEX, Крипта */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none text-xs font-mono">
+                    {[
+                      { id: "ALL", label: "🌐 Все", count: sortedMarketNews.length },
+                      {
+                        id: "GOLD",
+                        label: "🪙 Золото",
+                        count: sortedMarketNews.filter((n) => matchesMarketSection(n, "GOLD")).length
+                      },
+                      {
+                        id: "GEOPOLITICS",
+                        label: "🌍 Геополитика",
+                        count: sortedMarketNews.filter((n) => matchesMarketSection(n, "GEOPOLITICS")).length
+                      },
+                      {
+                        id: "MOEX",
+                        label: "🇷🇺 MOEX",
+                        count: sortedMarketNews.filter((n) => matchesMarketSection(n, "MOEX")).length
+                      },
+                      {
+                        id: "CRYPTO",
+                        label: "₿ Крипта",
+                        count: sortedMarketNews.filter((n) => matchesMarketSection(n, "CRYPTO")).length
+                      }
+                    ].map((sec) => (
+                      <button
+                        key={sec.id}
+                        onClick={() => {
+                          setStationNewsCategory(sec.id);
+                          setCalendarCategoryFilter(sec.id);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl transition cursor-pointer shrink-0 font-bold flex items-center gap-1.5 ${
+                          stationNewsCategory === sec.id
+                            ? "bg-emerald-500 text-black shadow-sm"
+                            : "bg-gray-800/80 text-gray-300 hover:text-white border border-gray-700/60"
+                        }`}
+                      >
+                        <span>{sec.label}</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                            stationNewsCategory === sec.id ? "bg-black/20 text-black" : "bg-gray-900 text-gray-400"
+                          }`}
+                        >
+                          {sec.count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* News Cards List (Strictly Newest First -> Descending, with Compact Source Verification Link) */}
+                <div className="space-y-3">
+                  {(() => {
+                    const filtered = sortedMarketNews.filter((n) => {
+                      if (!matchesMarketSection(n, stationNewsCategory)) return false;
+                      if (stationNewsSearch.trim()) {
+                        const q = stationNewsSearch.toLowerCase();
+                        const match =
+                          n.title?.toLowerCase().includes(q) ||
+                          n.summary?.toLowerCase().includes(q) ||
+                          n.goldEffect?.toLowerCase().includes(q);
+                        if (!match) return false;
+                      }
+                      return true;
+                    });
+
+                    if (filtered.length === 0) {
+                      return (
+                        <div className="p-8 rounded-2xl bg-gray-900/40 border border-dashed border-gray-800 text-center space-y-3">
+                          <Flame className="h-8 w-8 text-emerald-400/60 mx-auto" />
+                          <p className="text-gray-400 text-sm">
+                            {isNewsLoading ? "Идет сбор свежих новостей..." : "Новости в выбранном разделе не найдены"}
+                          </p>
+                          <button
+                            onClick={refreshMarketNews}
+                            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs inline-flex items-center gap-2 cursor-pointer"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            <span>Собрать новости прямо сейчас</span>
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    return filtered.map((item, idx) => {
+                      const secBadge = getSectionBadgeMeta(item);
+                      const verifyUrl =
+                        item.url ||
+                        (secBadge.code === "GEOPOLITICS"
+                          ? "https://tass.ru/mezhdunarodnaya-panorama"
+                          : secBadge.code === "MOEX"
+                          ? "https://www.moex.com/ru/derivatives/"
+                          : secBadge.code === "CRYPTO"
+                          ? "https://ru.tradingview.com/markets/cryptocurrencies/news/"
+                          : "https://www.tradingview.com/symbols/XAUUSD/?exchange=OANDA");
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`bg-gray-900/60 border rounded-2xl p-4 flex flex-col md:flex-row md:items-start justify-between gap-4 transition ${
+                            idx === 0
+                              ? "border-emerald-500/40 bg-gradient-to-r from-emerald-950/20 via-gray-900/60 to-gray-900/60"
+                              : "border-gray-800/90 hover:border-gray-700"
+                          }`}
+                        >
+                          <div className="space-y-2 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {idx === 0 && (
+                                <span className="font-mono text-[10px] font-extrabold px-2 py-0.5 rounded bg-emerald-500 text-black uppercase">
+                                  🔥 Самая свежая
+                                </span>
+                              )}
+                              <span className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded ${secBadge.className}`}>
+                                {secBadge.label}
+                              </span>
+                              <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30" title="Дата и время публикации первоисточника">
+                                📅 Опубликовано: {item.date && !item.time.includes(item.date) ? `${item.date} • ${item.time}` : item.time}
+                              </span>
+                              {item.receivedAt && (
+                                <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" title="Точное время получения сборщиком QUANTEX">
+                                  📥 Получено: {item.receivedAt}
+                                </span>
+                              )}
+                              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/25">
+                                ⏱ {formatRelativeFreshness(item._tsMs)}
+                              </span>
+                              {item.source && (
+                                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-300">
+                                  {item.source}
+                                </span>
+                              )}
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                  item.impact === "CRITICAL"
+                                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                    : item.impact === "HIGH"
+                                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                    : "bg-blue-500/20 text-blue-300"
+                                }`}
+                              >
+                                {item.impact}
+                              </span>
+
+                              {/* Small clickable source verification link badge */}
+                              <a
+                                href={verifyUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 hover:text-white border border-blue-500/30 font-mono text-[10px] font-bold transition cursor-pointer"
+                                title={`Перейти на оригинал статьи (${item.source || "Первоисточник"}) и проверить`}
+                              >
+                                <ExternalLink className="h-3 w-3 shrink-0" />
+                                <span>🔗 Читать на {item.source || "источнике"}</span>
+                              </a>
+                            </div>
+
+                            <h4 className="font-bold text-base text-white leading-snug">
+                              {item.title}
+                            </h4>
+
+                            {item.summary && (
+                              <p className="text-xs text-gray-300 leading-relaxed">
+                                {item.summary}
+                              </p>
+                            )}
+
+                            {item.goldEffect && (
+                              <div className="p-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-xs text-emerald-300 flex items-start gap-2">
+                                <span className="font-bold shrink-0">Влияние на цену:</span>
+                                <span className="leading-relaxed">{item.goldEffect}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Quick AI Action & Source Link */}
+                          <div className="shrink-0 flex md:flex-col items-center md:items-end justify-between gap-2">
+                            <button
+                              onClick={() => {
+                                setActiveTab("chart");
+                                setIsAiPanelCollapsed(false);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                              title="Открыть график и передать новость ИИ-аналитику"
+                            >
+                              <Bot className="h-3.5 w-3.5 text-cyan-400" />
+                              <span>ИИ-Анализ</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            )}
+
+            {/* SUB-VIEW 2: DAILY PRICE-IMPACTING MACROECONOMIC EVENTS (СОБЫТИЯ ДНЯ С ДАТОЙ, СИНХРОНИЗАЦИЕЙ И 4 РАЗДЕЛАМИ) */}
+            {calendarSubTab === "calendar" && (
+              <div className="space-y-4">
+                {/* Filter & Synchronization Header for Daily Events */}
+                <div className="bg-[#0b0e17] border border-gray-800/90 rounded-2xl p-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
+                      <span>События дня, влияющие на цену активов</span>
+                      <span className="font-mono text-[11px] font-extrabold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                        📅 Дата: {calendarSyncMeta.date}
+                      </span>
+                      <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                        ⏰ МСК (UTC+3): {calendarSyncMeta.timeMsk}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      Статистика динамики инфляции (CPI/PCE), ВВП, обсуждения ФРС США (FOMC), клиринги и статистика МосБиржи/ЦБ РФ, потоки Spot BTC/ETH ETF
+                    </p>
+                  </div>
+
+                  {/* Unified 5-Section Filter Buttons: Все, Золото, Геополитика, MOEX, Крипта */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none text-xs font-mono">
+                    {[
+                      { id: "ALL", label: "🌐 Все", count: calendarEvents.length },
+                      {
+                        id: "GOLD",
+                        label: "🪙 Золото",
+                        count: calendarEvents.filter((ev) => matchesMarketSection(ev, "GOLD")).length
+                      },
+                      {
+                        id: "GEOPOLITICS",
+                        label: "🌍 Геополитика",
+                        count: calendarEvents.filter((ev) => matchesMarketSection(ev, "GEOPOLITICS")).length
+                      },
+                      {
+                        id: "MOEX",
+                        label: "🇷🇺 MOEX",
+                        count: calendarEvents.filter((ev) => matchesMarketSection(ev, "MOEX")).length
+                      },
+                      {
+                        id: "CRYPTO",
+                        label: "₿ Крипта",
+                        count: calendarEvents.filter((ev) => matchesMarketSection(ev, "CRYPTO")).length
+                      }
+                    ].map((sec) => (
+                      <button
+                        key={sec.id}
+                        onClick={() => {
+                          setCalendarCategoryFilter(sec.id);
+                          setStationNewsCategory(sec.id);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl transition cursor-pointer shrink-0 font-bold flex items-center gap-1.5 ${
+                          calendarCategoryFilter === sec.id
+                            ? "bg-blue-500 text-black shadow-sm"
+                            : "bg-gray-800/80 text-gray-300 hover:text-white border border-gray-700/60"
+                        }`}
+                      >
+                        <span>{sec.label}</span>
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                            calendarCategoryFilter === sec.id ? "bg-black/20 text-black" : "bg-gray-900 text-gray-400"
+                          }`}
+                        >
+                          {sec.count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Events Cards */}
+                <div className="space-y-3">
+                  {calendarEvents
+                    .filter((ev) => matchesMarketSection(ev, calendarCategoryFilter))
+                    .map((ev) => {
+                      const secBadge = getSectionBadgeMeta(ev);
+                      const verifyUrl =
+                        ev.url ||
+                        (secBadge.code === "GEOPOLITICS"
+                          ? "https://tass.ru/mezhdunarodnaya-panorama"
+                          : secBadge.code === "MOEX"
+                          ? "https://www.moex.com/ru/derivatives/"
+                          : secBadge.code === "CRYPTO"
+                          ? "https://www.cmegroup.com/markets/cryptocurrencies/bitcoin/bitcoin.html"
+                          : "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm");
+
+                      return (
+                        <div
+                          key={ev.id}
+                          className={`bg-gray-900/60 border rounded-2xl p-4 space-y-3 transition ${
+                            ev.status === "NEXT"
+                              ? "border-amber-500/50 bg-gradient-to-r from-amber-950/20 via-gray-900/60 to-gray-900/60"
+                              : ev.importance === "CRITICAL"
+                              ? "border-rose-500/30 hover:border-rose-500/50"
+                              : "border-gray-800 hover:border-gray-700"
+                          }`}
+                        >
+                          {/* Top row: Date, Moscow Time, Section, Status & Source Verification Badge + Forecast/Previous/Actual */}
+                          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                            <div className="space-y-1.5 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded ${secBadge.className}`}>
+                                  {secBadge.label}
+                                </span>
+                                <span className="font-mono text-xs font-extrabold px-2.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40" title="Дата события">
+                                  📅 {ev.date || calendarSyncMeta.date}
+                                </span>
+                                <span className="font-mono text-xs font-extrabold px-2.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40" title="Московское время события">
+                                  ⏰ {ev.timeMsk}
+                                </span>
+                                {(ev.receivedAt || calendarSyncMeta.receivedAt) && (
+                                  <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" title="Точное время получения/синхронизации сборщиком">
+                                    📥 Получено: {ev.receivedAt || calendarSyncMeta.receivedAt}
+                                  </span>
+                                )}
+                                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                  {ev.currency}
+                                </span>
+                                {ev.categoryLabel && (
+                                  <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                                    {ev.categoryLabel}
+                                  </span>
+                                )}
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                    ev.importance === "CRITICAL"
+                                      ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                      : ev.importance === "HIGH"
+                                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                      : "bg-blue-500/20 text-blue-300"
+                                  }`}
+                                >
+                                  {ev.importance === "CRITICAL" ? "🔥 КРИТИЧЕСКОЕ ВЛИЯНИЕ" : "⚡ ВЫСОКОЕ ВЛИЯНИЕ"}
+                                </span>
+                                {ev.statusLabel && (
+                                  <span
+                                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                                      ev.status === "COMPLETED"
+                                        ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                                        : ev.status === "NEXT"
+                                        ? "bg-amber-500 text-black font-extrabold"
+                                        : "bg-gray-800 text-gray-300"
+                                    }`}
+                                  >
+                                    {ev.statusLabel}
+                                  </span>
+                                )}
+                                {ev.source && (
+                                  <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-300">
+                                    {ev.source}
+                                  </span>
+                                )}
+                                {/* Small clickable source verification badge */}
+                                <a
+                                  href={verifyUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 hover:text-white border border-blue-500/30 font-mono text-[10px] font-bold transition cursor-pointer"
+                                  title={`Перейти на оригинал источника (${ev.source || "Официальный источник"}) и проверить`}
+                                >
+                                  <ExternalLink className="h-3 w-3 shrink-0" />
+                                  <span>🔗 {ev.source || "Источник"}</span>
+                                </a>
+                              </div>
+
+                              <h4 className="font-bold text-base text-white leading-snug">
+                                {ev.title}
+                              </h4>
+
+                              {ev.dynamicsNote && (
+                                <p className="text-xs text-cyan-300/90 font-mono">
+                                  📊 {ev.dynamicsNote}
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Macro Numbers Box: Actual / Forecast / Previous */}
+                            <div className="grid grid-cols-3 gap-2 bg-[#0b0f1c] border border-gray-800 rounded-xl p-2.5 text-xs font-mono shrink-0 min-w-[260px]">
+                              <div>
+                                <span className="text-gray-500 block text-[10px] uppercase">Факт / Статус:</span>
+                                <span className="text-emerald-400 font-bold">{ev.actual || "Ожидается"}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500 block text-[10px] uppercase">Прогноз:</span>
+                                <span className="text-amber-300 font-bold">{ev.forecast || "—"}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500 block text-[10px] uppercase">Предыдущее:</span>
+                                <span className="text-gray-300">{ev.previous || "—"}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Price Impact Description */}
+                          <div className="p-2.5 rounded-xl bg-[#0c1222] border border-blue-500/20 text-xs text-gray-200 leading-relaxed">
+                            <span className="font-bold text-blue-300 mr-1.5">Механика влияния на цену:</span>
+                            {ev.impact}
+                          </div>
+
+                          {/* Bullish & Bearish Price Scenarios */}
+                          {(ev.bullishScenario || ev.bearishScenario) && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+                              {ev.bullishScenario && (
+                                <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-200">
+                                  <span className="font-bold text-emerald-400 block mb-0.5">🟢 Бычий сценарий (Рост цены):</span>
+                                  {ev.bullishScenario}
+                                </div>
+                              )}
+                              {ev.bearishScenario && (
+                                <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/30 text-rose-200">
+                                  <span className="font-bold text-rose-400 block mb-0.5">🔴 Медвежий сценарий (Давление на цену):</span>
+                                  {ev.bearishScenario}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Affected Tickers & Quick AI Action */}
+                          <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-mono text-gray-400 uppercase">Затронутые активы:</span>
+                              {(ev.affectedAssets || ["OANDA:XAUUSD", "DXY", "BTCUSDT"]).map((ticker: string) => (
+                                <span
+                                  key={ticker}
+                                  className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-cyan-300 border border-gray-700"
+                                >
+                                  {ticker}
+                                </span>
+                              ))}
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                setActiveTab("chart");
+                                setIsAiPanelCollapsed(false);
+                              }}
+                              className="px-3 py-1 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-200 text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                            >
+                              <Bot className="h-3.5 w-3.5 text-blue-400" />
+                              <span>Разобрать влияние на графике</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* 6. TRADE JOURNAL TAB                                     */}
+        {/* ======================================================== */}
+        {activeTab === "journal" && (
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+            <div className="flex items-center justify-between border-b border-gray-800 pb-3">
+              <div>
+                <h3 className="font-display font-bold text-base text-white uppercase tracking-wider flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-indigo-400" />
+                  <span>Журнал Сделок и Аналитика</span>
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Учет сделок по сетапам QUANTEX Pro v8 с фиксацией зон GEX и расчетом винрейта
+                </p>
+              </div>
+            </div>
+
+            {/* New Trade Entry Form */}
+            <form onSubmit={handleAddTrade} className="bg-gray-900/60 border border-gray-800 rounded-xl p-4 space-y-3">
+              <span className="text-xs font-bold text-white uppercase">Добавить сделку в журнал</span>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-400 block mb-1">Актив</label>
+                  <select
+                    value={newTradeAsset}
+                    onChange={(e) => setNewTradeAsset(e.target.value)}
+                    className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-xs text-white"
+                  >
+                    <option value="XAUUSD">XAUUSD</option>
+                    <option value="BTCUSDT">BTCUSDT</option>
+                    <option value="ETHUSDT">ETHUSDT</option>
+                    <option value="XRPUSDT">XRPUSDT</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 block mb-1">Направление</label>
+                  <select
+                    value={newTradeType}
+                    onChange={(e) => setNewTradeType(e.target.value as any)}
+                    className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-xs text-white"
+                  >
+                    <option value="BUY">BUY (Лонг)</option>
+                    <option value="SELL">SELL (Шорт)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 block mb-1">Вход ($)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={newTradeEntry}
+                    onChange={(e) => setNewTradeEntry(e.target.value)}
+                    placeholder="4160.0"
+                    className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 block mb-1">Выход ($)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={newTradeExit}
+                    onChange={(e) => setNewTradeExit(e.target.value)}
+                    placeholder="4185.0"
+                    className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-400 block mb-1">P&amp;L ($)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={newTradePnl}
+                    onChange={(e) => setNewTradePnl(e.target.value)}
+                    placeholder="+250"
+                    className="w-full bg-black border border-gray-800 rounded px-2 py-1.5 text-xs text-white"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    className="w-full bg-gradient-to-r from-amber-500 to-yellow-600 text-black font-bold py-1.5 rounded text-xs transition cursor-pointer"
+                  >
+                    Записать
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            {/* Trades List */}
+            <div className="bg-black/80 border border-gray-800 rounded-xl overflow-hidden">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-gray-900 text-gray-400 border-b border-gray-800">
+                  <tr>
+                    <th className="p-3">Дата</th>
+                    <th className="p-3">Актив</th>
+                    <th className="p-3">Тип</th>
+                    <th className="p-3">Вход</th>
+                    <th className="p-3">Выход</th>
+                    <th className="p-3">P&amp;L</th>
+                    <th className="p-3">GEX Зона</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/60">
+                  {journalTrades.map((t) => (
+                    <tr key={t.id} className="hover:bg-gray-900/30">
+                      <td className="p-3 text-gray-400">{t.date}</td>
+                      <td className="p-3 font-bold text-white">{t.asset}</td>
+                      <td className="p-3">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          t.type === "BUY" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+                        }`}>
+                          {t.type}
+                        </span>
+                      </td>
+                      <td className="p-3">${t.entryPrice}</td>
+                      <td className="p-3">${t.exitPrice}</td>
+                      <td className={`p-3 font-bold ${t.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                        {t.pnl >= 0 ? `+$${t.pnl}` : `-$${Math.abs(t.pnl)}`}
+                      </td>
+                      <td className="p-3 text-gray-400">{t.gexZone || "OTE / Gamma Flip"}</td>
+                    </tr>
+                  ))}
+                  {journalTrades.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="p-6 text-center text-gray-500">
+                        Пока нет записанных сделок. Добавьте первую сделку через форму выше.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* ⚙️ UNIFIED STATION SETTINGS TAB                         */}
+        {/* ======================================================== */}
+        {activeTab === "settings" && (
+          <UnifiedStationSettings
+            initialSection={settingsInitialSection}
+            currentTheme={stationTheme}
+            onThemeChange={(th) => {
+              setStationTheme(th);
+              try {
+                localStorage.setItem("quantex_theme", th);
+              } catch {}
+            }}
+            currentUser={stationUser}
+            onUserChange={(u) => {
+              setStationUser(u);
+              try {
+                localStorage.setItem("quantex_active_user", JSON.stringify(u));
+              } catch {}
+            }}
+            presetSel={presetSel}
+            onApplyPreset={applyPreset}
+            showTables={showTables}
+            onToggleTables={setShowTables}
+            tblViewMode={tblViewMode}
+            onSelectTblViewMode={setTblViewMode}
+            tablePos={tablePos}
+            onSelectTablePos={setTablePos}
+            useAntiRound={useAntiRound}
+            onToggleAntiRound={setUseAntiRound}
+            onNavigateToTab={(tab) => setActiveTab(tab as any)}
+          />
+        )}
+
+        {/* ======================================================== */}
+        {/* ℹ️ STRIKE DETAIL MODAL                                   */}
+        {/* ======================================================== */}
+        {selectedStrikeDetail && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <div className="bg-[#0b0e17] border border-gray-700/80 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4 font-mono text-xs">
+              <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-bold text-white">Страйк ${selectedStrikeDetail.strike}</span>
+                  {selectedStrikeDetail.strike === gexReport?.callWall && (
+                    <span className="text-[10px] bg-emerald-500 text-black font-bold px-1.5 py-0.2 rounded">ПОТОЛОК (CW)</span>
+                  )}
+                  {selectedStrikeDetail.strike === gexReport?.putWall && (
+                    <span className="text-[10px] bg-rose-500 text-white font-bold px-1.5 py-0.2 rounded">ПОДДЕРЖКА (PW)</span>
+                  )}
+                  {selectedStrikeDetail.strike === gexReport?.gammaFlip && (
+                    <span className="text-[10px] bg-purple-600 text-white font-bold px-1.5 py-0.2 rounded">ГАММА (FLIP)</span>
+                  )}
+                  {selectedStrikeDetail.strike === gexReport?.maxPain && (
+                    <span className="text-[10px] bg-cyan-400 text-black font-bold px-1.5 py-0.2 rounded">МАГНИТ</span>
+                  )}
+                  {selectedStrikeDetail.strike === gexReport?.sleeperMagnet && (
+                    <span className="text-[10px] bg-amber-500 text-black font-bold px-1.5 py-0.2 rounded">СПЯЩИЙ МАГНИТ</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setSelectedStrikeDetail(null)}
+                  className="p-1 text-gray-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2 text-gray-300">
+                <div className="flex justify-between">
+                  <span>Call GEX:</span>
+                  <span className="text-emerald-400 font-bold">+{selectedStrikeDetail.callGex} $M</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Put GEX:</span>
+                  <span className="text-rose-400 font-bold">{selectedStrikeDetail.putGex} $M</span>
+                </div>
+                <div className="flex justify-between border-t border-gray-800 pt-1">
+                  <span>Net GEX (Чистая Гамма):</span>
+                  <span className={selectedStrikeDetail.netGex >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                    {selectedStrikeDetail.netGex > 0 ? `+${selectedStrikeDetail.netGex}` : selectedStrikeDetail.netGex} $M
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Открытый интерес Call:</span>
+                  <span>{selectedStrikeDetail.callOi.toLocaleString()} контр.</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Открытый интерес Put:</span>
+                  <span>{selectedStrikeDetail.putOi.toLocaleString()} контр.</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Объем торгов (Call / Put):</span>
+                  <span>{selectedStrikeDetail.callVolume} / {selectedStrikeDetail.putVolume}</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSelectedStrikeDetail(null)}
+                className="w-full py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-bold transition cursor-pointer"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* 🎛️ INDICATORS POPUP MODAL (Toggle any indicator on/off)  */}
+        {/* ======================================================== */}
+        {isIndicatorsModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+            <div
+              className="border rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4 font-sans text-xs relative overflow-hidden"
+              style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: curPalette.border }}>
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-cyan-500/20 rounded-lg border border-cyan-500/40">
+                    <Sliders className="h-4 w-4 text-cyan-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-sm">Настройки индикаторов графика</h3>
+                    <p className="text-[10.5px] text-gray-400">
+                      Включение, отключение и параметры графических оверлеев
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsIndicatorsModalOpen(false)}
+                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Indicator Categories */}
+              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+                {/* 1. Скользящие средние (EMA) */}
+                <div className="space-y-2">
+                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <TrendingUp className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Трендовые Скользящие Средние (EMA)</span>
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {/* EMA 50 */}
+                    <button
+                      type="button"
+                      onClick={() => setShowEma50(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showEma50
+                          ? "bg-cyan-500/20 border-cyan-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#38bdf8] shadow-sm" />
+                        <span className="font-bold">EMA 50</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showEma50 ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+
+                    {/* EMA 100 */}
+                    <button
+                      type="button"
+                      onClick={() => setShowEma100(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showEma100
+                          ? "bg-amber-500/20 border-amber-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#f59e0b] shadow-sm" />
+                        <span className="font-bold">EMA 100</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showEma100 ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+
+                    {/* EMA 200 */}
+                    <button
+                      type="button"
+                      onClick={() => setShowEma200(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showEma200
+                          ? "bg-pink-500/20 border-pink-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#ec4899] shadow-sm" />
+                        <span className="font-bold">EMA 200</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showEma200 ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Осцилляторы и подвальные индикаторы */}
+                <div className="space-y-2">
+                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Activity className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Подвальные индикаторы и Осцилляторы</span>
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {/* MACD */}
+                    <button
+                      type="button"
+                      onClick={() => setShowMacdPane(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showMacdPane
+                          ? "bg-indigo-500/20 border-indigo-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div>
+                        <div className="font-bold">MACD (12, 26, 9)</div>
+                        <div className="text-[9.5px] text-gray-400">DIF / DEA / Hist</div>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showMacdPane ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+
+                    {/* RSI */}
+                    <button
+                      type="button"
+                      onClick={() => setShowRsiPane(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showRsiPane
+                          ? "bg-amber-500/20 border-amber-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div>
+                        <div className="font-bold">RSI (6 & 14)</div>
+                        <div className="text-[9.5px] text-gray-400">Зоны 70 / 30</div>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showRsiPane ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+
+                    {/* Stochastic */}
+                    <button
+                      type="button"
+                      onClick={() => setShowStochPane(prev => !prev)}
+                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                        showStochPane
+                          ? "bg-rose-500/20 border-rose-400 text-white shadow-sm"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                      }`}
+                    >
+                      <div>
+                        <div className="font-bold">Стохастик</div>
+                        <div className="text-[9.5px] text-gray-400">%K 14 / %D 3 (80/20)</div>
+                      </div>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
+                        {showStochPane ? "ВКЛ" : "ВЫКЛ"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3. GEX & SMC Оверлеи */}
+                <div className="space-y-2">
+                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Shield className="h-3.5 w-3.5 text-purple-400" />
+                    <span>Гамма-уровни GEX и Smart Money (SMC)</span>
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowGexWalls(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showGexWalls
+                          ? "bg-purple-500/20 border-purple-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">GEX Стены</span>
+                      <span className="text-[10px] font-mono">{showGexWalls ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowForecast(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showForecast
+                          ? "bg-emerald-500/20 border-emerald-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">Прогноз (TP1/TP2)</span>
+                      <span className="text-[10px] font-mono">{showForecast ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowOb(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showOb
+                          ? "bg-blue-500/20 border-blue-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">Ордер-блоки (OB)</span>
+                      <span className="text-[10px] font-mono">{showOb ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowFvg(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showFvg
+                          ? "bg-teal-500/20 border-teal-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">FVG Имбалансы</span>
+                      <span className="text-[10px] font-mono">{showFvg ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowReversal(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showReversal
+                          ? "bg-amber-500/20 border-amber-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">Зоны OTE (0.618)</span>
+                      <span className="text-[10px] font-mono">{showReversal ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowTables(prev => !prev)}
+                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
+                        showTables
+                          ? "bg-cyan-500/20 border-cyan-400 text-white"
+                          : "bg-gray-900/60 border-gray-800 text-gray-400"
+                      }`}
+                    >
+                      <span className="font-bold">HUD Таблица</span>
+                      <span className="text-[10px] font-mono">{showTables ? "ВКЛ" : "ВЫКЛ"}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Actions Footer */}
+              <div className="pt-2 border-t flex items-center justify-between gap-2" style={{ borderColor: curPalette.border }}>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowEma50(false);
+                      setShowEma100(false);
+                      setShowEma200(false);
+                      setShowRsiPane(false);
+                      setShowStochPane(false);
+                      setShowMacdPane(true);
+                      setShowGexWalls(true);
+                      setShowOb(true);
+                      setShowFvg(true);
+                      setShowTables(true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold text-[11px] cursor-pointer transition"
+                  >
+                    По умолчанию
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsIndicatorsModalOpen(false)}
+                  className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px] cursor-pointer transition"
+                >
+                  Готово
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* 🎚️ HUD & DISPLAY SETTINGS MODAL (Accessible to ALL users) */}
+        {/* ======================================================== */}
+        {isUserSettingsModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+            <div
+              className="border rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4 font-sans text-xs relative overflow-hidden"
+              style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: curPalette.border }}>
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-amber-500/20 rounded-lg border border-amber-500/40">
+                    <SlidersHorizontal className="h-4 w-4 text-amber-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-sm">Настройки таблицы HUD и экрана</h3>
+                    <p className="text-[10.5px] text-gray-400">
+                      Шрифты, масштабирование и параметры сводной панели QUANTEX
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsUserSettingsModalOpen(false)}
+                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Settings Body */}
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                {/* 1. HUD Table Font Size */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-gray-300">
+                      Размер шрифта строк HUD:
+                    </label>
+                    <span className="font-mono text-cyan-300 font-bold">{hudFontSize}px</span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {[9, 10, 11, 12, 13, 14].map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => setHudFontSize(sz)}
+                        className={`py-1.5 rounded-lg border font-mono text-xs font-bold transition cursor-pointer ${
+                          hudFontSize === sz
+                            ? "bg-cyan-500/20 border-cyan-400 text-white"
+                            : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                        }`}
+                      >
+                        {sz}px
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. HUD Scale Percentage */}
+                <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: curPalette.border }}>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-gray-300">
+                      Масштаб таблицы HUD:
+                    </label>
+                    <span className="font-mono text-amber-300 font-bold">{hudScale}%</span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {[70, 80, 90, 100, 115, 130].map((sc) => (
+                      <button
+                        key={sc}
+                        type="button"
+                        onClick={() => setHudScale(sc)}
+                        className={`py-1.5 rounded-lg border font-mono text-xs font-bold transition cursor-pointer ${
+                          hudScale === sc
+                            ? "bg-amber-500/20 border-amber-400 text-white"
+                            : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                        }`}
+                      >
+                        {sc}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. View Mode (Полный / Мини / Ультра-Микро) */}
+                <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: curPalette.border }}>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-gray-300">
+                      Режим детализации таблицы HUD:
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { id: "Полный", label: "Полный (Все 11 строк)" },
+                      { id: "Мини", label: "Мини (Компактный)" },
+                      { id: "Ультра-Микро", label: "Ультра-Микро" }
+                    ].map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => setTblViewMode(mode.id as any)}
+                        className={`py-1.5 px-2 rounded-lg border text-[11px] font-bold transition cursor-pointer text-center truncate ${
+                          tblViewMode.includes(mode.id)
+                            ? "bg-cyan-500/20 border-cyan-400 text-white"
+                            : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. Default HUD Position on Screen */}
+                <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: curPalette.border }}>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-gray-300">
+                      Положение HUD по умолчанию:
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setHudPos(null)}
+                      className="text-[10px] text-cyan-400 hover:underline cursor-pointer"
+                    >
+                      Сбросить к углу
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                    {[
+                      "Верхний левый",
+                      "Верхний правый",
+                      "Внизу по центру",
+                      "Нижний левый",
+                      "Нижний правый"
+                    ].map((pos) => (
+                      <button
+                        key={pos}
+                        type="button"
+                        onClick={() => {
+                          setTablePos(pos as any);
+                          setHudPos(null);
+                        }}
+                        className={`py-1.5 px-2 rounded-lg border text-[10.5px] font-bold transition cursor-pointer text-center truncate ${
+                          tablePos === pos
+                            ? "bg-amber-500/20 border-amber-400 text-white"
+                            : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                        }`}
+                      >
+                        {pos}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 5. Sound Alerts */}
+                <div className="flex items-center justify-between p-2 rounded-xl bg-gray-900/50 border border-gray-800 pt-2">
+                  <div>
+                    <div className="font-bold text-white text-xs">Звуковые алерты уровней</div>
+                    <div className="text-[10px] text-gray-400">Оповещения при пробое Call/Put Wall или смене тренда</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSoundAlertsEnabled(prev => !prev)}
+                    className={`px-3 py-1 rounded-lg font-mono font-bold text-xs transition cursor-pointer ${
+                      soundAlertsEnabled
+                        ? "bg-emerald-500/20 border border-emerald-400 text-emerald-300"
+                        : "bg-gray-800 text-gray-400"
+                    }`}
+                  >
+                    {soundAlertsEnabled ? "ВКЛ" : "ВЫКЛ"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="pt-2 border-t flex items-center justify-between" style={{ borderColor: curPalette.border }}>
+                <span className="text-[10.5px] text-gray-400">
+                  Настройки сохраняются автоматически в браузере
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsUserSettingsModalOpen(false)}
+                  className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[11px] cursor-pointer transition shadow-md"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,8 @@
+{
+  "name": "Remix Sync \u0026 Trade AI Indicator Studio",
+  "description": "An advanced trading system merging Cumulative Volume Delta (voldelta), Market Structure Narrative (SMC), and Lorentzian Machine Learning classification with a live interactive backtesting simulator and Gemini-powered real-time chart analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

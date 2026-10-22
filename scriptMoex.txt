@@ -1,0 +1,700 @@
+//@version=6
+indicator("S&T MOEX Russia Edition [S&T Premium v6]", "S&T MOEX", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ==========================================================
+// ⚙️ ГРУППА 0: СИСТЕМА ОПТИМАЛЬНЫХ ПРЕСЕТОВ MOEX
+// ==========================================================
+gp_presets   = "⚙️ Оптимальные Пресеты MOEX"
+preset_sel   = input.string("По умолчанию (Ручные настройки)", "Выбрать Оптимальный Пресет", options=[
+    "По умолчанию (Ручные настройки)",
+    "MOEX Акции - 15 мин Оптимальный",
+    "IMOEX Индекс - 1 час Тренд",
+    "Фьючерс Si (USD/RUB) - 5 мин Скальпинг",
+    "Фьючерс RI (RTS) - 15 мин Свинг",
+    "Нефть Brent (BR) - 15 мин Оптимальный"
+    ], group=gp_presets, tooltip="Перезаписывает все параметры под специфику российского рынка (MOEX).")
+
+// ==========================================================
+// 📱 ГРУППА 1: НАСТРОЙКИ ИНТЕРФЕЙСА И МОБИЛЬНОЙ ОПТИМИЗАЦИИ
+// ==========================================================
+gp_ui        = "📱 Настройки Интерфейса"
+show_tables  = input.bool(true, "Показывать инфо-панель MOEX", group=gp_ui)
+compact_mode = input.bool(${p?"true":"false"}, "Компактный режим панели", group=gp_ui)
+table_pos    = input.string("${p?"Нижний левый":"Нижний правый"}", "Позиция инфо-панели", options=["Верхний левый", "Верхний правый", "Нижний левый", "Нижний правый"], group=gp_ui)
+text_sz_opt  = input.string("${p?"Микро":"Маленький"}", "Размер шрифта на графике", options=["Микро", "Маленький", "Обычный", "Крупный"], group=gp_ui)
+clean_ob     = input.bool(true, "Скрывать протестированные (mitigated) OB/FVG", group=gp_ui)
+label_offset = input.int(${p?"15":"8"}, "Смещение меток вправо (бары)", minval=2, maxval=50, group=gp_ui)
+line_len     = input.int(${p?"25":"40"}, "Длина горизонтальных линий (бары)", minval=5, maxval=100, group=gp_ui)
+
+// ==========================================================
+// 🇷🇺 ГРУППА 2: СПЕЦИФИЧЕСКИЕ ФИЛЬТРЫ РОССИЙСКОГО РЫНКА (MOEX)
+// ==========================================================
+gp_moex      = "🇷🇺 Макро-Фильтры MOEX"
+use_macro    = input.bool(true, "Учитывать Юань, DXY и Нефть Brent", group=gp_moex)
+use_moex     = input.bool(true, "Учитывать тренд Индекса МосБиржи (IMOEX)", group=gp_moex)
+imoex_tf     = input.timeframe("60", "Таймфрейм Индекса IMOEX", group=gp_moex)
+check_sess   = input.bool(true, "Фильтр основной сессии MOEX (10:00 - 18:50 MSK)", group=gp_moex)
+use_rsimacd  = input.bool(true, "Конфлюэнция RSI + MACD", group=gp_moex)
+use_ote      = input.bool(true, "Фильтр зоны OTE (0.618 - 0.786)", group=gp_moex)
+
+// ==========================================================
+// 🏛️ ГРУППА 3: НАСТРОЙКИ СТРУКТУРЫ И ЗОН (SMC)
+// ==========================================================
+gp_smc       = "🏛️ Настройки Структуры SMC (MOEX)"
+ob_pivot_len = input.int(4, "Период Pivot для структуры", minval=2, maxval=15, group=gp_smc)
+ob_limit     = input.int(10, "Максимальное кол-во зон OB", minval=2, maxval=50, group=gp_smc)
+show_ob      = input.bool(${j.showOB?"true":"false"}, "Показывать Блоки Ордеров (OB)", group=gp_smc)
+show_fvg     = input.bool(${j.showFVG?"true":"false"}, "Показывать Имбалансы (FVG)", group=gp_smc)
+show_sr_zones= input.bool(true, "Показывать ключевые зоны Liquidity S/R", group=gp_smc)
+merge_sr     = input.bool(true, "Объединять близкие уровни Liquidity S/R", group=gp_smc)
+max_sr_boxes = input.int(${p?"4":"8"}, "Макс. активных зон Liquidity S/R", minval=2, maxval=20, group=gp_smc)
+show_sweeps  = input.bool(true, "Показывать надписи SWEEP на графике", group=gp_smc)
+show_ote     = input.bool(true, "Показывать OTE зону на графике", group=gp_smc)
+
+// ==========================================================
+// 🎯 ГРУППА 4: ФИБОНАЧЧИ И ПРОГНОЗ ЦЕНЫ MOEX
+// ==========================================================
+gp_fib       = "🎯 Фибоначчи и Прогноз цены MOEX"
+show_forecast= input.bool(${j.showPriceForecast!==!1?"true":"false"}, "Показывать волновой прогноз цены", group=gp_fib)
+show_trade_lvl= input.bool(true, "Показывать точные уровни Входа/TP/SL", group=gp_fib)
+show_alt_wave= input.bool(true, "Показывать альтернативный сценарий", group=gp_fib)
+fibo_tp_ext  = input.float(1.618, "Уровень TP Фибоначчи Расширения", options=[1.272, 1.414, 1.618, 2.0, 2.618], group=gp_fib)
+sl_atr_mult  = input.float(0.5, "Множитель ATR для Stop Loss буфера", minval=0.1, maxval=2.0, step=0.1, group=gp_fib)
+
+// ==========================================================
+// 🎨 ГРУППА 5: ЦВЕТОВАЯ СХЕМА MOEX
+// ==========================================================
+gp_colors    = "🎨 Цветовая схема MOEX"
+c_bull       = input.color(#22c55e, "Цвет Бычьих Зон MOEX / LONG", group=gp_colors)
+c_bear       = input.color(#ef4444, "Цвет Медвежьих Зон MOEX / SHORT", group=gp_colors)
+c_gold       = input.color(#eab308, "Цвет Сигналов MOEX GOLD", group=gp_colors)
+c_fuchsia    = input.color(#d946ef, "Цвет Пурпурных Сигналов", group=gp_colors)
+c_neutral    = input.color(#94a3b8, "Нейтральный Цвет", group=gp_colors)
+
+// ==========================================================
+// 🛠️ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ MOEX
+// ==========================================================
+get_text_size(opt) =>
+    opt == "Микро" ? size.tiny : opt == "Маленький" ? size.small : opt == "Обычный" ? size.normal : opt == "Крупный" ? size.large : size.small
+
+get_table_pos(pos) =>
+    pos == "Верхний левый" ? position.top_left : pos == "Верхний правый" ? position.top_right : pos == "Нижний левый" ? position.bottom_left : pos == "Нижний правый" ? position.bottom_right : position.bottom_right
+
+// ATR и Базовые индикаторы
+atr = ta.atr(14)
+sma50 = ta.sma(close, 50)
+ema_trend = ta.ema(close, 200)
+
+cross_bull = ta.crossover(close, ema_trend)
+cross_bear = ta.crossunder(close, ema_trend)
+
+v_buy  = volume * (close >= open ? (high - low > 0 ? (close - low) / (high - low) : 0.5) : (high - low > 0 ? (high - open) / (high - low) : 0.3))
+v_sell = volume - v_buy
+v_delta = v_buy - v_sell
+v_delta_ma  = ta.sma(v_delta, 20)
+v_delta_std = ta.stdev(v_delta, 20)
+
+vol_sma = ta.sma(volume, 20)
+is_extreme_delta = math.abs(v_delta) > vol_sma * 1.8
+is_extreme_buy  = is_extreme_delta and v_delta > 0
+is_extreme_sell = is_extreme_delta and v_delta < 0
+
+// Индикаторы Моментума (RSI + MACD)
+rsi_val = ta.rsi(close, 14)
+rsi_bull_ok = rsi_val >= 50 and rsi_val <= 70
+rsi_bear_ok = rsi_val <= 50 and rsi_val >= 30
+
+[macd_line, macd_sig, _] = ta.macd(close, 12, 26, 9)
+macd_bull_ok = macd_line > macd_sig
+macd_bear_ok = macd_line < macd_sig
+
+osc_buy_ok  = rsi_bull_ok or macd_bull_ok
+osc_sell_ok = rsi_bear_ok or macd_bear_ok
+
+// Межрыночный макро-анализ MOEX (IMOEX, DXY, BR1!)
+imoex_close = use_moex ? request.security("MOEX:IMOEX", imoex_tf, close, ignore_invalid_symbol=true) : na
+imoex_ema   = use_moex ? request.security("MOEX:IMOEX", imoex_tf, ta.ema(close, 20), ignore_invalid_symbol=true) : na
+imoex_bull  = use_moex and not na(imoex_close) and not na(imoex_ema) ? imoex_close > imoex_ema : false
+imoex_bear  = use_moex and not na(imoex_close) and not na(imoex_ema) ? imoex_close < imoex_ema : false
+
+dxy_close = use_macro ? request.security("CAPITALCOM:DXY", timeframe.period, close, ignore_invalid_symbol=true) : na
+dxy_ema   = use_macro ? request.security("CAPITALCOM:DXY", timeframe.period, ta.ema(close, 20), ignore_invalid_symbol=true) : na
+dxy_bull  = use_macro and not na(dxy_close) and not na(dxy_ema) ? dxy_close > dxy_ema : false
+dxy_bear  = use_macro and not na(dxy_close) and not na(dxy_ema) ? dxy_close < dxy_ema : false
+
+oil_close = use_macro ? request.security("MOEX:BR1!", timeframe.period, close, ignore_invalid_symbol=true) : na
+oil_ema   = use_macro ? request.security("MOEX:BR1!", timeframe.period, ta.ema(close, 20), ignore_invalid_symbol=true) : na
+oil_bull  = use_macro and not na(oil_close) and not na(oil_ema) ? oil_close > oil_ema : false
+
+// Pivots SMC MOEX
+ph_lt = ta.pivothigh(high, ob_pivot_len, ob_pivot_len)
+pl_lt = ta.pivotlow(low, ob_pivot_len, ob_pivot_len)
+
+var float last_ph = na
+var float last_pl = na
+
+if not na(ph_lt)
+    last_ph := ph_lt
+if not na(pl_lt)
+    last_pl := pl_lt
+
+// Зоны поддержки и сопротивления MOEX
+var box[] sup_boxes = array.new_box(0)
+var box[] res_boxes = array.new_box(0)
+var label[] sup_labels = array.new_label(0)
+var label[] res_labels = array.new_label(0)
+
+draw_sr_box(float p_level, bool is_support, string label_text, int offset) =>
+    bg_color = is_support ? color.new(c_bull, 85) : color.new(c_bear, 85)
+    border_color = is_support ? color.new(c_bull, 60) : color.new(c_bear, 60)
+    textcolor = is_support ? c_bull : c_bear
+    
+    bool merged = false
+    if merge_sr
+        if is_support and array.size(sup_boxes) > 0
+            for i = 0 to array.size(sup_boxes) - 1
+                bx = array.get(sup_boxes, i)
+                lbl = array.get(sup_labels, i)
+                b_top = box.get_top(bx)
+                b_bottom = box.get_bottom(bx)
+                float box_center = (b_top + b_bottom) / 2.0
+                if math.abs(p_level - box_center) < atr * 0.65
+                    new_top = math.max(b_top, p_level + atr * 0.08)
+                    new_bottom = math.min(b_bottom, p_level - atr * 0.08)
+                    box.set_top(bx, new_top)
+                    box.set_bottom(bx, new_bottom)
+                    label.set_y(lbl, (new_top + new_bottom) / 2.0)
+                    label.set_text(lbl, label_text)
+                    merged := true
+                    break
+        else if not is_support and array.size(res_boxes) > 0
+            for i = 0 to array.size(res_boxes) - 1
+                bx = array.get(res_boxes, i)
+                lbl = array.get(res_labels, i)
+                b_top = box.get_top(bx)
+                b_bottom = box.get_bottom(bx)
+                float box_center = (b_top + b_bottom) / 2.0
+                if math.abs(p_level - box_center) < atr * 0.65
+                    new_top = math.max(b_top, p_level + atr * 0.08)
+                    new_bottom = math.min(b_bottom, p_level - atr * 0.08)
+                    box.set_top(bx, new_top)
+                    box.set_bottom(bx, new_bottom)
+                    label.set_y(lbl, (new_top + new_bottom) / 2.0)
+                    label.set_text(lbl, label_text)
+                    merged := true
+                    break
+
+    if not merged
+        b = box.new(left=bar_index - offset, top=p_level + atr * 0.08, right=bar_index + label_offset, bottom=p_level - atr * 0.08, bgcolor=bg_color, border_color=border_color, border_style=line.style_dashed)
+        l = label.new(bar_index + label_offset, p_level, text=label_text, style=label.style_label_left, color=color.new(color.black, 100), textcolor=textcolor, size=get_text_size(text_sz_opt))
+        if is_support
+            array.push(sup_boxes, b)
+            array.push(sup_labels, l)
+            if array.size(sup_boxes) > max_sr_boxes
+                box.delete(array.shift(sup_boxes))
+                label.delete(array.shift(sup_labels))
+        else
+            array.push(res_boxes, b)
+            array.push(res_labels, l)
+            if array.size(res_boxes) > max_sr_boxes
+                box.delete(array.shift(res_boxes))
+                label.delete(array.shift(res_labels))
+
+add_sr_zone(bool is_supp, float p_lvl, int off, string txt) =>
+    draw_sr_box(p_lvl, is_supp, txt, off)
+
+if show_sr_zones
+    if not na(ph_lt)
+        p_vol = volume[ob_pivot_len * 3]
+        add_sr_zone(false, ph_lt, ob_pivot_len * 3, "Бычья Liquidity Зона MOEX (" + str.tostring(ph_lt, "#.##") + ") [" + str.tostring(p_vol / 1000.0, "#.#") + "K]")
+    if not na(pl_lt)
+        p_vol = volume[ob_pivot_len * 3]
+        add_sr_zone(true, pl_lt, ob_pivot_len * 3, "Медвежья Liquidity Зона MOEX (" + str.tostring(pl_lt, "#.##") + ") [" + str.tostring(p_vol / 1000.0, "#.#") + "K]")
+
+if barstate.islast and show_sr_zones
+    if array.size(res_boxes) > 0
+        for i = 0 to array.size(res_boxes) - 1
+            box.set_right(array.get(res_boxes, i), bar_index + label_offset)
+            label.set_x(array.get(res_labels, i), bar_index + label_offset)
+    if array.size(sup_boxes) > 0
+        for i = 0 to array.size(sup_boxes) - 1
+            box.set_right(array.get(sup_boxes, i), bar_index + label_offset)
+            label.set_x(array.get(sup_labels, i), bar_index + label_offset)
+
+// --- БЛОКИ ОРДЕРОВ MOEX (+OB / -OB) ---
+var box[] bull_ob_boxes = array.new_box(0)
+var box[] bear_ob_boxes = array.new_box(0)
+
+if show_ob and bar_index > 1
+    if close > high[1] and close[1] < open[1]
+        b = box.new(left=bar_index-1, top=high[1], right=bar_index + label_offset, bottom=low[1], bgcolor=color.new(c_gold, 88), border_color=color.new(c_gold, 50), text="+OB MOEX (Бычий)", text_color=c_gold, text_size=size.tiny, text_halign="right", text_valign="bottom")
+        array.push(bull_ob_boxes, b)
+    if close < low[1] and close[1] > open[1]
+        b = box.new(left=bar_index-1, top=high[1], right=bar_index + label_offset, bottom=low[1], bgcolor=color.new(c_fuchsia, 88), border_color=color.new(c_fuchsia, 50), text="-OB MOEX (Медвежий)", text_color=c_fuchsia, text_size=size.tiny, text_halign="right", text_valign="bottom")
+        array.push(bear_ob_boxes, b)
+
+    if clean_ob and array.size(bull_ob_boxes) > 0
+        for i = array.size(bull_ob_boxes) - 1 to 0
+            bx = array.get(bull_ob_boxes, i)
+            if low < box.get_bottom(bx)
+                box.delete(bx)
+                array.remove(bull_ob_boxes, i)
+
+    if clean_ob and array.size(bear_ob_boxes) > 0
+        for i = array.size(bear_ob_boxes) - 1 to 0
+            bx = array.get(bear_ob_boxes, i)
+            if high > box.get_top(bx)
+                box.delete(bx)
+                array.remove(bear_ob_boxes, i)
+
+    if array.size(bull_ob_boxes) > 0
+        for i = 0 to array.size(bull_ob_boxes) - 1
+            box.set_right(array.get(bull_ob_boxes, i), bar_index + label_offset)
+    if array.size(bear_ob_boxes) > 0
+        for i = 0 to array.size(bear_ob_boxes) - 1
+            box.set_right(array.get(bear_ob_boxes, i), bar_index + label_offset)
+
+    if array.size(bull_ob_boxes) > ob_limit
+        box.delete(array.shift(bull_ob_boxes))
+    if array.size(bear_ob_boxes) > ob_limit
+        box.delete(array.shift(bear_ob_boxes))
+
+// --- FAIR VALUE GAPS MOEX (FVG) ---
+var box[] bull_fvg_boxes = array.new_box(0)
+var box[] bear_fvg_boxes = array.new_box(0)
+
+if show_fvg and bar_index > 2
+    if low > high[2] and close[1] > open[1]
+        array.push(bull_fvg_boxes, box.new(left=bar_index-2, top=low, right=bar_index + label_offset, bottom=high[2], bgcolor=color.new(c_bull, 92), border_color=color.new(c_bull, 70), border_style=line.style_dashed, text="+FVG MOEX", text_color=c_bull, text_size=size.tiny, text_halign="right", text_valign="bottom"))
+    if high < low[2] and close[1] < open[1]
+        array.push(bear_fvg_boxes, box.new(left=bar_index-2, top=low[2], right=bar_index + label_offset, bottom=high, bgcolor=color.new(c_bear, 92), border_color=color.new(c_bear, 70), border_style=line.style_dashed, text="-FVG MOEX", text_color=c_bear, text_size=size.tiny, text_halign="right", text_valign="bottom"))
+
+    if clean_ob and array.size(bull_fvg_boxes) > 0
+        for i = array.size(bull_fvg_boxes) - 1 to 0
+            bx = array.get(bull_fvg_boxes, i)
+            if low < box.get_bottom(bx)
+                box.delete(bx)
+                array.remove(bull_fvg_boxes, i)
+
+    if clean_ob and array.size(bear_fvg_boxes) > 0
+        for i = array.size(bear_fvg_boxes) - 1 to 0
+            bx = array.get(bear_fvg_boxes, i)
+            if high > box.get_top(bx)
+                box.delete(bx)
+                array.remove(bear_fvg_boxes, i)
+
+    if array.size(bull_fvg_boxes) > 0
+        for i = 0 to array.size(bull_fvg_boxes) - 1
+            box.set_right(array.get(bull_fvg_boxes, i), bar_index + label_offset)
+    if array.size(bear_fvg_boxes) > 0
+        for i = 0 to array.size(bear_fvg_boxes) - 1
+            box.set_right(array.get(bear_fvg_boxes, i), bar_index + label_offset)
+
+    if array.size(bull_fvg_boxes) > ob_limit
+        box.delete(array.shift(bull_fvg_boxes))
+    if array.size(bear_fvg_boxes) > ob_limit
+        box.delete(array.shift(bear_fvg_boxes))
+
+// --- SWEEP И LIQUIDITY SWEEPS MOEX ---
+is_high_sweep = not na(last_ph) and high > last_ph and close <= last_ph
+is_low_sweep  = not na(last_pl) and low < last_pl and close >= last_pl
+
+plotshape(show_sweeps and is_high_sweep, title="MOEX High Liquidity Sweep", style=shape.triangledown, location=location.abovebar, color=color.orange, size=size.small, text="⚡ SWEEP MOEX", textcolor=color.orange)
+plotshape(show_sweeps and is_low_sweep, title="MOEX Low Liquidity Sweep", style=shape.triangleup, location=location.belowbar, color=color.orange, size=size.small, text="⚡ SWEEP MOEX", textcolor=color.orange)
+
+// --- ЗОНА OPTIMAL TRADE ENTRY MOEX (OTE 0.618 - 0.786) ---
+lb_ote_period = 40
+ote_hi        = ta.highest(high, lb_ote_period)
+ote_lo        = ta.lowest(low, lb_ote_period)
+ote_rng       = math.max(ote_hi - ote_lo, atr * 2.0)
+
+is_ote_bull   = close >= sma50
+ote_top_val   = is_ote_bull ? (ote_hi - ote_rng * 0.618) : (ote_lo + ote_rng * 0.786)
+ote_bot_val   = is_ote_bull ? (ote_hi - ote_rng * 0.786) : (ote_lo + ote_rng * 0.618)
+
+ote_zone_hi   = math.max(ote_top_val, ote_bot_val)
+ote_zone_lo   = math.min(ote_top_val, ote_bot_val)
+
+in_ote_zone   = close >= ote_zone_lo and close <= ote_zone_hi
+
+var box   ote_box = na
+var line  ote_l1  = na
+var line  ote_l2  = na
+var label ote_lbl = na
+
+if barstate.islast and show_ote
+    box.delete(ote_box)
+    line.delete(ote_l1)
+    line.delete(ote_l2)
+    label.delete(ote_lbl)
+    
+    ote_clr = is_ote_bull ? c_bull : c_bear
+    ote_txt = is_ote_bull ? "🎯 OTE MOEX 61.8-78.6% [Покупка]" : "🎯 OTE MOEX 61.8-78.6% [Продажа]"
+    
+    ote_box := box.new(left=bar_index - 35, top=ote_zone_hi, right=bar_index + label_offset + 8, bottom=ote_zone_lo, bgcolor=color.new(ote_clr, 93), border_color=color.new(ote_clr, 60), border_style=line.style_dashed)
+    ote_l1  := line.new(bar_index - 35, ote_zone_hi, bar_index + label_offset + 8, ote_zone_hi, color=color.new(ote_clr, 35), width=1, style=line.style_dashed)
+    ote_l2  := line.new(bar_index - 35, ote_zone_lo, bar_index + label_offset + 8, ote_zone_lo, color=color.new(ote_clr, 35), width=1, style=line.style_dashed)
+    ote_lbl := label.new(bar_index + label_offset + 8, ote_zone_hi, ote_txt + (in_ote_zone ? " 🔥 [ЦЕНА В ЗОНЕ]" : ""), color=color.new(color.black, 100), textcolor=ote_clr, style=label.style_label_left, size=get_text_size(text_sz_opt))
+
+// ==========================================================
+// 🎯 МУЛЬТИ-ФАКТОРНЫЙ ДИНАМИЧЕСКИЙ РАСЧЕТ ВЕРОЯТНОСТИ (WINRATE %) MOEX
+// ==========================================================
+calc_moex_winrate(is_buy_dir) =>
+    float score = 55.0
+    
+    // 1. Межрыночный контекст (IMOEX, DXY, BR1!) (+15%)
+    if use_macro
+        if is_buy_dir
+            if dxy_bear
+                score := score + 8.0
+            if oil_bull
+                score := score + 7.0
+        else
+            if dxy_bull
+                score := score + 8.0
+            if not oil_bull
+                score := score + 7.0
+
+    if use_moex
+        if is_buy_dir and imoex_bull
+            score := score + 10.0
+        else if not is_buy_dir and imoex_bear
+            score := score + 10.0
+
+    // 2. Сила аномалии объема Дельты MOEX (+12%)
+    float delta_z = v_delta_std > 0 ? (math.abs(v_delta - v_delta_ma) / v_delta_std) : 1.0
+    score := score + math.min(12.0, delta_z * 4.0)
+
+    // 3. Подтверждение SMC MOEX (+10%)
+    bool has_smc = is_buy_dir ? (array.size(bull_ob_boxes) > 0 or array.size(bull_fvg_boxes) > 0) : (array.size(bear_ob_boxes) > 0 or array.size(bear_fvg_boxes) > 0)
+    if has_smc
+        score := score + 10.0
+
+    // 4. Конфлюэнция Моментума (RSI + MACD) (+10%)
+    if is_buy_dir and osc_buy_ok
+        score := score + 10.0
+    else if not is_buy_dir and osc_sell_ok
+        score := score + 10.0
+
+    // 5. Конфлюэнция OTE (+8%)
+    if in_ote_zone
+        score := score + 8.0
+
+    math.min(95.0, math.max(45.0, score))
+
+// ==========================================================
+// 4. ВОЛНОВОЙ ПРОГНОЗ ЦЕНЫ И ВЕКТОРНЫЕ ЛИНИИ (FORECAST LEGS) MOEX
+// ==========================================================
+var line[] forecast_lines = array.new_line(0)
+var label[] forecast_labels = array.new_label(0)
+
+var int active_dir       = 0
+var int active_bar       = na
+var float active_y0      = na
+var float active_entry   = na
+var float active_sl      = na
+var float active_bos     = na
+var float active_tp      = na
+var float active_alt     = na
+var float active_winrate = na
+
+clean_forecast() =>
+    if array.size(forecast_lines) > 0
+        for i = 0 to array.size(forecast_lines) - 1
+            line.delete(array.get(forecast_lines, i))
+        array.clear(forecast_lines)
+    if array.size(forecast_labels) > 0
+        for i = 0 to array.size(forecast_labels) - 1
+            label.delete(array.get(forecast_labels, i))
+        array.clear(forecast_labels)
+
+has_bull_ob = array.size(bull_ob_boxes) > 0
+has_bear_ob = array.size(bear_ob_boxes) > 0
+
+buy_signal  = is_extreme_buy or (has_bull_ob and cross_bull)
+sell_signal = is_extreme_sell or (has_bear_ob and cross_bear)
+
+if buy_signal
+    // 1. Учет Блоков Ордеров (OB) и FVG MOEX
+    float ob_entry_bull = na
+    float ob_sl_bull    = na
+    if has_bull_ob
+        bx_last = array.get(bull_ob_boxes, array.size(bull_ob_boxes) - 1)
+        ob_entry_bull := box.get_top(bx_last)
+        ob_sl_bull    := box.get_bottom(bx_last)
+        
+    float fvg_entry_bull = na
+    if array.size(bull_fvg_boxes) > 0
+        fb_last = array.get(bull_fvg_boxes, array.size(bull_fvg_boxes) - 1)
+        fvg_entry_bull := (box.get_top(fb_last) + box.get_bottom(fb_last)) / 2.0
+        
+    // 2. Вход с учетом OTE, OB, FVG
+    float entry_p = in_ote_zone ? (ote_zone_hi + ote_zone_lo) / 2.0 : not na(ob_entry_bull) ? ob_entry_bull : not na(fvg_entry_bull) ? fvg_entry_bull : math.min(low[1], low[2])
+    
+    // 3. Защитный Стоп-Лосс (SL) за нижнюю границу OB/Liquidity S/R с буфером ATR
+    float ob_floor = math.min(low, math.min(low[1], low[2]))
+    if not na(ob_sl_bull)
+        ob_floor := math.min(ob_floor, ob_sl_bull)
+    if is_low_sweep and not na(last_pl)
+        ob_floor := math.min(ob_floor, last_pl)
+    float sl_p = ob_floor - atr * sl_atr_mult
+    
+    // 4. Уровень BOS и Тейк-Профиты с учетом Конфлюэнции RSI/MACD
+    float bos_ref = math.max(high, not na(last_ph) ? last_ph : high * 1.01)
+    float mom_mult = (rsi_bull_ok and macd_bull_ok) ? 1.15 : (rsi_bull_ok or macd_bull_ok) ? 1.05 : 0.95
+    float wave_span = math.max(bos_ref - entry_p, atr * 1.5) * mom_mult
+    
+    float bos_p = entry_p + wave_span * 0.75
+    float tp_p  = entry_p + wave_span * fibo_tp_ext
+    float alt_p = sl_p - wave_span * 0.8
+    
+    active_dir     := 1
+    active_bar     := bar_index
+    active_y0      := close
+    active_entry   := entry_p
+    active_sl      := sl_p
+    active_bos     := bos_p
+    active_tp      := tp_p
+    active_alt     := alt_p
+    active_winrate := calc_moex_winrate(true)
+
+if sell_signal
+    // 1. Учет Медвежьих Блоков Ордеров (OB) и FVG MOEX
+    float ob_entry_bear = na
+    float ob_sl_bear    = na
+    if has_bear_ob
+        bx_last = array.get(bear_ob_boxes, array.size(bear_ob_boxes) - 1)
+        ob_entry_bear := box.get_bottom(bx_last)
+        ob_sl_bear    := box.get_top(bx_last)
+        
+    float fvg_entry_bear = na
+    if array.size(bear_fvg_boxes) > 0
+        fb_last = array.get(bear_fvg_boxes, array.size(bear_fvg_boxes) - 1)
+        fvg_entry_bear := (box.get_top(fb_last) + box.get_bottom(fb_last)) / 2.0
+        
+    // 2. Вход с учетом OTE, OB, FVG
+    float entry_p = in_ote_zone ? (ote_zone_hi + ote_zone_lo) / 2.0 : not na(ob_entry_bear) ? ob_entry_bear : not na(fvg_entry_bear) ? fvg_entry_bear : math.max(high[1], high[2])
+    
+    // 3. Защитный Стоп-Лосс (SL) за верхнюю границу OB/Liquidity S/R с буфером ATR
+    float ob_roof = math.max(high, math.max(high[1], high[2]))
+    if not na(ob_sl_bear)
+        ob_roof := math.max(ob_roof, ob_sl_bear)
+    if is_high_sweep and not na(last_ph)
+        ob_roof := math.max(ob_roof, last_ph)
+    float sl_p = ob_roof + atr * sl_atr_mult
+    
+    // 4. Уровень BOS и Тейк-Профиты с учетом Конфлюэнции RSI/MACD
+    float bos_ref = math.min(low, not na(last_pl) ? last_pl : low * 0.99)
+    float mom_mult = (rsi_bear_ok and macd_bear_ok) ? 1.15 : (rsi_bear_ok or macd_bear_ok) ? 1.05 : 0.95
+    float wave_span = math.max(entry_p - bos_ref, atr * 1.5) * mom_mult
+    
+    float bos_p = entry_p - wave_span * 0.75
+    float tp_p  = entry_p - wave_span * fibo_tp_ext
+    float alt_p = sl_p + wave_span * 0.8
+    
+    active_dir     := -1
+    active_bar     := bar_index
+    active_y0      := close
+    active_entry   := entry_p
+    active_sl      := sl_p
+    active_bos     := bos_p
+    active_tp      := tp_p
+    active_alt     := alt_p
+    active_winrate := calc_moex_winrate(false)
+
+// Отрисовка динамического волнового прогноза от свечи сигнала MOEX
+if barstate.islast and show_forecast
+    clean_forecast()
+    
+    curr_dir = active_dir != 0 ? active_dir : ((use_moex ? imoex_bull : true) and close >= sma50 ? 1 : -1)
+    
+    x0 = not na(active_bar) ? active_bar : bar_index
+    y0 = not na(active_y0) ? active_y0 : close
+    
+    x1 = math.max(bar_index + 4, x0 + 8)
+    x2 = math.max(bar_index + 12, x0 + 18)
+    x3 = math.max(bar_index + 20, x0 + 30)
+    end_x = math.max(x3 + 8, bar_index + label_offset + 15)
+    
+    if curr_dir == 1
+        entry_p = not na(active_entry) ? active_entry : math.min(low[1], low[2])
+        sl_p    = not na(active_sl) ? active_sl : entry_p - atr * sl_atr_mult
+        bos_p   = not na(active_bos) ? active_bos : entry_p + atr * 1.5
+        tp_p    = not na(active_tp) ? active_tp : entry_p + atr * 1.5 * fibo_tp_ext
+        alt_y2  = not na(active_alt) ? active_alt : sl_p - atr * 1.2
+        wr_val  = active_winrate
+        
+        float risk   = math.abs(entry_p - sl_p)
+        float reward = math.abs(tp_p - entry_p)
+        float rr_val = risk > 0 ? reward / risk : 3.0
+        
+        y1 = entry_p
+        y2 = bos_p
+        y3 = tp_p
+        
+        l01 = line.new(x1=x0, y1=y0, x2=x1, y2=y1, xloc=xloc.bar_index, color=c_gold, width=2, style=line.style_dashed)
+        l12 = line.new(x1=x1, y1=y1, x2=x2, y2=y2, xloc=xloc.bar_index, color=#38bdf8, width=2, style=line.style_solid)
+        l23 = line.new(x1=x2, y1=y2, x2=x3, y2=y3, xloc=xloc.bar_index, color=c_bull, width=3, style=line.style_solid)
+        
+        array.push(forecast_lines, l01)
+        array.push(forecast_lines, l12)
+        array.push(forecast_lines, l23)
+        
+        lbl0 = label.new(x0, y0, "Point 0 [Старт]", color=color.new(#3b82f6, 10), textcolor=color.white, style=label.style_label_down, size=get_text_size(text_sz_opt))
+        lbl1 = label.new(x1, y1, "🎯 ВХОД (Buy Limit): " + str.tostring(entry_p, "#.##"), color=color.new(c_gold, 10), textcolor=color.black, style=label.style_label_up, size=get_text_size(text_sz_opt))
+        lbl2 = label.new(x2, y2, "Leg 2: BOS MOEX ↑ (" + str.tostring(bos_p, "#.##") + ")", color=color.new(#38bdf8, 10), textcolor=color.white, style=label.style_label_down, size=get_text_size(text_sz_opt))
+        lbl3 = label.new(x3, y3, "🎯 МАКСИМАЛЬНЫЙ ТЕЙК (TP 1.618): " + str.tostring(tp_p, "#.##") + " [" + str.tostring(wr_val, "#.#") + "%]", color=color.new(c_bull, 0), textcolor=color.white, style=label.style_label_down, size=size.normal)
+        
+        array.push(forecast_labels, lbl0)
+        array.push(forecast_labels, lbl1)
+        array.push(forecast_labels, lbl2)
+        array.push(forecast_labels, lbl3)
+        
+        if show_alt_wave
+            alt_x1 = math.max(bar_index + 4, x0 + 6)
+            alt_y1 = sl_p
+            alt_x2 = math.max(bar_index + 12, x0 + 16)
+            
+            alt_l1 = line.new(x1=x0, y1=y0, x2=alt_x1, y2=alt_y1, xloc=xloc.bar_index, color=color.new(c_neutral, 40), width=2, style=line.style_dotted)
+            alt_l2 = line.new(x1=alt_x1, y1=alt_y1, x2=alt_x2, y2=alt_y2, xloc=xloc.bar_index, color=color.new(c_fuchsia, 40), width=2, style=line.style_dotted)
+            
+            array.push(forecast_lines, alt_l1)
+            array.push(forecast_lines, alt_l2)
+            
+            lbl_alt = label.new(alt_x2, alt_y2, "⚠️ АЛЬТЕРНАТИВА: Слом SL (" + str.tostring(sl_p, "#.##") + ") ➔ Цель Дампа " + str.tostring(alt_y2, "#.##"), color=color.new(c_fuchsia, 20), textcolor=color.white, style=label.style_label_up, size=get_text_size(text_sz_opt))
+            array.push(forecast_labels, lbl_alt)
+            
+        if show_trade_lvl
+            l_entry = line.new(x1=x0, y1=entry_p, x2=end_x, y2=entry_p, xloc=xloc.bar_index, color=c_gold, width=2, style=line.style_dashed)
+            l_sl    = line.new(x1=x0, y1=sl_p, x2=end_x, y2=sl_p, xloc=xloc.bar_index, color=c_bear, width=2, style=line.style_solid)
+            l_tp    = line.new(x1=x3, y1=tp_p, x2=end_x, y2=tp_p, xloc=xloc.bar_index, color=c_bull, width=2, style=line.style_solid)
+            
+            lbl_entry_txt = label.new(end_x, entry_p, "📌 ВХОД: " + str.tostring(entry_p, "#.##"), color=color.new(c_gold, 20), textcolor=color.black, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            lbl_sl_txt    = label.new(end_x, sl_p, "🛑 СТОП-ЛОСС (SL): " + str.tostring(sl_p, "#.##") + " [R:R 1:" + str.tostring(rr_val, "#.#") + "]", color=color.new(c_bear, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            lbl_tp_txt    = label.new(end_x, tp_p, "🎯 ТЕЙК (TP): " + str.tostring(tp_p, "#.##"), color=color.new(c_bull, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            
+            array.push(forecast_lines, l_entry)
+            array.push(forecast_lines, l_sl)
+            array.push(forecast_lines, l_tp)
+            array.push(forecast_labels, lbl_entry_txt)
+            array.push(forecast_labels, lbl_sl_txt)
+            array.push(forecast_labels, lbl_tp_txt)
+
+    else
+        entry_p = not na(active_entry) ? active_entry : math.max(high[1], high[2])
+        sl_p    = not na(active_sl) ? active_sl : entry_p + atr * sl_atr_mult
+        bos_p   = not na(active_bos) ? active_bos : entry_p - atr * 1.5
+        tp_p    = not na(active_tp) ? active_tp : entry_p - atr * 1.5 * fibo_tp_ext
+        alt_y2  = not na(active_alt) ? active_alt : sl_p + atr * 1.2
+        wr_val  = active_winrate
+        
+        float risk   = math.abs(sl_p - entry_p)
+        float reward = math.abs(entry_p - tp_p)
+        float rr_val = risk > 0 ? reward / risk : 3.0
+        
+        y1 = entry_p
+        y2 = bos_p
+        y3 = tp_p
+        
+        l01 = line.new(x1=x0, y1=y0, x2=x1, y2=y1, xloc=xloc.bar_index, color=c_fuchsia, width=2, style=line.style_dashed)
+        l12 = line.new(x1=x1, y1=y1, x2=x2, y2=y2, xloc=xloc.bar_index, color=#f43f5e, width=2, style=line.style_solid)
+        l23 = line.new(x1=x2, y1=y2, x2=x3, y2=y3, xloc=xloc.bar_index, color=c_bear, width=3, style=line.style_solid)
+        
+        array.push(forecast_lines, l01)
+        array.push(forecast_lines, l12)
+        array.push(forecast_lines, l23)
+        
+        lbl0 = label.new(x0, y0, "Point 0 [Старт]", color=color.new(#c026d3, 10), textcolor=color.white, style=label.style_label_up, size=get_text_size(text_sz_opt))
+        lbl1 = label.new(x1, y1, "🎯 ВХОД (Sell Limit): " + str.tostring(entry_p, "#.##"), color=color.new(c_fuchsia, 10), textcolor=color.white, style=label.style_label_down, size=get_text_size(text_sz_opt))
+        lbl2 = label.new(x2, y2, "Leg 2: BOS MOEX ↓ (" + str.tostring(bos_p, "#.##") + ")", color=color.new(#f43f5e, 10), textcolor=color.white, style=label.style_label_up, size=get_text_size(text_sz_opt))
+        lbl3 = label.new(x3, y3, "🎯 МАКСИМАЛЬНЫЙ ТЕЙК (TP 1.618): " + str.tostring(tp_p, "#.##") + " [" + str.tostring(wr_val, "#.#") + "%]", color=color.new(c_bear, 0), textcolor=color.white, style=label.style_label_up, size=size.normal)
+        
+        array.push(forecast_labels, lbl0)
+        array.push(forecast_labels, lbl1)
+        array.push(forecast_labels, lbl2)
+        array.push(forecast_labels, lbl3)
+        
+        if show_alt_wave
+            alt_x1 = math.max(bar_index + 4, x0 + 6)
+            alt_y1 = sl_p
+            alt_x2 = math.max(bar_index + 12, x0 + 16)
+            
+            alt_l1 = line.new(x1=x0, y1=y0, x2=alt_x1, y2=alt_y1, xloc=xloc.bar_index, color=color.new(c_neutral, 40), width=2, style=line.style_dotted)
+            alt_l2 = line.new(x1=alt_x1, y1=alt_y1, x2=alt_x2, y2=alt_y2, xloc=xloc.bar_index, color=color.new(c_gold, 40), width=2, style=line.style_dotted)
+            
+            array.push(forecast_lines, alt_l1)
+            array.push(forecast_lines, alt_l2)
+            
+            lbl_alt = label.new(alt_x2, alt_y2, "⚠️ АЛЬТЕРНАТИВА: Слом SL (" + str.tostring(sl_p, "#.##") + ") ➔ Цель Пампа " + str.tostring(alt_y2, "#.##"), color=color.new(c_gold, 20), textcolor=color.black, style=label.style_label_down, size=get_text_size(text_sz_opt))
+            array.push(forecast_labels, lbl_alt)
+            
+        if show_trade_lvl
+            l_entry = line.new(x1=x0, y1=entry_p, x2=end_x, y2=entry_p, xloc=xloc.bar_index, color=c_fuchsia, width=2, style=line.style_dashed)
+            l_sl    = line.new(x1=x0, y1=sl_p, x2=end_x, y2=sl_p, xloc=xloc.bar_index, color=c_bull, width=2, style=line.style_solid)
+            l_tp    = line.new(x1=x3, y1=tp_p, x2=end_x, y2=tp_p, xloc=xloc.bar_index, color=c_bear, width=2, style=line.style_solid)
+            
+            lbl_entry_txt = label.new(end_x, entry_p, "📌 ВХОД: " + str.tostring(entry_p, "#.##"), color=color.new(c_fuchsia, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            lbl_sl_txt    = label.new(end_x, sl_p, "🛑 СТОП-ЛОСС (SL): " + str.tostring(sl_p, "#.##") + " [R:R 1:" + str.tostring(rr_val, "#.#") + "]", color=color.new(c_bull, 20), textcolor=color.black, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            lbl_tp_txt    = label.new(end_x, tp_p, "🎯 ТЕЙК (TP): " + str.tostring(tp_p, "#.##"), color=color.new(c_bear, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt))
+            
+            array.push(forecast_lines, l_entry)
+            array.push(forecast_lines, l_sl)
+            array.push(forecast_lines, l_tp)
+            array.push(forecast_labels, lbl_entry_txt)
+            array.push(forecast_labels, lbl_sl_txt)
+            array.push(forecast_labels, lbl_tp_txt)
+
+// Отрисовка сигналов MOEX на графике
+plotshape(buy_signal, title="MOEX LONG Signal", style=shape.triangleup, location=location.belowbar, color=c_bull, size=size.normal, text="LONG MOEX", textcolor=color.black)
+plotshape(sell_signal, title="MOEX SHORT Signal", style=shape.triangledown, location=location.abovebar, color=c_bear, size=size.normal, text="SHORT MOEX", textcolor=color.black)
+
+// ==========================================================
+// 5. ИНФО-ПАНЕЛЬ MOEX RUSSIA EDITION
+// ==========================================================
+var table moex_tbl = na
+if barstate.islast and show_tables
+    t_sz = get_text_size(text_sz_opt)
+    moex_tbl := table.new(get_table_pos(table_pos), columns=2, rows=10, bgcolor=#0f172a, border_color=#334155, border_width=1)
+    
+    table.cell(moex_tbl, 0, 0, "🇷🇺 S&T MOEX EDITION", text_color=#38bdf8, text_size=t_sz, bgcolor=#1e293b)
+    table.cell(moex_tbl, 1, 0, syminfo.ticker, text_color=color.white, text_size=t_sz, bgcolor=#1e293b)
+    
+    table.cell(moex_tbl, 0, 1, "Макро Тренд IMOEX", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 1, imoex_bull ? "🟢 ИНДЕКС БЫЧИЙ (IMOEX ↑)" : imoex_bear ? "🔴 ИНДЕКС МЕДВЕЖИЙ (IMOEX ↓)" : "⚪ ИНДЕКС НЕЙТРАЛЕН", text_color=imoex_bull ? c_bull : imoex_bear ? c_bear : c_neutral, text_size=t_sz)
+    
+    table.cell(moex_tbl, 0, 2, "Внешний Фактор (Нефть/DXY)", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 2, oil_bull ? "🛢️ Нефть Рост (Позитив)" : "💵 DXY Укрепление (Давление)", text_color=oil_bull ? c_bull : c_gold, text_size=t_sz)
+
+    table.cell(moex_tbl, 0, 3, "Режим Сигналов MOEX", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 3, "${T}", text_color=c_gold, text_size=t_sz)
+
+    delta_str = is_extreme_buy ? "🔥 BUY DELTA MOEX (ЗОЛОТО)" : is_extreme_sell ? "⚡ SELL DELTA MOEX (ФУКСИЯ)" : "⚪ НЕЙТРАЛЬНО"
+    delta_col = is_extreme_buy ? c_gold : is_extreme_sell ? c_fuchsia : c_neutral
+    table.cell(moex_tbl, 0, 4, "Дельта Обьема MOEX", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 4, delta_str, text_color=delta_col, text_size=t_sz)
+    
+    osc_str = (macd_bull_ok ? "🟢 MACD Бычий" : "🔴 MACD Медвежий") + " | RSI: " + str.tostring(rsi_val, "#.#")
+    osc_col = (macd_bull_ok and rsi_bull_ok) ? c_bull : (macd_bear_ok and rsi_bear_ok) ? c_bear : c_gold
+    table.cell(moex_tbl, 0, 5, "Моментум RSI / MACD", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 5, osc_str, text_color=osc_col, text_size=t_sz)
+
+    ote_str = in_ote_zone ? "🎯 В ЗОНЕ OTE MOEX (61.8-78.6%)" : "⚪ Вне OTE (" + str.tostring(ote_zone_lo, "#.#") + ")"
+    ote_col = in_ote_zone ? c_gold : c_neutral
+    table.cell(moex_tbl, 0, 6, "Зона Входа OTE MOEX", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 6, ote_str, text_color=ote_col, text_size=t_sz)
+
+    float current_dir_winrate = calc_moex_winrate(is_extreme_buy or (close >= open))
+    string wr_txt = str.tostring(current_dir_winrate, "#.#") + "% " + (current_dir_winrate >= 80.0 ? "🔥 (Сверхвысокий)" : current_dir_winrate >= 70.0 ? "🟩 (Высокий)" : "⚖️ (Норма)")
+    color wr_col = current_dir_winrate >= 80.0 ? #34d399 : current_dir_winrate >= 65.0 ? #fbbf24 : #f87171
+    
+    table.cell(moex_tbl, 0, 7, "Расчетный Winrate MOEX %", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 7, wr_txt, text_color=wr_col, text_size=t_sz)
+
+    table.cell(moex_tbl, 0, 8, "Торговый Сетап MOEX", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 8, buy_signal ? "🎯 Buy Limit MOEX @ Leg 1 (R:R 1:3+)" : sell_signal ? "🎯 Sell Limit MOEX @ Leg 1 (R:R 1:3+)" : "⚪ Ожидание сетапа MOEX", text_color=buy_signal ? c_gold : sell_signal ? c_fuchsia : c_neutral, text_size=t_sz)
+
+    table.cell(moex_tbl, 0, 9, "Альтернативный Сценарий", text_color=c_neutral, text_size=t_sz)
+    table.cell(moex_tbl, 1, 9, show_alt_wave ? "⚠️ Активация при сломе SL MOEX" : "⚪ Отключен", text_color=#fbbf24, text_size=t_sz)
+
+alertcondition(buy_signal, "S&T MOEX LONG Сигнал", "Сформирован LONG сигнал по российскому рынку MOEX!")
+alertcondition(sell_signal, "S&T MOEX SHORT

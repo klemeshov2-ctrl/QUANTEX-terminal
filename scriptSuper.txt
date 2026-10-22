@@ -1,0 +1,2793 @@
+//@version=6
+indicator("S&T Premium Ultimate Super Indicator [S&T Premium v8]", "S&T v8 Pro", overlay=false, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ==================== ВХОДНЫЕ ПАРАМЕТРЫ ====================
+gp_presets   = "⚙️ Оптимальные Пресеты S&T"
+preset_sel   = input.string("★ Универсальный (Все таймфреймы / Авто-Адаптивный)", "Выбрать Оптимальный Пресет", options=[
+     "★ Универсальный (Все таймфреймы / Авто-Адаптивный)", "По умолчанию (Ручные настройки)",
+     "Золото (XAUUSD) - 5 мин Скальпинг", "Золото (XAUUSD) - 15 мин Оптимальный",
+     "Золото (XAUUSD) - 30 мин Свинг-Интрадей", "Золото (XAUUSD) - 1 час Интрадей/Тренд",
+     "Золото (XAUUSD) - 4 часа Свинг", "Золото (XAUUSD) - 1 день Инвестиционный/Дневной",
+     "Общий (Все активы) - 1 мин Скальпинг", "Общий (Все активы) - 5 мин Быстрый скальпинг",
+     "Общий (Все активы) - 15 мин Оптимальный", "Общий (Все активы) - 30 мин Свинг-Интрадей",
+     "Общий (Все активы) - 1 час Часовой тренд", "Общий (Все активы) - 4 часа Свинг-трейдинг",
+     "Общий (Все активы) - 1 день Дневной/Инвестиционный", "Биткоин (BTCUSD) - 15 мин Оптимальный"
+     ], group=gp_presets)
+
+gp_ui        = "📱 Настройки Мобильной Оптимизации"
+show_tables  = input.bool(true, "Показывать инфо-панель S&T", group=gp_ui)
+tbl_view_mode= input.string("💻 Стандартный (ПК / Полный HUD)", "📱 Режим отображения таблицы", options=[
+     "💻 Стандартный (ПК / Полный HUD)", "📱 Мобильный (Полный HUD / Компакт по ширине)",
+     "📱 Мобильный (Компакт / 5 строк)", "⚡ Мини-Смартфон (3 строки: Сетап / Зона / Цели)",
+     "🔹 Ультра-Микро (1 колонка)"], group=gp_ui)
+hud_text_density = input.string("🖥️ ПК (Полный текст)", "🎨 Плотность текста (HUD + график)", options=[
+     "🖥️ ПК (Полный текст)", "📱 Мобильный (Сокращённый)", "🔹 Ультра-компакт"], group=gp_ui)
+table_pos    = input.string("Нижний левый", "Позиция инфо-панели", options=["Верхний левый", "Верхний правый", "Нижний левый", "Нижний правый", "Вверху по центру", "Внизу по центру"], group=gp_ui)
+table_text_sz= input.string("Маленький (size.small)", "Размер шрифта таблицы", options=["Авто (size.auto)", "Микро (size.tiny)", "Маленький (size.small)", "Обычный (size.normal)"], group=gp_ui)
+text_sz_opt  = input.string("Маленький", "Размер шрифта на графике", options=["Микро", "Маленький", "Обычный", "Крупный"], group=gp_ui)
+label_offset = input.int(15, "Смещение меток вправо (бары)", minval=2, maxval=50, group=gp_ui)
+line_len     = input.int(20, "Длина линий OTE/EQ/GEX влево (бары)", minval=5, maxval=100, group=gp_ui)
+clean_ob     = input.bool(true, "Скрывать протестированные (mitigated) OB/FVG", group=gp_ui)
+merge_ob_fvg = input.bool(true, "Объединять накладывающиеся зоны OB и FVG", group=gp_ui)
+show_sweeps  = input.bool(false, "Показывать надписи SWEEP на графике", group=gp_ui)
+use_anti_round = input.bool(true, "🎯 Сдвигать TP/SL от круглых уровней (Anti-Round)", group=gp_ui)
+
+gp_delta   = "📊 Volume Delta & MTF"
+vd_smoothing = input.int(14, "Сглаживание дельты (EMA)", minval=1, group=gp_delta)
+extreme_th = input.float(1, "Порог аномальной дельты (STD)", minval=0.5, step=0.1, group=gp_delta)
+
+gp_smc     = "🏛️ SMC & S&R"
+lb_st      = input.int(5, "Период Pivot ST", minval=2, maxval=10, group=gp_smc)
+lb_it      = input.int(12, "Период Pivot IT", minval=5, maxval=20, group=gp_smc)
+lb_lt      = input.int(28, "Период Pivot LT", minval=15, maxval=50, group=gp_smc)
+show_bos   = input.bool(true, "Показывать BOS / CHoCH", group=gp_smc)
+show_ob    = input.bool(true, "Показывать Блоки Ордеров (OB)", group=gp_smc)
+show_fvg   = input.bool(true, "Показывать Имбалансы (FVG)", group=gp_smc)
+ob_limit   = input.int(3, "Макс. активных блоков OB", minval=1, maxval=20, group=gp_smc)
+show_sr_zones = input.bool(true, "Показывать институциональные зоны S&R", group=gp_smc)
+max_sr_boxes  = input.int(3, "Макс. активных зон на горизонт", minval=1, maxval=10, group=gp_smc)
+merge_sr   = input.bool(true, "Объединять накладывающиеся зоны S&R", group=gp_smc)
+merge_dist = input.float(0.65, "Дистанция объединения (ATR)", minval=0.1, maxval=2.0, step=0.05, group=gp_smc)
+
+gp_fib     = "🎯 Волновой Прогноз Цены"
+fib_period = input.int(15, "Период свингов для Фибо", minval=5, group=gp_fib)
+show_probs = input.bool(true, "Показывать вероятности отскока (%)", group=gp_fib)
+dir_mode   = input.string("Авто-Структура", "Режим определения тренда", options=["Авто-Структура", "RSI фильтр", "Только Вверх", "Только Вниз"], group=gp_fib)
+show_reversal = input.bool(true, "Показывать зоны разворота (Reversal Zones)", group=gp_fib)
+show_forecast = input.bool(true, "Показывать волновой прогноз цены", group=gp_fib)
+show_alt_wave = input.bool(true, "Показывать альтернативную линию пробоя SL", group=gp_fib)
+sl_break_mode = input.string("Закрытие бара (Фильтр шпилек / SMC)", "Триггер слома SL (План Б)", options=["Закрытие бара (Фильтр шпилек / SMC)", "Касание тенью (Любой укол)"], group=gp_fib)
+filter_plan_b_mtf = input.bool(true, "Защита от ложного Плана Б против 70%+ консенсуса ТФ", group=gp_fib)
+fc_lookback = input.int(30, "Глубина волнового прогноза", minval=10, maxval=50, group=gp_fib)
+fc_target_mult = input.float(1, "Множитель TP волнового прогноза", minval=0.5, maxval=2.5, step=0.1, group=gp_fib)
+fc_post_target = input.bool(true, "Показывать сценарий ретеста после цели (Leg 4)", group=gp_fib)
+fc_model_acc = input.string("SMC-Balanced", "Точность волнового прогноза", options=["SMC-Balanced", "Conservative", "Aggressive"], group=gp_fib)
+fc_use_mtf = input.bool(true, "Учитывать старшие таймфреймы в прогнозе", group=gp_fib)
+fc_mtf_mode = input.string("Авто-Адаптивный (Рекомендуется)", "Режим старшего ТФ (MTF)", options=["Авто-Адаптивный (Рекомендуется)", "Фиксированный (Ручной)"], group=gp_fib)
+fc_mtf_tf  = input.timeframe("60", "Ручной старший ТФ", group=gp_fib)
+fc_htf_intrabar = input.bool(true, "⚡ Гибридный режим: интрабар-реакция на 4Ч/1Д", group=gp_fib)
+fc_fast_rejection = input.bool(true, "⚡ Мгновенный разворот при отскоке от OB", group=gp_fib)
+
+gp_sig     = "⚡ Торговые Сигналы S&T"
+show_signals = input.bool(false, "Отображать сигналы Long/Short", group=gp_sig)
+signal_mode  = input.string("Консервативный", "Режим генерации сигналов", options=["Агрессивный", "Консервативный", "Сверх-Надежный"], group=gp_sig)
+
+gp_colors  = "🎨 Тематическое Оформление"
+theme_mode = input.string("Золотой Слейт", "Цветовая тема", options=["Золотой Слейт", "Океанский Синий", "Киберпанк"], group=gp_colors)
+
+gp_trend   = "📈 Динамическая Линия Тренда"
+show_trend_l = input.bool(true, "Показывать линию тренда S&T", group=gp_trend)
+trend_type = input.string("EMA", "Метод расчета тренда", options=["EMA", "SMA", "HMA", "WMA"], group=gp_trend)
+trend_len  = input.int(200, "Период линии тренда", minval=10, maxval=500, group=gp_trend)
+
+gp_trail   = "🛡️ Адаптивный Трейлинг-Стоп (Anti-Whipsaw)"
+use_trailing = input.bool(true, "Включить Адаптивный Трейлинг-Стоп", group=gp_trail)
+trail_mode = input.string("🛡️ Институциональный (BE при TP1 + Защита 50%)", "Режим Трейлинга", options=["🛡️ Институциональный (BE при TP1 + Защита 50%)", "🏛️ Smart Money (Свинги BOS)", "🌊 Широкий Chandelier (Anti-Whipsaw)", "🔒 Только Безубыток"], group=gp_trail)
+trail_be_trigger = input.string("Строго при взятии TP1 (Рекомендовано)", "Момент перевода в BE", options=["Строго при взятии TP1 (Рекомендовано)", "При 85% пути к TP1", "При 65% пути к TP1"], group=gp_trail)
+trail_be_buff = input.float(0.15, "Буфер безубытка (ATR)", minval=0.0, maxval=0.5, step=0.02, group=gp_trail)
+trail_atr_dist = input.float(2.20, "Защитный ATR отступ", minval=1.2, maxval=4.0, step=0.1, group=gp_trail)
+trail_resets_wave = input.bool(false, "Сбрасывать прогноз при закрытии по трейлингу", group=gp_trail)
+show_trail_line = input.bool(false, "Отображать линию трейлинг-стопа", group=gp_trail)
+
+gp_osc     = "📊 MACD (Binance) + RSI"
+show_macd_pane = input.bool(true, "Показывать MACD внизу", group=gp_osc)
+macd_fast  = input.int(12, "MACD Быстрый EMA", minval=2, group=gp_osc)
+macd_slow  = input.int(26, "MACD Медленный EMA", minval=2, group=gp_osc)
+macd_sig_len = input.int(9, "MACD Сигнальный", minval=1, group=gp_osc)
+rsi6_len   = input.int(6, "RSI 6", minval=2, group=gp_osc)
+rsi14_len  = input.int(14, "RSI 14", minval=2, group=gp_osc)
+show_osc_marks = input.bool(false, "Отображать метки MACD/RSI", group=gp_osc)
+show_rsi_div = input.bool(false, "Отображать метки дивергенций (⚡ DIV)", group=gp_osc)
+show_div_lines = input.bool(false, "Отображать линии дивергенций", group=gp_osc)
+div_lookback = input.int(14, "Lookback дивергенций", minval=5, maxval=30, group=gp_osc)
+
+gp_mtf_syn = "⚡ Мультитаймфреймовый Синтез (MTF)"
+show_all_mtf_cons = input.bool(true, "★ Полный Консенсус 5 ТФ", group=gp_mtf_syn)
+show_mtf_wave = input.bool(false, "2. Синтетическая волна консенсуса", group=gp_mtf_syn)
+show_tp_clusters = input.bool(false, "3. Кластеры тейков", group=gp_mtf_syn)
+
+gp_gex     = "🏛️ GEX & Dealer Gamma Engine"
+use_gex    = input.bool(true, "Включить Автономный GEX Модуль", group=gp_gex)
+gex_asset_type = input.string("Авто-Определение", "Тип актива для GEX", options=["Авто-Определение", "Золото (XAUUSD)", "Биткоин (BTC)", "Форекс / EUR", "Индексы / SPX"], group=gp_gex)
+gex_anchor_mode = input.string("🎯 Дневной якорь (рекомендовано)", "Режим якоря сетки страйков", options=["🎯 Дневной якорь (рекомендовано)", "⚡ Динамический якорь (3 шага)", "🔒 Полностью фиксированный (5 шагов)", "❌ Отключить"], group=gp_gex)
+flip_search_range = input.int(8, "Ограничение поиска Flip (±шагов)", minval=3, maxval=14, group=gp_gex)
+show_gex_walls = input.bool(true, "Показывать Колл и Пут Стены", group=gp_gex)
+show_gex_flip = input.bool(true, "Показывать Ноль-Флип", group=gp_gex)
+show_gex_pain = input.bool(true, "Показывать Макс-Пейн", group=gp_gex)
+show_gex_sleepers = input.bool(true, "Показывать Спящие Магниты", group=gp_gex)
+show_gex_em = input.bool(true, "Показывать Ожидаемый Диапазон MM (68% и 95%)", group=gp_gex)
+show_gex_bars = input.bool(true, "Отображать профиль Net GEX справа", group=gp_gex)
+gex_right_limit = input.int(80, "Макс. отступ GEX-меток вправо (бары)", minval=20, maxval=250, group=gp_gex)
+gex_align_fc = input.bool(true, "Калибровать цели прогноза по стенам GEX", group=gp_gex)
+manual_pcr = input.float(0.0, "👤 Ручной Put/Call Ratio (0=Авто)", minval=0.0, step=0.05, group=gp_gex, tooltip="Введите реальный PCR из биржевых данных (напр. 0.65 — бычий, 1.40 — медвежий). Влияет на положение CW/PW/Flip/Pain на графике. 0 = авто.")
+manual_rv_iv = input.float(0.0, "👤 Ручной RV/IV (0=Авто)", minval=0.0, step=0.05, group=gp_gex, tooltip="Введите реальный RV/IV (>1.2 — рост волатильности, <0.7 — сжатие). Влияет на силу/размытие стен. 0 = авто.")
+
+gp_gex_adv = "🎯 GEX Advanced (VP POC + Audit)"
+use_vp_poc_weight = input.bool(true, "★ Вес страйков по Volume Profile POC", group=gp_gex_adv)
+vp_lookback_bars = input.int(200, "VP: Глубина истории (баров)", minval=50, maxval=500, group=gp_gex_adv)
+use_friday_boost = input.bool(true, "★ Усиление круглых страйков в Пятницу (pin risk)", group=gp_gex_adv)
+use_gex_audit = input.bool(true, "★ GEX Audit (счётчик попаданий)", group=gp_gex_adv)
+
+// ==================== ПЛОТНОСТЬ ТЕКСТА ====================
+is_density_mob   = hud_text_density == "📱 Мобильный (Сокращённый)"
+is_density_ultra = hud_text_density == "🔹 Ультра-компакт"
+is_compact       = is_density_mob or is_density_ultra
+is_ultra         = is_density_ultra
+f_txt(string full, string short, string ultra) => is_ultra ? ultra : (is_compact ? short : full)
+
+f_lbl(string key) =>
+    string f = switch key
+        "today"    => "🎯 СЕГОДНЯ"
+        "gex_mode" => "🏛️ Сила рынка"
+        "target"   => "🎯 Куда идёт"
+        "mm_range" => "📐 Дневной коридор"
+        "context"  => "📈 Контекст"
+        "bias"     => "📊 Направление рынка"
+        "delta"    => "📊 Δ Поток (Delta/CVD)"
+        "pcr_vol"  => "📊 PCR / RV-IV (Опционы)"
+        "audit"    => "🔬 GEX Audit"
+        "cw"       => "🏰 Потолок: "
+        "pw"       => "🛡️ Поддержка: "
+        "flip"     => "⚡ Граница Гаммы: "
+        "pain"     => "🎯 Магнит дня: "
+        "magnet"   => "🧲 Спящий магнит: "
+        "em_hi"    => "📐 Верхний край 68%: "
+        "em_lo"    => "📐 Нижний край 68%: "
+        "em95h"    => "🚨 Максимум 95%: "
+        "em95l"    => "🚨 Минимум 95%: "
+        => ""
+    string s = switch key
+        "today"    => "🎯 СЕГОДНЯ"
+        "gex_mode" => "🏛️ Сила"
+        "target"   => "🎯 Цель"
+        "mm_range" => "📐 Коридор"
+        "context"  => "📈 Контекст"
+        "bias"     => "📊 Уклон"
+        "delta"    => "📊 Δ/CVD"
+        "pcr_vol"  => "📊 PCR/Vol"
+        "audit"    => "🔬 Audit"
+        "cw"       => "🏰 CW: "
+        "pw"       => "🛡️ PW: "
+        "flip"     => "⚡ Flip: "
+        "pain"     => "🎯 Pain: "
+        "magnet"   => "🧲 Магнит: "
+        "em_hi"    => "📐 +1σ: "
+        "em_lo"    => "📐 -1σ: "
+        "em95h"    => "🚨 +2σ: "
+        "em95l"    => "🚨 -2σ: "
+        => ""
+    string u = switch key
+        "today" => "🎯"
+        "gex_mode" => "🏛️"
+        "target" => "🎯"
+        "mm_range" => "📐"
+        "context" => "📈"
+        "bias" => "📊"
+        "delta" => "📊"
+        "pcr_vol" => "📊"
+        "audit" => "🔬"
+        "cw" => "🏰 CW:"
+        "pw" => "🛡️ PW:"
+        "flip" => "⚡ F:"
+        "pain" => "🎯 P:"
+        "magnet" => "🧲:"
+        "em_hi" => "📐+1σ:"
+        "em_lo" => "📐-1σ:"
+        "em95h" => "🚨+2σ:"
+        "em95l" => "🚨-2σ:"
+        => ""
+    f_txt(f, s, u)
+
+f_dow_verdict() =>
+    int d = dayofweek
+    d == dayofweek.monday    ? f_txt("🔵 Слабая гамма — жди ложных пробоев", "🔵 Слабая гамма", "🔵") :
+     d == dayofweek.tuesday  ? f_txt("🔵 Умеренная — короткие цели", "🔵 Короткие цели", "🔵") :
+     d == dayofweek.wednesday? f_txt("🟡 Тренд зарождается — набирает силу", "🟡 Зарождается", "🟡") :
+     d == dayofweek.thursday ? f_txt("🟠 Сильная гамма — тренд работает", "🟠 Сильная гамма", "🟠") :
+     d == dayofweek.friday   ? f_txt("🔴 ЭКСПИРАЦИЯ — сквизы и пробои", "🔴 ЭКСПИРАЦИЯ", "🔴") :
+     f_txt("⚪ Выходной (нет опционов)", "⚪ Выходной", "⚪")
+
+// ==================== ПРЕСЕТЫ ====================
+f_resolve_preset(string sel, int tf_sec, int d_st, int d_it, int d_lt, int d_fib, float d_ext, string d_sig, float d_mult, int d_lb) =>
+    int st_ = d_st
+    int it_ = d_it
+    int lt_ = d_lt
+    int fib_ = d_fib
+    int lb_ = d_lb
+    float ext_ = d_ext
+    float mult_ = d_mult
+    string sig_ = d_sig
+    if sel == "★ Универсальный (Все таймфреймы / Авто-Адаптивный)"
+        int b = tf_sec <= 180 ? 0 : tf_sec <= 300 ? 1 : tf_sec <= 900 ? 2 : tf_sec <= 1800 ? 3 : tf_sec <= 7200 ? 4 : tf_sec <= 28800 ? 5 : 6
+        if b == 0
+            st_ := 2
+            it_ := 6
+            lt_ := 16
+            fib_ := 10
+            ext_ := 1.00
+            sig_ := "Агрессивный"
+            mult_ := 0.85
+            lb_ := 16
+        else if b == 1
+            st_ := 3
+            it_ := 8
+            lt_ := 20
+            fib_ := 12
+            ext_ := 1.10
+            sig_ := "Консервативный"
+            mult_ := 1.00
+            lb_ := 20
+        else if b == 2
+            st_ := 3
+            it_ := 10
+            lt_ := 22
+            fib_ := 15
+            ext_ := 1.15
+            sig_ := "Консервативный"
+            mult_ := 1.10
+            lb_ := 25
+        else if b == 3
+            st_ := 4
+            it_ := 12
+            lt_ := 26
+            fib_ := 18
+            ext_ := 1.25
+            sig_ := "Консервативный"
+            mult_ := 1.15
+            lb_ := 28
+        else if b == 4
+            st_ := 4
+            it_ := 13
+            lt_ := 28
+            fib_ := 20
+            ext_ := 1.35
+            sig_ := "Консервативный"
+            mult_ := 1.18
+            lb_ := 32
+        else if b == 5
+            st_ := 5
+            it_ := 14
+            lt_ := 30
+            fib_ := 22
+            ext_ := 1.45
+            sig_ := "Сверх-Надежный"
+            mult_ := 1.20
+            lb_ := 35
+        else
+            st_ := 5
+            it_ := 15
+            lt_ := 32
+            fib_ := 24
+            ext_ := 1.50
+            sig_ := "Сверх-Надежный"
+            mult_ := 1.22
+            lb_ := 38
+    else if sel == "Золото (XAUUSD) - 5 мин Скальпинг"
+        st_ := 2
+        it_ := 8
+        lt_ := 18
+        fib_ := 12
+        ext_ := 1.0
+        sig_ := "Консервативный"
+        mult_ := 0.95
+        lb_ := 18
+    else if sel == "Золото (XAUUSD) - 15 мин Оптимальный"
+        st_ := 3
+        it_ := 10
+        lt_ := 22
+        fib_ := 15
+        ext_ := 1.1
+        sig_ := "Консервативный"
+        mult_ := 1.10
+        lb_ := 25
+    else if sel == "Золото (XAUUSD) - 30 мин Свинг-Интрадей"
+        st_ := 4
+        it_ := 12
+        lt_ := 26
+        fib_ := 18
+        ext_ := 1.2
+        sig_ := "Консервативный"
+        mult_ := 1.15
+        lb_ := 30
+    else if sel == "Золото (XAUUSD) - 1 час Интрадей/Тренд"
+        st_ := 4
+        it_ := 13
+        lt_ := 28
+        fib_ := 20
+        ext_ := 1.3
+        sig_ := "Консервативный"
+        mult_ := 1.18
+        lb_ := 32
+    else if sel == "Золото (XAUUSD) - 4 часа Свинг"
+        st_ := 5
+        it_ := 14
+        lt_ := 30
+        fib_ := 22
+        ext_ := 1.4
+        sig_ := "Сверх-Надежный"
+        mult_ := 1.20
+        lb_ := 35
+    else if sel == "Золото (XAUUSD) - 1 день Инвестиционный/Дневной"
+        st_ := 5
+        it_ := 15
+        lt_ := 32
+        fib_ := 24
+        ext_ := 1.5
+        sig_ := "Сверх-Надежный"
+        mult_ := 1.22
+        lb_ := 38
+    else if sel == "Биткоин (BTCUSD) - 15 мин Оптимальный"
+        st_ := 3
+        it_ := 10
+        lt_ := 24
+        fib_ := 18
+        ext_ := 1.3
+        sig_ := "Консервативный"
+        mult_ := 1.20
+        lb_ := 25
+    else if sel == "Общий (Все активы) - 1 мин Скальпинг"
+        st_ := 2
+        it_ := 5
+        lt_ := 14
+        fib_ := 10
+        ext_ := 0.9
+        sig_ := "Агрессивный"
+        mult_ := 0.75
+        lb_ := 12
+    else if sel == "Общий (Все активы) - 5 мин Быстрый скальпинг"
+        st_ := 3
+        it_ := 8
+        lt_ := 18
+        fib_ := 14
+        ext_ := 1.1
+        sig_ := "Агрессивный"
+        mult_ := 0.90
+        lb_ := 18
+    else if sel == "Общий (Все активы) - 15 мин Оптимальный"
+        st_ := 4
+        it_ := 10
+        lt_ := 24
+        fib_ := 16
+        ext_ := 1.2
+        sig_ := "Консервативный"
+        mult_ := 1.10
+        lb_ := 25
+    else if sel == "Общий (Все активы) - 30 мин Свинг-Интрадей"
+        st_ := 4
+        it_ := 12
+        lt_ := 26
+        fib_ := 18
+        ext_ := 1.3
+        sig_ := "Консервативный"
+        mult_ := 1.15
+        lb_ := 28
+    else if sel == "Общий (Все активы) - 1 час Часовой тренд"
+        st_ := 5
+        it_ := 13
+        lt_ := 28
+        fib_ := 20
+        ext_ := 1.4
+        sig_ := "Консервативный"
+        mult_ := 1.18
+        lb_ := 30
+    else if sel == "Общий (Все активы) - 4 часа Свинг-трейдинг"
+        st_ := 5
+        it_ := 14
+        lt_ := 30
+        fib_ := 22
+        ext_ := 1.5
+        sig_ := "Сверх-Надежный"
+        mult_ := 1.20
+        lb_ := 35
+    else if sel == "Общий (Все активы) - 1 день Дневной/Инвестиционный"
+        st_ := 5
+        it_ := 15
+        lt_ := 32
+        fib_ := 24
+        ext_ := 1.6
+        sig_ := "Сверх-Надежный"
+        mult_ := 1.22
+        lb_ := 38
+    [st_, it_, lt_, fib_, ext_, sig_, mult_, lb_]
+
+int tf_in_sec = timeframe.in_seconds()
+[final_lb_st, final_lb_it, final_lb_lt, final_fib_period, final_extreme_th, final_sig_mode, final_fc_target_mult, final_fc_lookback] = f_resolve_preset(preset_sel, tf_in_sec, lb_st, lb_it, lb_lt, fib_period, extreme_th, signal_mode, fc_target_mult, fc_lookback)
+
+get_text_size(opt) =>
+    opt == "Микро" ? size.tiny : opt == "Маленький" ? size.small : opt == "Обычный" ? size.normal : opt == "Крупный" ? size.large : size.small
+get_table_text_size(opt) =>
+    opt == "Микро (size.tiny)" or opt == "Микро" ? size.tiny : opt == "Маленький (size.small)" or opt == "Маленький" ? size.small : opt == "Обычный (size.normal)" or opt == "Обычный" ? size.normal : opt == "Авто (size.auto)" ? size.auto : size.tiny
+get_table_pos(pos) =>
+    pos == "Верхний левый" ? position.top_left : pos == "Верхний правый" ? position.top_right : pos == "Нижний левый" ? position.bottom_left : pos == "Нижний правый" ? position.bottom_right : (pos == "Вверху по центру" ? position.top_center : (pos == "Внизу по центру" ? position.bottom_center : position.bottom_left))
+
+c_bull     = theme_mode == "Золотой Слейт" ? #fbbf24 : (theme_mode == "Океанский Синий" ? #06b6d4 : #00ffcc)
+c_bear     = theme_mode == "Золотой Слейт" ? #ef4444 : (theme_mode == "Океанский Синий" ? #f43f5e : #ff007f)
+c_extreme_bear = theme_mode == "Золотой Слейт" ? #d946ef : (theme_mode == "Океанский Синий" ? #d946ef : #ff007f)
+c_neutral  = theme_mode == "Золотой Слейт" ? #94a3b8 : (theme_mode == "Океанский Синий" ? #64748b : #475569)
+c_gold     = #f59e0b
+
+calc_ma(src, length, type) =>
+    type == "EMA" ? ta.ema(src, length) : type == "WMA" ? ta.wma(src, length) : type == "HMA" ? ta.hma(src, length) : ta.sma(src, length)
+
+trend_line_val = calc_ma(close, trend_len, trend_type)
+
+// ==================== DELTA / CVD ====================
+calc_delta() =>
+    cr = high - low
+    bv = volume * (cr == 0 ? 0.5 : (close >= open ? (close - open + (high - close) * 0.5 + (open - low) * 0.5) : ((high - open) * 0.5 + (close - low) * 0.5)) / cr)
+    bv - (volume - bv)
+
+delta_current  = calc_delta()
+delta_smoothed = ta.ema(delta_current, vd_smoothing)
+delta_std      = ta.stdev(delta_current, 20)
+is_extreme_delta = math.abs(delta_current) > delta_std * final_extreme_th
+vd_extreme_bull = is_extreme_delta and delta_current > 0
+vd_extreme_bear = is_extreme_delta and delta_current < 0
+var float cvd_value = 0.0
+cvd_value := nz(cvd_value[1]) + delta_current
+
+lowest_low_8    = ta.lowest(low, 8)
+highest_high_8  = ta.highest(high, 8)
+lowest_low_10   = ta.lowest(low, 10)
+highest_high_10 = ta.highest(high, 10)
+main_ema20  = ta.ema(close, 20)
+main_ema50  = ta.ema(close, 50)
+main_ema200 = ta.ema(close, 200)
+vol_sma20   = ta.sma(volume, 20)
+atr         = ta.atr(14)
+
+// ==================== GEX ASSET DETECTION ====================
+gvz_gex_val = request.security("CBOE:GVZ", "D", close, ignore_invalid_symbol=true)
+vix_gex_val = request.security("CBOE:VIX", "D", close, ignore_invalid_symbol=true)
+btc_hv_gex  = ta.stdev(math.log(close / close[1]), 30) * math.sqrt(365) * 100
+gen_hv_gex  = ta.stdev(math.log(close / close[1]), 20) * math.sqrt(252) * 100
+
+f_is_gold_asset() =>
+    string s = str.upper(syminfo.ticker)
+    string r = str.upper(syminfo.root)
+    str.contains(s, "XAU") or str.contains(s, "GOLD") or str.startswith(s, "GC") or str.contains(s, "MGC") or str.startswith(s, "GD") or str.contains(s, "GLD") or str.contains(s, "PAXG") or r == "GC" or r == "MGC" or r == "GD" or gex_asset_type == "Золото (XAUUSD)"
+f_is_btc_asset() =>
+    string s = str.upper(syminfo.ticker)
+    string r = str.upper(syminfo.root)
+    str.contains(s, "BTC") or str.contains(s, "XBT") or r == "BTC" or r == "MBT" or gex_asset_type == "Биткоин (BTC)"
+f_get_effective_iv() =>
+    float v = 18.0
+    if f_is_gold_asset()
+        v := not na(gvz_gex_val) and gvz_gex_val > 5.0 ? gvz_gex_val : 17.5
+    else if f_is_btc_asset()
+        v := not na(btc_hv_gex) and btc_hv_gex > 15.0 ? btc_hv_gex : 52.0
+    else
+        v := not na(vix_gex_val) and vix_gex_val > 5.0 ? vix_gex_val : (not na(gen_hv_gex) ? gen_hv_gex : 16.0)
+    v
+f_calc_gex_step() =>
+    string sym = str.upper(syminfo.ticker)
+    float pr = close
+    float step = 10.0
+    if gex_asset_type == "Золото (XAUUSD)" or (gex_asset_type == "Авто-Определение" and f_is_gold_asset())
+        step := pr > 3500 ? 25.0 : (pr > 1500 ? 10.0 : 5.0)
+    else if gex_asset_type == "Биткоин (BTC)" or (gex_asset_type == "Авто-Определение" and f_is_btc_asset())
+        step := pr > 50000 ? 1000.0 : 500.0
+    else if gex_asset_type == "Индексы / SPX" or (gex_asset_type == "Авто-Определение" and (str.contains(sym, "SPX") or str.contains(sym, "SPY") or str.contains(sym, "US500") or str.startswith(sym, "ES") or str.startswith(sym, "MES")))
+        step := 25.0
+    else if gex_asset_type == "Форекс / EUR" or (gex_asset_type == "Авто-Определение" and pr < 10.0)
+        step := 0.0050
+    else if str.contains(sym, "ETH")
+        step := pr > 3000 ? 50.0 : 25.0
+    else if str.contains(sym, "SILVER") or str.contains(sym, "XAG") or str.startswith(sym, "SI")
+        step := 0.25
+    else if str.contains(sym, "OIL") or str.contains(sym, "BRENT") or str.contains(sym, "WTI") or str.startswith(sym, "CL")
+        step := 0.50
+    else
+        float p_log = math.log10(pr)
+        step := math.pow(10, math.floor(p_log) - 1)
+        if pr > 1000 and pr <= 5000
+            step := 25.0
+        else if pr > 5000 and pr <= 20000
+            step := 100.0
+        if step < syminfo.mintick * 10
+            step := syminfo.mintick * 10
+    step
+
+f_norm_pdf(float x) => (1.0 / math.sqrt(2.0 * 3.141592653589793)) * math.exp(-0.5 * x * x)
+f_calc_gamma(float S, float K, float sigma, float T) =>
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0
+        0.0
+    else
+        float d1 = (math.log(S / K) + (sigma * sigma * 0.5) * T) / (sigma * math.sqrt(T))
+        f_norm_pdf(d1) / (S * sigma * math.sqrt(T))
+f_calc_charm(float S, float K, float sigma, float T) =>
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0
+        0.0
+    else
+        float d1 = (math.log(S / K) + (sigma * sigma * 0.5) * T) / (sigma * math.sqrt(T))
+        float d2 = d1 - sigma * math.sqrt(T)
+        -f_norm_pdf(d1) * d2 / (2.0 * T)
+f_round_step(float pr) =>
+    float s = pr >= 50000 ? 1000.0 : pr >= 10000 ? 500.0 : pr >= 5000 ? 100.0 : pr >= 2000 ? 50.0 : pr >= 1000 ? 25.0 : pr >= 100 ? 5.0 : pr >= 10 ? 1.0 : pr >= 1 ? 0.1 : 0.01
+    s
+f_avoid_round(float price, bool is_long, float atr_v) =>
+    float step = f_round_step(price)
+    float nr = math.round(price / step) * step
+    float dist = math.abs(price - nr)
+    float zone = atr_v * 0.35
+    float result = price
+    if dist < zone and step > 0
+        float sh = math.max(atr_v * 0.12, syminfo.mintick * 5)
+        result := is_long ? math.min(nr - sh, price) : math.max(nr + sh, price)
+    result
+f_avoid_round_sl(float price, bool is_long, float atr_v) =>
+    float step = f_round_step(price)
+    float nr = math.round(price / step) * step
+    float dist = math.abs(price - nr)
+    float zone = atr_v * 0.35
+    float result = price
+    if dist < zone and step > 0
+        float sh = math.max(atr_v * 0.12, syminfo.mintick * 5)
+        result := is_long ? nr - sh : nr + sh
+    result
+
+barcolor(is_extreme_delta ? (delta_current > 0 ? color.new(c_bull, 10) : color.new(c_extreme_bear, 10)) : na)
+
+// ==================== SMC — BOS / CHoCH ====================
+sh_it = ta.pivothigh(high, final_lb_it, final_lb_it)
+sl_it = ta.pivotlow(low, final_lb_it, final_lb_it)
+sh_st = ta.pivothigh(high, final_lb_st, final_lb_st)
+sl_st = ta.pivotlow(low, final_lb_st, final_lb_st)
+
+var float last_sh_val = na
+var float last_sl_val = na
+var float last_st_sh_val = na
+var float last_st_sl_val = na
+var string trend_state = "bullish"
+var int last_sh_bar = na
+var int last_sl_bar = na
+
+if not na(sh_st)
+    last_st_sh_val := sh_st
+if not na(sl_st)
+    last_st_sl_val := sl_st
+if not na(sh_it)
+    last_sh_val := sh_it
+    last_sh_bar := bar_index - final_lb_it
+if not na(sl_it)
+    last_sl_val := sl_it
+    last_sl_bar := bar_index - final_lb_it
+
+bool is_bos = false
+bool is_choch = false
+bool is_bullish_break = false
+float break_price = na
+
+if not na(last_sh_val) and close > last_sh_val
+    is_bullish_break := true
+    break_price := last_sh_val
+    if trend_state == "bearish"
+        is_choch := true
+        trend_state := "bullish"
+    else
+        is_bos := true
+    last_sh_val := na
+if not na(last_sl_val) and close < last_sl_val
+    is_bullish_break := false
+    break_price := last_sl_val
+    if trend_state == "bullish"
+        is_choch := true
+        trend_state := "bearish"
+    else
+        is_bos := true
+    last_sl_val := na
+
+if show_bos and (is_bos or is_choch)
+    if is_bullish_break
+        col = is_choch ? color.teal : c_bull
+        txt = is_choch ? "CHoCH ↑" : "BOS ↑"
+        x1v = not na(last_sh_bar) ? last_sh_bar : bar_index - 5
+        line.new(x1=x1v, y1=break_price, x2=bar_index, y2=break_price, color=col, style=line.style_dashed, width=1, force_overlay=true)
+        label.new(x=math.round((x1v + bar_index) / 2), y=break_price, text=txt, style=label.style_label_center, color=color.new(color.black, 100), textcolor=col, size=get_text_size(text_sz_opt), force_overlay=true)
+    else
+        col = is_choch ? color.purple : c_bear
+        txt = is_choch ? "CHoCH ↓" : "BOS ↓"
+        x1v = not na(last_sl_bar) ? last_sl_bar : bar_index - 5
+        line.new(x1=x1v, y1=break_price, x2=bar_index, y2=break_price, color=col, style=line.style_dashed, width=1, force_overlay=true)
+        label.new(x=math.round((x1v + bar_index) / 2), y=break_price, text=txt, style=label.style_label_center, color=color.new(color.black, 100), textcolor=col, size=get_text_size(text_sz_opt), force_overlay=true)
+
+// ==================== S&R ZONES ====================
+var box[] sup_boxes = array.new<box>()
+var box[] res_boxes = array.new<box>()
+var label[] sup_labels = array.new<label>()
+var label[] res_labels = array.new<label>()
+
+ph_st = ta.pivothigh(high, 5, 5)
+pl_st = ta.pivotlow(low, 5, 5)
+ph_it = ta.pivothigh(high, 15, 15)
+pl_it = ta.pivotlow(low, 15, 15)
+ph_lt = ta.pivothigh(high, 35, 35)
+pl_lt = ta.pivotlow(low, 35, 35)
+
+f_add_sr(bool is_sup, float p_level, int offset, string lbl_txt, bool is_lt) =>
+    box[] arrb = is_sup ? sup_boxes : res_boxes
+    label[] arl = is_sup ? sup_labels : res_labels
+    color bg = is_sup ? color.new(c_bull, 93) : color.new(c_bear, 93)
+    color bd = is_sup ? color.new(c_bull, 70) : color.new(c_bear, 70)
+    color tc = is_sup ? c_bull : c_bear
+    string bs = is_lt ? line.style_solid : line.style_dashed
+    bool merged = false
+    if merge_sr and array.size(arrb) > 0
+        for i = 0 to array.size(arrb) - 1
+            box bx = array.get(arrb, i)
+            label lb = array.get(arl, i)
+            float bc = (box.get_top(bx) + box.get_bottom(bx)) / 2.0
+            if math.abs(p_level - bc) < atr * merge_dist
+                box.set_top(bx, math.max(box.get_top(bx), p_level + atr * 0.08))
+                box.set_bottom(bx, math.min(box.get_bottom(bx), p_level - atr * 0.08))
+                label.set_y(lb, (box.get_top(bx) + box.get_bottom(bx)) / 2.0)
+                label.set_text(lb, lbl_txt)
+                merged := true
+                break
+    if not merged
+        box b = box.new(bar_index - offset, p_level + atr * 0.08, bar_index + label_offset, p_level - atr * 0.08, bgcolor=bg, border_color=bd, border_style=bs, force_overlay=true)
+        label l = label.new(bar_index + label_offset, p_level, text=lbl_txt, style=label.style_label_left, color=color.new(color.black, 100), textcolor=tc, size=get_text_size(text_sz_opt), force_overlay=true)
+        array.push(arrb, b)
+        array.push(arl, l)
+        if array.size(arrb) > max_sr_boxes
+            box.delete(array.shift(arrb))
+            label.delete(array.shift(arl))
+
+if show_sr_zones
+    if array.size(sup_boxes) > 0
+        for i = array.size(sup_boxes) - 1 to 0
+            if low < box.get_bottom(array.get(sup_boxes, i))
+                box.delete(array.get(sup_boxes, i))
+                label.delete(array.get(sup_labels, i))
+                array.remove(sup_boxes, i)
+                array.remove(sup_labels, i)
+    if array.size(res_boxes) > 0
+        for i = array.size(res_boxes) - 1 to 0
+            if high > box.get_top(array.get(res_boxes, i))
+                box.delete(array.get(res_boxes, i))
+                label.delete(array.get(res_labels, i))
+                array.remove(res_boxes, i)
+                array.remove(res_labels, i)
+    if not na(ph_lt)
+        f_add_sr(false, ph_lt, 35, "Liq LT [" + str.tostring(volume[35] / 1000.0, "#.#") + "K | " + (delta_current[35] >= 0 ? "+" : "") + str.tostring(delta_current[35] / 1000.0, "#.#") + "K] Сопр.", true)
+    if not na(ph_it)
+        f_add_sr(false, ph_it, 15, "Liq IT [" + str.tostring(volume[15] / 1000.0, "#.#") + "K | " + (delta_current[15] >= 0 ? "+" : "") + str.tostring(delta_current[15] / 1000.0, "#.#") + "K] Сопр.", false)
+    if not na(ph_st)
+        f_add_sr(false, ph_st, 5, "Liq ST [" + str.tostring(volume[5] / 1000.0, "#.#") + "K | " + (delta_current[5] >= 0 ? "+" : "") + str.tostring(delta_current[5] / 1000.0, "#.#") + "K] Сопр.", false)
+    if not na(pl_lt)
+        f_add_sr(true, pl_lt, 35, "Liq LT [" + str.tostring(volume[35] / 1000.0, "#.#") + "K | " + (delta_current[35] >= 0 ? "+" : "") + str.tostring(delta_current[35] / 1000.0, "#.#") + "K] Подд.", true)
+    if not na(pl_it)
+        f_add_sr(true, pl_it, 15, "Liq IT [" + str.tostring(volume[15] / 1000.0, "#.#") + "K | " + (delta_current[15] >= 0 ? "+" : "") + str.tostring(delta_current[15] / 1000.0, "#.#") + "K] Подд.", false)
+    if not na(pl_st)
+        f_add_sr(true, pl_st, 5, "Liq ST [" + str.tostring(volume[5] / 1000.0, "#.#") + "K | " + (delta_current[5] >= 0 ? "+" : "") + str.tostring(delta_current[5] / 1000.0, "#.#") + "K] Подд.", false)
+
+if barstate.islast
+    if array.size(res_boxes) > 0
+        for i = 0 to array.size(res_boxes) - 1
+            box.set_right(array.get(res_boxes, i), bar_index + label_offset)
+            label.set_x(array.get(res_labels, i), bar_index + label_offset)
+    if array.size(sup_boxes) > 0
+        for i = 0 to array.size(sup_boxes) - 1
+            box.set_right(array.get(sup_boxes, i), bar_index + label_offset)
+            label.set_x(array.get(sup_labels, i), bar_index + label_offset)
+
+// ==================== OB & FVG ====================
+var box[] bull_ob_boxes  = array.new<box>()
+var box[] bear_ob_boxes  = array.new<box>()
+var box[] bull_fvg_boxes = array.new<box>()
+var box[] bear_fvg_boxes = array.new<box>()
+
+f_merge_boxes(box[] arr, float nt, float nb) =>
+    float rt = nt
+    float rb = nb
+    int sz = array.size(arr)
+    if sz > 0
+        for i = sz - 1 to 0
+            box ex = array.get(arr, i)
+            float et = box.get_top(ex)
+            float eb = box.get_bottom(ex)
+            if rb <= et + atr * 0.20 and rt >= eb - atr * 0.20
+                rt := math.max(rt, et)
+                rb := math.min(rb, eb)
+                box.delete(ex)
+                array.remove(arr, i)
+    [rt, rb]
+
+f_upsert(box[] arr, float nt, float nb, int left_x, color c, string txt, string bs) =>
+    bool merged = false
+    int sz = array.size(arr)
+    if merge_ob_fvg and sz > 0
+        for i = sz - 1 to 0
+            box ex = array.get(arr, i)
+            if nb <= box.get_top(ex) + atr * 0.20 and nt >= box.get_bottom(ex) - atr * 0.20
+                box.set_top(ex, math.max(box.get_top(ex), nt))
+                box.set_bottom(ex, math.min(box.get_bottom(ex), nb))
+                box.set_right(ex, bar_index)
+                merged := true
+                break
+    if not merged
+        array.push(arr, box.new(left_x, nt, bar_index, nb, bgcolor=color.new(c, 90), border_color=color.new(c, 60), border_style=bs, text=txt, text_color=c, text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_bottom, force_overlay=true))
+
+f_clean_boxes(box[] arr, bool is_bull, bool use_mitig) =>
+    int n0 = array.size(arr)
+    if n0 > 0
+        for i = n0 - 1 to 0
+            box bx = array.get(arr, i)
+            float bt = box.get_top(bx)
+            float bb = box.get_bottom(bx)
+            bool viol = is_bull ? (low < bb or close < bb) : (high > bt or close > bt)
+            bool mit  = use_mitig and (is_bull ? (low <= bt and bar_index > box.get_left(bx)) : (high >= bb and bar_index > box.get_left(bx)))
+            if viol or mit
+                box.delete(bx)
+                array.remove(arr, i)
+    int n1 = array.size(arr)
+    if n1 > 0
+        for i = 0 to n1 - 1
+            box.set_right(array.get(arr, i), bar_index)
+    while array.size(arr) > ob_limit
+        box.delete(array.shift(arr))
+
+if show_ob and bar_index > 1
+    bool bull_break = close > high[1] and close[1] < open[1]
+    bool bear_break = close < low[1] and close[1] > open[1]
+    if bull_break
+        float nt = high[1]
+        float nb = low[1]
+        if merge_ob_fvg
+            [nt_m, nb_m] = f_merge_boxes(bull_fvg_boxes, nt, nb)
+            nt := nt_m
+            nb := nb_m
+        f_upsert(bull_ob_boxes, nt, nb, bar_index - 1, c_bull, "+OB", line.style_solid)
+    if bear_break
+        float nt = high[1]
+        float nb = low[1]
+        if merge_ob_fvg
+            [nt_m, nb_m] = f_merge_boxes(bear_fvg_boxes, nt, nb)
+            nt := nt_m
+            nb := nb_m
+        f_upsert(bear_ob_boxes, nt, nb, bar_index - 1, c_bear, "-OB", line.style_solid)
+    f_clean_boxes(bull_ob_boxes, true, clean_ob)
+    f_clean_boxes(bear_ob_boxes, false, clean_ob)
+
+if show_fvg and bar_index > 2
+    bool bull_fvg = low > high[2] and close[1] > open[1]
+    bool bear_fvg = high < low[2] and close[1] < open[1]
+    if bull_fvg
+        float nt = low
+        float nb = high[2]
+        if merge_ob_fvg
+            [nt_m, nb_m] = f_merge_boxes(bull_ob_boxes, nt, nb)
+            nt := nt_m
+            nb := nb_m
+        f_upsert(bull_fvg_boxes, nt, nb, bar_index - 2, c_bull, "+FVG", line.style_dashed)
+    if bear_fvg
+        float nt = low[2]
+        float nb = high
+        if merge_ob_fvg
+            [nt_m, nb_m] = f_merge_boxes(bear_ob_boxes, nt, nb)
+            nt := nt_m
+            nb := nb_m
+        f_upsert(bear_fvg_boxes, nt, nb, bar_index - 2, c_bear, "-FVG", line.style_dashed)
+    f_clean_boxes(bull_fvg_boxes, true, clean_ob)
+    f_clean_boxes(bear_fvg_boxes, false, clean_ob)
+
+// ==================== FIB / OTE ====================
+highest_high = ta.highest(high, final_fib_period)
+lowest_low   = ta.lowest(low, final_fib_period)
+swing_range  = highest_high - lowest_low
+fib_500      = lowest_low + swing_range * 0.5
+
+// ==================== АВТО HTF ====================
+string auto_htf_tf = "D"
+string auto_htf_name = "1Д"
+string auto_cur_tf_name = "15м"
+if timeframe.isintraday
+    int cur_m = timeframe.multiplier
+    if cur_m <= 1
+        auto_cur_tf_name := "1м"
+        auto_htf_tf := "5"
+        auto_htf_name := "5м"
+    else if cur_m <= 3
+        auto_cur_tf_name := "3м"
+        auto_htf_tf := "15"
+        auto_htf_name := "15м"
+    else if cur_m <= 5
+        auto_cur_tf_name := "5м"
+        auto_htf_tf := "15"
+        auto_htf_name := "15м"
+    else if cur_m <= 15
+        auto_cur_tf_name := "15м"
+        auto_htf_tf := "60"
+        auto_htf_name := "1Ч"
+    else if cur_m <= 30
+        auto_cur_tf_name := "30м"
+        auto_htf_tf := "240"
+        auto_htf_name := "4Ч"
+    else if cur_m <= 45
+        auto_cur_tf_name := "45м"
+        auto_htf_tf := "240"
+        auto_htf_name := "4Ч"
+    else if cur_m <= 60
+        auto_cur_tf_name := "1Ч"
+        auto_htf_tf := "240"
+        auto_htf_name := "4Ч"
+    else if cur_m <= 120
+        auto_cur_tf_name := "2Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+    else if cur_m <= 180
+        auto_cur_tf_name := "3Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+    else if cur_m <= 240
+        auto_cur_tf_name := "4Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+    else if cur_m <= 480
+        auto_cur_tf_name := "8Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+    else if cur_m <= 720
+        auto_cur_tf_name := "12Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+    else
+        auto_cur_tf_name := str.tostring(cur_m / 60) + "Ч"
+        auto_htf_tf := "D"
+        auto_htf_name := "1Д"
+else if timeframe.isdaily
+    auto_cur_tf_name := "1Д"
+    auto_htf_tf := "W"
+    auto_htf_name := "1W"
+else if timeframe.isweekly
+    auto_cur_tf_name := "1W"
+    auto_htf_tf := "M"
+    auto_htf_name := "1Мес"
+else
+    auto_cur_tf_name := "1Мес"
+    auto_htf_tf := "12M"
+    auto_htf_name := "12М"
+
+string effective_htf_tf = fc_mtf_mode == "Авто-Адаптивный (Рекомендуется)" ? auto_htf_tf : fc_mtf_tf
+
+bool htf_is_weekly_or_more = (effective_htf_tf == "W" or effective_htf_tf == "1W" or effective_htf_tf == "M" or effective_htf_tf == "12M")
+bool htf_is_daily   = (effective_htf_tf == "D" or effective_htf_tf == "1D" or effective_htf_tf == "2D" or effective_htf_tf == "3D")
+bool htf_is_4h_or_more = (effective_htf_tf == "240" or effective_htf_tf == "480" or effective_htf_tf == "720")
+bool htf_is_1h_or_more = (effective_htf_tf == "60" or effective_htf_tf == "120" or effective_htf_tf == "180")
+
+float htf_mult_max_tp1 = htf_is_weekly_or_more ? 2.6 : (htf_is_daily ? 2.8 : (htf_is_4h_or_more ? 3.0 : (htf_is_1h_or_more ? 3.0 : 2.8)))
+float htf_mult_min_tp1 = htf_is_weekly_or_more ? 1.5 : (htf_is_daily ? 1.5 : (htf_is_4h_or_more ? 1.7 : (htf_is_1h_or_more ? 1.7 : 1.6)))
+float htf_mult_max_tp2 = htf_is_weekly_or_more ? 3.8 : (htf_is_daily ? 4.2 : (htf_is_4h_or_more ? 4.5 : (htf_is_1h_or_more ? 4.5 : 4.6)))
+float htf_mult_min_tp2 = htf_is_weekly_or_more ? 1.6 : (htf_is_daily ? 1.8 : (htf_is_4h_or_more ? 2.0 : (htf_is_1h_or_more ? 2.0 : 1.8)))
+
+f_eval_tf_trend() =>
+    float _c = close
+    float _hh20 = ta.highest(high, 20)
+    float _ll20 = ta.lowest(low, 20)
+    float _e50 = ta.ema(close, 50)
+    float _e200 = ta.ema(close, 200)
+    float _rsi14 = ta.rsi(close, 14)
+    float _range = _hh20 - _ll20
+    float _eq = _range > 0 ? (_ll20 + _range * 0.50) : _c
+    bool _bull = true
+    if _c < _e200 and _c < _e50 and _rsi14 < 46.0
+        _bull := false
+    else if _c >= _e200 and (_c >= _e50 or _rsi14 >= 48.0 or _c >= _eq)
+        _bull := true
+    else if _c >= _e50 and _rsi14 >= 48.0
+        _bull := true
+    else if _c < _e50 and _rsi14 < 48.0 and _c < _eq
+        _bull := false
+    else
+        _bull := _c >= _e50 or _rsi14 >= 50.0
+    _bull
+
+f_htf_intel(p_max_tp1, p_min_tp1, p_max_tp2, p_min_tp2) =>
+    float h_c = close
+    float h_atr = ta.atr(14)
+    float h_hh20 = ta.highest(high, 20)
+    float h_ll20 = ta.lowest(low, 20)
+    float h_hh50 = ta.highest(high, 50)
+    float h_ll50 = ta.lowest(low, 50)
+    bool h_has_bull_ob = false
+    float h_ob_sl = na
+    float h_ob_entry = na
+    for i = 1 to 25
+        if close[i] > high[i+1] and close[i+1] < open[i+1]
+            float ob_bot = low[i+1]
+            float ob_top = high[i+1]
+            bool ob_v = false
+            if i > 1
+                for k = 0 to i - 1
+                    if close[k] < ob_bot
+                        ob_v := true
+                        break
+            if not ob_v and h_c >= ob_bot - (h_atr * 0.25)
+                h_has_bull_ob := true
+                h_ob_sl := ob_bot
+                h_ob_entry := ob_top
+                break
+    bool h_has_bear_ob = false
+    float h_bear_ob_sl = na
+    float h_bear_ob_entry = na
+    for i = 1 to 25
+        if close[i] < low[i+1] and close[i+1] > open[i+1]
+            float ob_bot = low[i+1]
+            float ob_top = high[i+1]
+            bool ob_v = false
+            if i > 1
+                for k = 0 to i - 1
+                    if close[k] > ob_top
+                        ob_v := true
+                        break
+            if not ob_v and h_c <= ob_top + (h_atr * 0.25)
+                h_has_bear_ob := true
+                h_bear_ob_sl := ob_top
+                h_bear_ob_entry := ob_bot
+                break
+    bool h_is_up = f_eval_tf_trend()
+    float h_fvg_bear_bot = na
+    float h_fvg_bull_top = na
+    for j = 1 to 25
+        if na(h_fvg_bear_bot) and high[j] < low[j+2] and close[j+1] < open[j+1]
+            float f_top = low[j+2]
+            float f_bot = high[j]
+            bool f_v = false
+            if j > 1
+                for k = 0 to j - 1
+                    if high[k] > f_top
+                        f_v := true
+                        break
+            if not f_v and f_bot > h_c
+                h_fvg_bear_bot := f_bot
+        if na(h_fvg_bull_top) and low[j] > high[j+2] and close[j+1] > open[j+1]
+            float f_top = low[j]
+            float f_bot = high[j+2]
+            bool f_v = false
+            if j > 1
+                for k = 0 to j - 1
+                    if low[k] < f_bot
+                        f_v := true
+                        break
+            if not f_v and f_top < h_c
+                h_fvg_bull_top := f_top
+    float h_ph_st = ta.pivothigh(high, 5, 5)
+    float h_pl_st = ta.pivotlow(low, 5, 5)
+    float h_ph_it = ta.pivothigh(high, 15, 15)
+    float h_pl_it = ta.pivotlow(low, 15, 15)
+    float last_res_st = ta.valuewhen(not na(h_ph_st), high[5], 0)
+    float last_sup_st = ta.valuewhen(not na(h_pl_st), low[5], 0)
+    float last_res_it = ta.valuewhen(not na(h_ph_it), high[15], 0)
+    float last_sup_it = ta.valuewhen(not na(h_pl_it), low[15], 0)
+    float h_tp1 = na
+    if h_is_up
+        if not na(h_fvg_bear_bot) and h_fvg_bear_bot > h_c and h_fvg_bear_bot <= h_c + h_atr * p_max_tp1
+            h_tp1 := h_fvg_bear_bot
+        else if not na(h_bear_ob_entry) and h_bear_ob_entry > h_c and h_bear_ob_entry <= h_c + h_atr * p_max_tp1
+            h_tp1 := h_bear_ob_entry
+        else if not na(last_res_st) and (last_res_st - h_atr * 0.08) > h_c and (last_res_st - h_atr * 0.08) <= h_c + h_atr * p_max_tp1
+            h_tp1 := last_res_st - h_atr * 0.08
+        else if not na(last_res_it) and (last_res_it - h_atr * 0.08) > h_c and (last_res_it - h_atr * 0.08) <= h_c + h_atr * p_max_tp1
+            h_tp1 := last_res_it - h_atr * 0.08
+        else
+            h_tp1 := h_c + math.min(h_atr * p_max_tp1, math.max(h_atr * p_min_tp1, (h_hh20 > h_c ? (h_hh20 - h_c) * 0.5 : h_atr * 1.5)))
+        h_tp1 := math.max(h_c + h_atr * p_min_tp1, math.min(h_c + h_atr * p_max_tp1, h_tp1))
+    else
+        if not na(h_fvg_bull_top) and h_fvg_bull_top < h_c and h_fvg_bull_top >= h_c - h_atr * p_max_tp1
+            h_tp1 := h_fvg_bull_top
+        else if not na(h_ob_entry) and h_ob_entry < h_c and h_ob_entry >= h_c - h_atr * p_max_tp1
+            h_tp1 := h_ob_entry
+        else if not na(last_sup_st) and (last_sup_st + h_atr * 0.08) < h_c and (last_sup_st + h_atr * 0.08) >= h_c - h_atr * p_max_tp1
+            h_tp1 := last_sup_st + h_atr * 0.08
+        else if not na(last_sup_it) and (last_sup_it + h_atr * 0.08) < h_c and (last_sup_it + h_atr * 0.08) >= h_c - h_atr * p_max_tp1
+            h_tp1 := last_sup_it + h_atr * 0.08
+        else
+            h_tp1 := h_c - math.min(h_atr * p_max_tp1, math.max(h_atr * p_min_tp1, (h_ll20 < h_c ? (h_c - h_ll20) * 0.5 : h_atr * 1.5)))
+        h_tp1 := math.min(h_c - h_atr * p_min_tp1, math.max(h_c - h_atr * p_max_tp1, h_tp1))
+    float h_tp2 = na
+    if h_is_up
+        float h_st = h_hh50 > h_c ? h_hh50 + (h_hh50 - h_ll50) * 0.25 : h_c + h_atr * 2.8
+        h_tp2 := math.min(h_c + h_atr * p_max_tp2, math.max(h_tp1 + h_atr * p_min_tp2, h_st > h_tp1 ? h_st : h_c + h_atr * 2.8))
+    else
+        float h_st = h_ll50 < h_c ? h_ll50 - (h_hh50 - h_ll50) * 0.25 : h_c - h_atr * 2.8
+        h_tp2 := math.max(h_c - h_atr * p_max_tp2, math.min(h_tp1 - h_atr * p_min_tp2, h_st < h_tp1 ? h_st : h_c - h_atr * 2.8))
+    [h_is_up, h_tp1, h_tp2, h_atr, h_hh20, h_ll20, h_has_bull_ob, h_ob_sl, h_ob_entry, h_has_bear_ob]
+
+[htf_calc_trend_up, htf_raw_tp1_target, htf_tp2_target, htf_atr, htf_hh20, htf_ll20, htf_has_bull_ob, htf_ob_sl, htf_ob_entry, htf_has_bear_ob] = request.security(syminfo.tickerid, fc_use_mtf ? effective_htf_tf : timeframe.period, f_htf_intel(htf_mult_max_tp1, htf_mult_min_tp1, htf_mult_max_tp2, htf_mult_min_tp2), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+bool mtf_1w_up  = request.security(syminfo.tickerid, "W", f_eval_tf_trend(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bool mtf_1d_up  = request.security(syminfo.tickerid, "D", f_eval_tf_trend(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bool mtf_4h_up  = request.security(syminfo.tickerid, "240", f_eval_tf_trend(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bool mtf_1h_up  = request.security(syminfo.tickerid, "60", f_eval_tf_trend(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bool mtf_15m_up = request.security(syminfo.tickerid, "15", f_eval_tf_trend(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+int mtf_score_bull = (mtf_1w_up ? 3 : 0) + (mtf_1d_up ? 3 : 0) + (mtf_4h_up ? 2 : 0) + (mtf_1h_up ? 1 : 0) + (mtf_15m_up ? 1 : 0)
+int mtf_score_bear = 10 - mtf_score_bull
+int mtf_bull_cnt = (mtf_15m_up ? 1 : 0) + (mtf_1h_up ? 1 : 0) + (mtf_4h_up ? 1 : 0) + (mtf_1d_up ? 1 : 0) + (mtf_1w_up ? 1 : 0)
+int mtf_bear_cnt = 5 - mtf_bull_cnt
+bool macro_is_bull = mtf_1d_up and mtf_1w_up
+bool macro_is_bear = not mtf_1d_up and not mtf_1w_up
+
+bool direct_htf_trend_up = auto_htf_name == "15м" ? mtf_15m_up : (auto_htf_name == "1Ч" ? mtf_1h_up : (auto_htf_name == "4Ч" ? mtf_4h_up : (auto_htf_name == "1Д" ? mtf_1d_up : ((auto_htf_name == "1Нед" or auto_htf_name == "1W") ? mtf_1w_up : htf_calc_trend_up))))
+bool htf_trend_up = fc_use_mtf ? direct_htf_trend_up : (close >= main_ema50)
+
+float htf_tp1_target = htf_raw_tp1_target
+if na(htf_tp1_target)
+    htf_tp1_target := htf_trend_up ? high + atr * 1.5 : low - atr * 1.5
+
+var string struct_dir = "Вверх"
+if is_choch or is_bos
+    if not is_bullish_break and htf_trend_up and (htf_has_bull_ob or (not na(htf_ob_sl) and close >= htf_ob_sl))
+        struct_dir := "Вверх"
+    else if is_bullish_break and not htf_trend_up and (htf_has_bear_ob or (not na(htf_ob_entry) and close <= htf_ob_sl))
+        struct_dir := "Вниз"
+    else
+        struct_dir := is_bullish_break ? "Вверх" : "Вниз"
+
+ph_trend = ta.pivothigh(high, 10, 10)
+pl_trend = ta.pivotlow(low, 10, 10)
+var float last_ph_trend = na
+var float last_pl_trend = na
+if not na(ph_trend)
+    last_ph_trend := ph_trend
+if not na(pl_trend)
+    last_pl_trend := pl_trend
+if not na(last_ph_trend) and close > last_ph_trend
+    struct_dir := "Вверх"
+    last_ph_trend := na
+if not na(last_pl_trend) and close < last_pl_trend
+    if htf_trend_up and (htf_has_bull_ob or (not na(htf_ob_sl) and close >= htf_ob_sl))
+        struct_dir := "Вверх"
+    else
+        struct_dir := "Вниз"
+    last_pl_trend := na
+
+// ==================== RSI / DIV ====================
+rsi6_val  = ta.rsi(close, rsi6_len)
+rsi14_val = ta.rsi(close, rsi14_len)
+rsi_val   = rsi14_val
+
+int div_lb = nz(div_lookback, 14)
+int p_lb = 3
+float ph_price = ta.pivothigh(high, p_lb, p_lb)
+float pl_price = ta.pivotlow(low, p_lb, p_lb)
+float ph_rsi   = ta.pivothigh(rsi_val, p_lb, p_lb)
+float pl_rsi   = ta.pivotlow(rsi_val, p_lb, p_lb)
+
+var float prev_pl_p = na
+var float last_pl_p = na
+var float prev_pl_r = na
+var float last_pl_r = na
+var int   prev_pl_b = na
+var int   last_pl_b = na
+var float prev_ph_p = na
+var float last_ph_p = na
+var float prev_ph_r = na
+var float last_ph_r = na
+var int   prev_ph_b = na
+var int   last_ph_b = na
+
+bool pivot_bull_div = false
+bool pivot_bear_div = false
+
+if not na(pl_price)
+    int cur_pl_b = bar_index - p_lb
+    float cur_pl_p = pl_price
+    float cur_pl_r = nz(pl_rsi, rsi_val[p_lb])
+    if not na(last_pl_p) and not na(last_pl_r)
+        if cur_pl_p <= last_pl_p and cur_pl_r > (last_pl_r + 1.0) and cur_pl_r <= 55.0
+            pivot_bull_div := true
+    prev_pl_p := last_pl_p
+    prev_pl_r := last_pl_r
+    prev_pl_b := last_pl_b
+    last_pl_p := cur_pl_p
+    last_pl_r := cur_pl_r
+    last_pl_b := cur_pl_b
+if not na(ph_price)
+    int cur_ph_b = bar_index - p_lb
+    float cur_ph_p = ph_price
+    float cur_ph_r = nz(ph_rsi, rsi_val[p_lb])
+    if not na(last_ph_p) and not na(last_ph_r)
+        if cur_ph_p >= last_ph_p and cur_ph_r < (last_ph_r - 1.0) and cur_ph_r >= 45.0
+            pivot_bear_div := true
+    prev_ph_p := last_ph_p
+    prev_ph_r := last_ph_r
+    prev_ph_b := last_ph_b
+    last_ph_p := cur_ph_p
+    last_ph_r := cur_ph_r
+    last_ph_b := cur_ph_b
+
+float rsi_ema3 = ta.ema(rsi_val, 3)
+bool rsi_xo_ema3 = ta.crossover(rsi_val, rsi_ema3)
+bool rsi_xu_ema3 = ta.crossunder(rsi_val, rsi_ema3)
+
+var int last_fast_bull_bar = -100
+float lowest_p_lb = ta.lowest(low, div_lb)
+float lowest_r_lb = ta.lowest(rsi_val, div_lb)
+bool is_at_low_zone = (low <= lowest_p_lb[1] or math.abs(low - lowest_p_lb[1]) <= atr * 0.25)
+bool rsi_surge_up = (rsi_val >= lowest_r_lb[3] + 7.0) and rsi_val <= 55.0 and (rsi_xo_ema3 or (close > open and rsi_val > rsi_val[1]))
+bool fast_bull_div = false
+if is_at_low_zone and rsi_surge_up and (bar_index - last_fast_bull_bar) >= 8 and not pivot_bull_div
+    fast_bull_div := true
+    last_fast_bull_bar := bar_index
+
+var int last_fast_bear_bar = -100
+float highest_p_lb = ta.highest(high, div_lb)
+float highest_r_lb = ta.highest(rsi_val, div_lb)
+bool is_at_high_zone = (high >= highest_p_lb[1] or math.abs(high - highest_p_lb[1]) <= atr * 0.25)
+bool rsi_plunge_dn = (rsi_val <= highest_r_lb[3] - 7.0) and rsi_val >= 45.0 and (rsi_xu_ema3 or (close < open and rsi_val < rsi_val[1]))
+bool fast_bear_div = false
+if is_at_high_zone and rsi_plunge_dn and (bar_index - last_fast_bear_bar) >= 8 and not pivot_bear_div
+    fast_bear_div := true
+    last_fast_bear_bar := bar_index
+
+bool is_bull_divergence = pivot_bull_div or fast_bull_div
+bool is_bear_divergence = pivot_bear_div or fast_bear_div
+int bars_since_bull_div = ta.barssince(is_bull_divergence)
+int bars_since_bear_div = ta.barssince(is_bear_divergence)
+bool active_bull_div = not na(bars_since_bull_div) and bars_since_bull_div <= 8
+bool active_bear_div = not na(bars_since_bear_div) and bars_since_bear_div <= 8
+
+int bars_low_lb_raw  = ta.lowestbars(low, div_lb)
+int bars_high_lb_raw = ta.highestbars(high, div_lb)
+
+if show_rsi_div and show_div_lines and pivot_bull_div and not na(prev_pl_b) and not na(prev_pl_p)
+    line.new(x1=prev_pl_b, y1=prev_pl_p, x2=bar_index - p_lb, y2=pl_price, xloc=xloc.bar_index, color=color.new(#06b6d4, 15), width=2, style=line.style_dashed, force_overlay=true)
+if show_rsi_div and show_div_lines and pivot_bear_div and not na(prev_ph_b) and not na(prev_ph_p)
+    line.new(x1=prev_ph_b, y1=prev_ph_p, x2=bar_index - p_lb, y2=ph_price, xloc=xloc.bar_index, color=color.new(#f59e0b, 15), width=2, style=line.style_dashed, force_overlay=true)
+if show_rsi_div and show_div_lines and fast_bull_div
+    int prev_low_bar = bar_index - 1 + bars_low_lb_raw[1]
+    if not na(prev_low_bar) and prev_low_bar < bar_index
+        line.new(x1=prev_low_bar, y1=lowest_p_lb[1], x2=bar_index, y2=low, xloc=xloc.bar_index, color=color.new(#06b6d4, 25), width=2, style=line.style_dotted, force_overlay=true)
+if show_rsi_div and show_div_lines and fast_bear_div
+    int prev_high_bar = bar_index - 1 + bars_high_lb_raw[1]
+    if not na(prev_high_bar) and prev_high_bar < bar_index
+        line.new(x1=prev_high_bar, y1=highest_p_lb[1], x2=bar_index, y2=high, xloc=xloc.bar_index, color=color.new(#f59e0b, 25), width=2, style=line.style_dotted, force_overlay=true)
+
+// ==================== MACD ====================
+[macd_line, signal_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_sig_len)
+macd_signal = signal_line
+bool rsi_xo_50 = ta.crossover(rsi_val, 50)
+bool rsi_xu_50 = ta.crossunder(rsi_val, 50)
+bool macd_xo = ta.crossover(macd_line, signal_line)
+bool macd_xu = ta.crossunder(macd_line, signal_line)
+bool macd_cross_bull = macd_xo
+bool macd_cross_bear = macd_xu
+bool rsi_bull_conf  = rsi_val >= 50 or rsi_xo_50
+bool rsi_bear_conf  = rsi_val < 50 or rsi_xu_50
+bool macd_bull_conf = macd_hist > 0 or macd_xo
+bool macd_bear_conf = macd_hist < 0 or macd_xu
+
+cur_dir = dir_mode == "Только Вверх" ? "Вверх" : (dir_mode == "Только Вниз" ? "Вниз" : (dir_mode == "RSI фильтр" ? (rsi_val > 50 ? "Вверх" : "Вниз") : struct_dir))
+bool is_bull = cur_dir == "Вверх" or (htf_trend_up and (htf_has_bull_ob or (not na(htf_ob_sl) and close >= htf_ob_sl)))
+
+// ==================== SWEEPS ====================
+var float last_sweep_price = na
+float pivot_high_level = ta.pivothigh(high, 5, 5)
+float pivot_low_level  = ta.pivotlow(low, 5, 5)
+var float key_high_ref = na
+var float key_low_ref = na
+if not na(pivot_high_level)
+    key_high_ref := pivot_high_level
+if not na(pivot_low_level)
+    key_low_ref := pivot_low_level
+bool is_high_sweep = false
+bool is_low_sweep = false
+if not na(key_high_ref) and high > key_high_ref and close <= key_high_ref
+    float body_h = math.abs(close - open)
+    float wick_h = high - math.max(open, close)
+    float tot = high - low
+    if tot > 0 and (wick_h >= tot * 0.40 or body_h <= tot * 0.45)
+        is_high_sweep := true
+        last_sweep_price := key_high_ref
+if not na(key_low_ref) and low < key_low_ref and close >= key_low_ref
+    float body_h = math.abs(close - open)
+    float wick_h = math.min(open, close) - low
+    float tot = high - low
+    if tot > 0 and (wick_h >= tot * 0.40 or body_h <= tot * 0.45)
+        is_low_sweep := true
+        last_sweep_price := key_low_ref
+if is_high_sweep and not is_bull and delta_current < 0
+    is_bull := false
+else if is_low_sweep and is_bull and delta_current > 0
+    is_bull := true
+
+// ==================== OTE ====================
+float ote_top = na
+float ote_bottom = na
+if is_bull
+    ote_top := highest_high - swing_range * 0.618
+    ote_bottom := highest_high - swing_range * 0.786
+else
+    ote_top := lowest_low + swing_range * 0.786
+    ote_bottom := lowest_low + swing_range * 0.618
+
+// ==================== FC STATE ====================
+var int fc_start_bar = 0
+var float fc_start_price = na
+var float fc_p1 = na
+var float fc_p2 = na
+var float fc_p3 = na
+var float fc_invalid_level = na
+var bool fc_is_bull = true
+var float active_fc_prob = 0.0
+var bool fc_leg1_hit = false
+var bool fc_leg2_hit = false
+var bool fc_leg3_hit = false
+var bool fc_leg4_hit = false
+var bool fc_leg5_hit = false
+var int fc_leg1_idx = 0
+var float fc_leg1_val = na
+var int fc_leg2_idx = 0
+var float fc_leg2_val = na
+var int fc_leg3_idx = 0
+var float fc_leg3_val = na
+var int fc_leg4_idx = 0
+var int fc_leg5_idx = 0
+var float fc_leg4_val = na
+var float fc_leg5_val = na
+var float current_trailing_sl = na
+var string trailing_stage_str = "🛡️ Начальный SL"
+var int trailing_stage_idx = 0
+
+float bar_rng = high - low
+float bar_body = math.abs(close - open)
+bool is_marubozu_expansion = bar_rng > 0 and (bar_body / bar_rng >= 0.65) and (bar_rng >= atr * 1.15)
+bool has_bull_breakaway_fvg = low > math.max(open[1], close[1]) + atr * 0.15
+bool has_bear_breakaway_fvg = high < math.min(open[1], close[1]) - atr * 0.15
+bool has_breakaway_fvg = fc_is_bull ? has_bull_breakaway_fvg : has_bear_breakaway_fvg
+
+// ==================== GEX-LITE (every bar) для Audit ====================
+var float lite_call_wall = na
+var float lite_put_wall = na
+var float lite_flip = na
+
+if use_gex and barstate.isconfirmed and bar_index > 20
+    float lite_iv = f_get_effective_iv()
+    float lite_step = f_calc_gex_step()
+    float lite_sigma = lite_iv / 100.0
+    int lite_dow = dayofweek
+    float lite_dte = lite_dow == dayofweek.monday ? 4.0 : (lite_dow == dayofweek.tuesday ? 3.0 : (lite_dow == dayofweek.wednesday ? 2.0 : (lite_dow == dayofweek.thursday ? 1.0 : 0.5)))
+    float lite_T = math.max(0.5, lite_dte) / 365.0
+    float lite_atm = math.round(close / lite_step) * lite_step
+    float best_c_l = -1.0
+    float best_p_l = -1.0
+    float best_c_s_l = lite_atm + lite_step
+    float best_p_s_l = lite_atm - lite_step
+    float prev_ng_l = 0.0
+    float flip_v_l = lite_atm
+    bool flip_found_l = false
+    float closest_d_l = 1e10
+    for i = -14 to 14
+        float strike_l = lite_atm + i * lite_step
+        float mny_l = (strike_l - close) / close
+        float skew_l = mny_l < 0 ? (1.0 + math.abs(mny_l) * 1.7) : (1.0 - math.abs(mny_l) * 0.3)
+        float sig_l = math.max(0.06, lite_sigma * skew_l)
+        float g_l = f_calc_gamma(close, strike_l, sig_l, lite_T)
+        float cw_l = 1.0 / (1.0 + math.exp(-3.0 * (strike_l - close) / (lite_step * 5.0)))
+        float pw_l = 1.0 - cw_l
+        float rw_l = 1.0
+        if math.abs(strike_l / (lite_step * 5.0) - math.round(strike_l / (lite_step * 5.0))) < 0.01
+            rw_l := 2.2
+        else if math.abs(strike_l / (lite_step * 2.0) - math.round(strike_l / (lite_step * 2.0))) < 0.01
+            rw_l := 1.5
+        float cg_l = g_l * cw_l * rw_l * 100000.0
+        float pg_l = g_l * pw_l * rw_l * 100000.0
+        float ng_l = cg_l - pg_l
+        if strike_l >= close and cg_l > best_c_l
+            best_c_l := cg_l
+            best_c_s_l := strike_l
+        if strike_l <= close and pg_l > best_p_l
+            best_p_l := pg_l
+            best_p_s_l := strike_l
+        if i > -14 and ((prev_ng_l > 0 and ng_l <= 0) or (prev_ng_l < 0 and ng_l >= 0))
+            if math.abs(strike_l - close) < closest_d_l
+                closest_d_l := math.abs(strike_l - close)
+                flip_v_l := strike_l
+                flip_found_l := true
+        prev_ng_l := ng_l
+    lite_call_wall := best_c_s_l
+    lite_put_wall := best_p_s_l
+    lite_flip := flip_v_l
+
+// ==================== GEX AUDIT ====================
+var int aud_total = 0
+var int aud_cw_hit = 0
+var int aud_pw_hit = 0
+var int aud_flip_touch = 0
+var float aud_prev_cw = na
+var float aud_prev_pw = na
+var float aud_prev_flip = na
+var int aud_prev_bar = -1
+
+if use_gex_audit and barstate.isconfirmed and aud_prev_bar == bar_index - 1 and not na(aud_prev_cw) and not na(aud_prev_pw)
+    aud_total += 1
+    float aud_thr = atr * 0.35
+    if high >= aud_prev_cw - aud_thr and close <= aud_prev_cw + aud_thr
+        aud_cw_hit += 1
+    if low <= aud_prev_pw + aud_thr and close >= aud_prev_pw - aud_thr
+        aud_pw_hit += 1
+    if not na(aud_prev_flip) and math.min(math.abs(high - aud_prev_flip), math.abs(low - aud_prev_flip)) <= aud_thr
+        aud_flip_touch += 1
+
+if use_gex_audit and barstate.isconfirmed and not na(lite_call_wall)
+    aud_prev_cw := lite_call_wall
+    aud_prev_pw := lite_put_wall
+    aud_prev_flip := lite_flip
+    aud_prev_bar := bar_index
+
+float aud_cw_rate = aud_total > 0 ? 100.0 * aud_cw_hit / aud_total : 0.0
+float aud_pw_rate = aud_total > 0 ? 100.0 * aud_pw_hit / aud_total : 0.0
+float aud_flip_rate = aud_total > 0 ? 100.0 * aud_flip_touch / aud_total : 0.0
+
+// ==================== IN-ZONE CHECKS ====================
+in_support_zone = false
+if array.size(sup_boxes) > 0
+    for i = 0 to array.size(sup_boxes) - 1
+        bx = array.get(sup_boxes, i)
+        if low <= box.get_top(bx) and close >= box.get_bottom(bx)
+            in_support_zone := true
+            break
+in_resistance_zone = false
+if array.size(res_boxes) > 0
+    for i = 0 to array.size(res_boxes) - 1
+        bx = array.get(res_boxes, i)
+        if high >= box.get_bottom(bx) and close <= box.get_top(bx)
+            in_resistance_zone := true
+            break
+in_bullish_ob = false
+if array.size(bull_ob_boxes) > 0
+    for i = 0 to array.size(bull_ob_boxes) - 1
+        bx = array.get(bull_ob_boxes, i)
+        if low <= box.get_top(bx) and close >= box.get_bottom(bx)
+            in_bullish_ob := true
+            break
+in_bearish_ob = false
+if array.size(bear_ob_boxes) > 0
+    for i = 0 to array.size(bear_ob_boxes) - 1
+        bx = array.get(bear_ob_boxes, i)
+        if high >= box.get_bottom(bx) and close <= box.get_top(bx)
+            in_bearish_ob := true
+            break
+in_ote_zone = false
+if not na(ote_top) and not na(ote_bottom)
+    if is_bull
+        in_ote_zone := low <= ote_top and close >= ote_bottom
+    else
+        in_ote_zone := high >= ote_bottom and close <= ote_top
+
+bullish_structure_break = is_bos and is_bullish_break
+bearish_structure_break = is_bos and not is_bullish_break
+bullish_choch = is_choch and is_bullish_break
+bearish_choch = is_choch and not is_bullish_break
+
+bool buy_sig = false
+bool sell_sig = false
+if show_signals
+    if signal_mode == "Агрессивный"
+        buy_sig := (is_bull and (delta_current > 0 or htf_has_bull_ob) and (in_support_zone or in_bullish_ob or in_ote_zone or htf_has_bull_ob)) or bullish_choch or (is_bull and bullish_structure_break)
+        sell_sig := (not is_bull and (delta_current < 0 or htf_has_bear_ob) and (in_resistance_zone or in_bearish_ob or in_ote_zone or htf_has_bear_ob)) or bearish_choch or (not is_bull and bearish_structure_break)
+    else if signal_mode == "Консервативный"
+        buy_sig := (is_bull and (delta_current > 0 or htf_has_bull_ob) and (in_support_zone or in_bullish_ob or in_ote_zone or htf_has_bull_ob)) or (bullish_choch and (in_support_zone or in_bullish_ob or delta_current > 0 or htf_has_bull_ob))
+        sell_sig := (not is_bull and (delta_current < 0 or htf_has_bear_ob) and (in_resistance_zone or in_bearish_ob or in_ote_zone or htf_has_bear_ob)) or (bearish_choch and (in_resistance_zone or in_bearish_ob or delta_current < 0 or htf_has_bear_ob))
+    else
+        buy_sig := (bullish_choch or (is_bull and bullish_structure_break)) and (delta_current > 0 or htf_has_bull_ob)
+        sell_sig := (bearish_choch or (not is_bull and bearish_structure_break)) and (delta_current < 0 or htf_has_bear_ob)
+
+var int last_sig_bar = 0
+if buy_sig or sell_sig
+    if bar_index - last_sig_bar < 5
+        buy_sig := false
+        sell_sig := false
+    else
+        last_sig_bar := bar_index
+
+float bull_score = 0.0
+float bear_score = 0.0
+if is_bull
+    bull_score += 35.0
+else
+    bear_score += 35.0
+if delta_current > 0
+    bull_score += (is_extreme_delta ? 25.0 : 15.0)
+else if delta_current < 0
+    bear_score += (is_extreme_delta ? 25.0 : 15.0)
+if show_all_mtf_cons
+    bull_score += (mtf_score_bull * 3.0)
+    bear_score += (mtf_score_bear * 3.0)
+else
+    if htf_trend_up
+        bull_score += 25.0
+    else
+        bear_score += 25.0
+if rsi_bull_conf
+    bull_score += 10.0
+if rsi_bear_conf
+    bear_score += 10.0
+if macd_bull_conf
+    bull_score += 10.0
+if macd_bear_conf
+    bear_score += 10.0
+if is_low_sweep
+    bull_score += 30.0
+if is_high_sweep
+    bear_score += 30.0
+
+bool consensus_is_bull = bull_score >= bear_score
+bool consensus_chg = ta.change(consensus_is_bull)
+bool is_confirmed = barstate.isconfirmed or barstate.ishistory
+bool consensus_changed = is_confirmed and consensus_chg
+
+calc_setup_prob(bool target_bull) =>
+    float p = 50.0
+    if show_all_mtf_cons
+        int fav = target_bull ? mtf_score_bull : mtf_score_bear
+        if fav >= 10
+            p += 18.0
+        else if fav >= 8
+            p += 14.0
+        else if fav >= 6
+            p += 8.0
+        else if fav >= 3
+            p -= 8.0
+        else
+            p -= 18.0
+        if target_bull and macro_is_bull
+            p += 6.0
+        else if not target_bull and macro_is_bear
+            p += 6.0
+        else if not target_bull and macro_is_bull
+            p -= 6.0
+        else if target_bull and macro_is_bear
+            p -= 6.0
+    else if fc_use_mtf
+        if target_bull == htf_trend_up
+            p += 14.0
+        else
+            p -= 18.0
+    if target_bull and is_low_sweep
+        p += 15.0
+    else if not target_bull and is_high_sweep
+        p += 15.0
+    if target_bull == is_bull
+        p += 8.0
+    else
+        p -= 10.0
+    if target_bull
+        if delta_current > 0
+            p += (is_extreme_delta ? 8.0 : 6.0)
+        else
+            p -= 8.0
+    else
+        if delta_current < 0
+            p += (is_extreme_delta ? 8.0 : 6.0)
+        else
+            p -= 8.0
+    if target_bull
+        if rsi_val >= 50 and macd_bull_conf
+            p += 4.0
+        else if rsi_val < 45 and macd_bear_conf
+            p -= 5.0
+    else
+        if rsi_val <= 50 and macd_bear_conf
+            p += 4.0
+        else if rsi_val > 55 and macd_bull_conf
+            p -= 5.0
+    if (target_bull and (in_bullish_ob or in_support_zone or in_ote_zone)) or (not target_bull and (in_bearish_ob or in_resistance_zone or in_ote_zone))
+        p += 6.0
+    else
+        p -= 3.0
+    math.min(85.0, math.max(30.0, p))
+
+float bull_prob = calc_setup_prob(true)
+float bear_prob = calc_setup_prob(false)
+bool candidate_is_bull = bull_prob >= bear_prob
+float candidate_prob = candidate_is_bull ? bull_prob : bear_prob
+
+if signal_mode != "Агрессивный"
+    if buy_sig and (not htf_trend_up or bull_prob < 55.0)
+        buy_sig := false
+    if sell_sig and (htf_trend_up or bear_prob < 55.0)
+        sell_sig := false
+
+// ==================== FORECAST SL/PLAN-B ====================
+float pos_entry_ref = not na(fc_leg1_val) ? fc_leg1_val : (not na(fc_p1) ? fc_p1 : fc_start_price)
+bool is_pos_in_profit = not na(pos_entry_ref) and ((fc_is_bull and close > pos_entry_ref) or (not fc_is_bull and close < pos_entry_ref))
+bool is_strict_wick = sl_break_mode == "Касание тенью (Любой укол)"
+bool is_hard_sl_breached = false
+bool is_wick_sweep = false
+bool is_trailing_hit = false
+bool is_choch_opposite = false
+bool is_adverse_move = false
+
+if fc_start_bar > 0 and bar_index >= fc_start_bar
+    if fc_is_bull
+        bool closed_beyond = is_confirmed and close < fc_invalid_level
+        bool wick_touch = low <= fc_invalid_level
+        if (is_strict_wick ? wick_touch : closed_beyond) and not is_pos_in_profit
+            is_hard_sl_breached := true
+        else if wick_touch and (close >= fc_invalid_level or is_pos_in_profit or not is_confirmed)
+            is_wick_sweep := true
+        if use_trailing and not na(current_trailing_sl) and (is_confirmed ? close < current_trailing_sl : (is_strict_wick and low <= current_trailing_sl))
+            is_trailing_hit := true
+        if is_confirmed and (bearish_choch or bearish_structure_break) and (close < fc_invalid_level and close < fc_p1 - atr * 1.0)
+            is_choch_opposite := true
+        bool cat_dump = is_confirmed and close < fc_invalid_level and (close < open and (open - close) >= atr * 1.5 and close < fc_p1 - atr * 1.5)
+        if cat_dump and not is_pos_in_profit
+            is_adverse_move := true
+    else
+        bool closed_beyond = is_confirmed and close > fc_invalid_level
+        bool wick_touch = high >= fc_invalid_level
+        if (is_strict_wick ? wick_touch : closed_beyond) and not is_pos_in_profit
+            is_hard_sl_breached := true
+        else if wick_touch and (close <= fc_invalid_level or is_pos_in_profit or not is_confirmed)
+            is_wick_sweep := true
+        if use_trailing and not na(current_trailing_sl) and (is_confirmed ? close > current_trailing_sl : (is_strict_wick and high >= current_trailing_sl))
+            is_trailing_hit := true
+        if is_confirmed and (bullish_choch or bullish_structure_break) and (close > fc_invalid_level and close > fc_p1 + atr * 1.0)
+            is_choch_opposite := true
+        bool cat_pump = is_confirmed and close > fc_invalid_level and (close > open and (close - open) >= atr * 1.5 and close > fc_p1 + atr * 1.5)
+        if cat_pump and not is_pos_in_profit
+            is_adverse_move := true
+
+bool is_price_safe = (fc_is_bull ? close >= fc_invalid_level : close <= fc_invalid_level) or is_pos_in_profit
+if is_price_safe and not is_strict_wick
+    is_hard_sl_breached := false
+
+bool plan_b_opposes_mtf = filter_plan_b_mtf and ((not fc_is_bull and (mtf_score_bear >= 6 or mtf_bear_cnt >= 3 or macro_is_bear)) or (fc_is_bull and (mtf_score_bull >= 6 or mtf_bull_cnt >= 3 or macro_is_bull)))
+bool is_sl_breached = is_hard_sl_breached or (trail_resets_wave and is_trailing_hit) or is_adverse_move
+bool alt_scenario_activated = fc_start_bar > 0 and (is_hard_sl_breached or is_choch_opposite or is_adverse_move) and not plan_b_opposes_mtf
+bool fc_invalidated = is_sl_breached or alt_scenario_activated
+bool is_plan_b_active = fc_invalidated and not (fc_leg3_hit or (fc_leg2_hit and is_trailing_hit)) and not is_pos_in_profit and not plan_b_opposes_mtf
+
+float disp_active_sl = use_trailing and not na(current_trailing_sl) ? current_trailing_sl : fc_invalid_level
+bool draw_is_bull = fc_is_bull
+
+bool is_htf_timeframe = timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly or (timeframe.isminutes and timeframe.multiplier >= 240) or timeframe.period == "240" or timeframe.period == "D" or timeframe.period == "W"
+bool cur_chart_is_bull = f_eval_tf_trend()
+bool is_trade_fully_completed = fc_leg3_hit or (fc_leg2_hit and is_trailing_hit)
+int entry_wait_bars = is_htf_timeframe ? 6 : (timeframe.isminutes and timeframe.multiplier <= 5 ? 8 : timeframe.isminutes and timeframe.multiplier <= 15 ? 7 : timeframe.isminutes and timeframe.multiplier <= 30 ? 6 : 8)
+int max_hold_bars = fc_leg2_hit ? 120 : (fc_leg1_hit ? math.min(40, final_fc_lookback * 2) : entry_wait_bars)
+
+bool institutional_macro_bull = macro_is_bull or (htf_trend_up and mtf_score_bull >= 5) or (is_htf_timeframe and (htf_trend_up or mtf_4h_up or mtf_score_bull >= 5))
+bool institutional_macro_bear = macro_is_bear or (not htf_trend_up and mtf_score_bear >= 5) or (is_htf_timeframe and (not htf_trend_up or not mtf_4h_up or mtf_score_bear >= 5))
+bool is_macro_trend_desync = is_htf_timeframe and ((fc_is_bull and institutional_macro_bear) or (not fc_is_bull and institutional_macro_bull))
+bool is_htf_desync = is_macro_trend_desync or (is_htf_timeframe and (fc_is_bull != cur_chart_is_bull or (cur_chart_is_bull == htf_trend_up and fc_is_bull != htf_trend_up))) or (fc_use_mtf and not (fc_start_bar > 0 and not is_sl_breached and not is_choch_opposite and not is_trade_fully_completed and (bar_index - fc_start_bar <= max_hold_bars)) and (fc_is_bull != htf_trend_up))
+bool has_active_forecast = fc_start_bar > 0 and not is_sl_breached and not is_choch_opposite and not is_trade_fully_completed and not is_htf_desync and (bar_index - fc_start_bar <= max_hold_bars)
+bool is_curr_bar_all_tp_hit = fc_start_bar > 0 and ((fc_is_bull and (high >= fc_p3 or close >= fc_p3)) or (not fc_is_bull and (low <= fc_p3 or close <= fc_p3)))
+bool fc_targets_done = is_trade_fully_completed or is_curr_bar_all_tp_hit
+
+bool is_strong_bull_setup = ((is_low_sweep and not (is_htf_timeframe and macro_is_bear)) or (bullish_choch and htf_trend_up) or vd_extreme_bull or (close > open and (close - open) >= atr * 0.5 and close > high[1] and close > main_ema20)) and bull_prob >= 56.0
+bool is_strong_bear_setup = ((is_high_sweep and not (is_htf_timeframe and macro_is_bull)) or (bearish_choch and not htf_trend_up) or vd_extreme_bear or (close < open and (open - close) >= atr * 0.5 and close < low[1] and close < main_ema20)) and bear_prob >= 56.0
+bool is_strong_reversal_setup = (is_strong_bull_setup and not fc_is_bull) or (is_strong_bear_setup and fc_is_bull)
+
+var int last_htf_intrabar_bar = 0
+bool htf_intrabar_enabled = fc_htf_intrabar and is_htf_timeframe and not is_confirmed and (last_htf_intrabar_bar != bar_index)
+bool is_htf_candle_impulse = (high - low) >= atr * 0.9 and math.abs(close - open) >= atr * 0.45
+bool is_htf_intrabar_trigger = htf_intrabar_enabled and ((is_curr_bar_all_tp_hit and (high - low) >= atr * 0.9) or (is_hard_sl_breached or is_adverse_move) or (is_htf_candle_impulse and (is_low_sweep or is_high_sweep or is_strong_reversal_setup or bullish_choch or bearish_choch or is_adverse_move)))
+
+bool has_bull_ob_near = false
+if array.size(bull_ob_boxes) > 0
+    for i = array.size(bull_ob_boxes) - 1 to 0
+        box bx = array.get(bull_ob_boxes, i)
+        if low <= box.get_top(bx) + atr * 0.4 and low >= box.get_bottom(bx) - atr * 0.8
+            has_bull_ob_near := true
+            break
+bool has_bear_ob_near = false
+if array.size(bear_ob_boxes) > 0
+    for i = array.size(bear_ob_boxes) - 1 to 0
+        box bx = array.get(bear_ob_boxes, i)
+        if high >= box.get_bottom(bx) - atr * 0.4 and high <= box.get_top(bx) + atr * 0.8
+            has_bear_ob_near := true
+            break
+
+bool is_fast_bull_rejection = not fc_is_bull and (has_bull_ob_near or is_low_sweep or low <= htf_ob_sl or in_support_zone or in_bullish_ob) and (close >= open or (close - low) >= (high - low) * 0.35) and (mtf_score_bull >= 5 or htf_trend_up or cur_chart_is_bull)
+bool is_fast_bear_rejection = fc_is_bull and (has_bear_ob_near or is_high_sweep or high >= htf_ob_sl or in_resistance_zone or in_bearish_ob) and (close <= open or (high - close) >= (high - low) * 0.35) and (mtf_score_bear >= 5 or not htf_trend_up or not cur_chart_is_bull)
+bool is_intraday_tf_local = timeframe.isminutes and timeframe.multiplier < 60
+bool fc_fast_rejection_active = fc_fast_rejection and not is_intraday_tf_local
+bool is_fast_rejection_trigger = fc_fast_rejection_active and not is_confirmed and (is_fast_bull_rejection or is_fast_bear_rejection)
+
+var float lowest_since_fc = na
+var float highest_since_fc = na
+if fc_start_bar > 0
+    if bar_index == fc_start_bar
+        lowest_since_fc := low
+        highest_since_fc := high
+    else
+        lowest_since_fc := math.min(nz(lowest_since_fc, low), low)
+        highest_since_fc := math.max(nz(highest_since_fc, high), high)
+else
+    lowest_since_fc := low
+    highest_since_fc := high
+
+bool alt_scenario_reached = fc_is_bull ? (low <= disp_active_sl - atr * 3.0) : (high >= disp_active_sl + atr * 3.0)
+
+// ★ NEW: детект устаревшего прогноза после TP1
+int tp1_hold_bars = math.max(entry_wait_bars * 3, 20)
+int bars_since_tp1 = fc_start_bar > 0 and fc_leg2_hit and fc_leg2_idx > 0 ? (bar_index - fc_leg2_idx) : 0
+bool tp1_stale = fc_start_bar > 0 and fc_leg2_hit and not fc_leg3_hit and bars_since_tp1 >= tp1_hold_bars
+bool pullback_after_tp1_bull = fc_start_bar > 0 and fc_is_bull and fc_leg2_hit and not fc_leg3_hit and close < fc_p1 - atr * 0.20
+bool pullback_after_tp1_bear = fc_start_bar > 0 and not fc_is_bull and fc_leg2_hit and not fc_leg3_hit and close > fc_p1 + atr * 0.20
+bool pullback_after_tp1 = pullback_after_tp1_bull or pullback_after_tp1_bear
+bool hard_reset_due = fc_start_bar > 0 and not fc_targets_done and (bar_index - fc_start_bar) > (max_hold_bars * 2)
+
+bool can_evaluate_forecast = is_confirmed or is_htf_intrabar_trigger or is_fast_rejection_trigger or is_htf_desync
+bool should_trigger_new_forecast = false
+
+if can_evaluate_forecast
+    if fc_targets_done
+        should_trigger_new_forecast := true
+    else if tp1_stale or pullback_after_tp1 or hard_reset_due
+        should_trigger_new_forecast := true
+    else if is_fast_rejection_trigger or is_htf_desync
+        should_trigger_new_forecast := true
+    else if is_htf_intrabar_trigger
+        last_htf_intrabar_bar := bar_index
+        should_trigger_new_forecast := true
+    else if is_low_sweep or is_high_sweep
+        should_trigger_new_forecast := true
+    else if is_adverse_move or (is_htf_intrabar_trigger and (is_hard_sl_breached or is_adverse_move))
+        should_trigger_new_forecast := true
+    else if not show_alt_wave and alt_scenario_activated
+        should_trigger_new_forecast := true
+    else if is_plan_b_active and (alt_scenario_reached or (bar_index - fc_start_bar >= 16))
+        should_trigger_new_forecast := true
+    else if fc_start_bar == 0
+        should_trigger_new_forecast := true
+    else if is_strong_reversal_setup and not has_active_forecast and not is_plan_b_active
+        should_trigger_new_forecast := true
+    else if not has_active_forecast and not is_plan_b_active
+        if buy_sig or sell_sig or consensus_changed or bullish_choch or bearish_choch or vd_extreme_bull or vd_extreme_bear or (bar_index - fc_start_bar >= 16)
+            should_trigger_new_forecast := true
+    else if not is_plan_b_active
+        bool is_stale = not fc_leg1_hit and not fc_leg2_hit and (
+             (bar_index - fc_start_bar >= entry_wait_bars) or
+             (fc_is_bull and (close < fc_invalid_level or (highest_since_fc > fc_p1 + atr * 1.25 and (in_bearish_ob or in_resistance_zone or close < open)))) or
+             (not fc_is_bull and (close > fc_invalid_level or (lowest_since_fc < fc_p1 - atr * 1.25 and (in_bullish_ob or in_support_zone or close > open)))))
+        if is_stale
+            should_trigger_new_forecast := true
+        else if (buy_sig and not fc_is_bull and bull_prob >= 75.0 and close > open and (close - open) >= atr * 0.7) or (sell_sig and fc_is_bull and bear_prob >= 75.0 and close < open and (open - close) >= atr * 0.7)
+            should_trigger_new_forecast := true
+        else if candidate_prob >= 76.0 and candidate_prob > active_fc_prob + 10.0 and (bar_index - fc_start_bar >= 6)
+            should_trigger_new_forecast := true
+
+float max_tp1_atr = (timeframe.isweekly or timeframe.ismonthly) ? 1.8 : (timeframe.isdaily ? 1.8 : (timeframe.isminutes and timeframe.multiplier >= 240 ? 1.6 : (timeframe.isminutes and timeframe.multiplier >= 60 ? 1.5 : 1.4)))
+float max_tp2_atr = (timeframe.isweekly or timeframe.ismonthly) ? 2.8 : (timeframe.isdaily ? 2.8 : (timeframe.isminutes and timeframe.multiplier >= 240 ? 2.5 : (timeframe.isminutes and timeframe.multiplier >= 60 ? 2.4 : 2.2)))
+float min_tp1_atr = (timeframe.isweekly or timeframe.ismonthly) ? 0.85 : (timeframe.isdaily ? 0.85 : (timeframe.isminutes and timeframe.multiplier >= 240 ? 0.75 : (timeframe.isminutes and timeframe.multiplier >= 60 ? 0.7 : 0.65)))
+float min_tp2_atr = (timeframe.isweekly or timeframe.ismonthly) ? 1.0 : (timeframe.isdaily ? 1.0 : (timeframe.isminutes and timeframe.multiplier >= 240 ? 0.9 : (timeframe.isminutes and timeframe.multiplier >= 60 ? 0.85 : 0.8)))
+float max_pullback_atr = (timeframe.isweekly or timeframe.ismonthly) ? 0.45 : (timeframe.isdaily ? 0.55 : (timeframe.isminutes and timeframe.multiplier >= 240 ? 0.65 : 0.75))
+
+var float tp_mult = 1.0
+
+[di_plus_v, di_minus_v, adx_val] = ta.dmi(14, 14)
+int er_period = 20
+float net_move = math.abs(close - close[er_period])
+float path_sum = 0.0
+for i = 1 to er_period
+    path_sum += math.abs(close[i] - close[i-1])
+float er_val = path_sum > 0 ? net_move / path_sum : 0.0
+bool is_trending = adx_val > 25 and er_val > 0.4
+bool is_ranging = adx_val < 20 and er_val < 0.3
+bool ict_bull_strong = is_low_sweep and in_bullish_ob and has_bull_breakaway_fvg
+bool ict_bear_strong = is_high_sweep and in_bearish_ob and has_bear_breakaway_fvg
+bool ict_setup_strong = ict_bull_strong or ict_bear_strong
+bool absorption_bull = volume > vol_sma20 * 1.5 and delta_current > 0 and math.abs(close - open) < atr * 0.3
+bool absorption_bear = volume > vol_sma20 * 1.5 and delta_current < 0 and math.abs(close - open) < atr * 0.3
+bool absorption_signal = (fc_is_bull and absorption_bull) or (not fc_is_bull and absorption_bear)
+float poc_price = ta.valuewhen(volume == ta.highest(volume, 100), close, 0)
+
+if should_trigger_new_forecast
+    fc_start_bar := bar_index
+    fc_start_price := close
+    lowest_since_fc := low
+    highest_since_fc := high
+    if institutional_macro_bull and is_htf_timeframe
+        fc_is_bull := true
+        active_fc_prob := math.max(78.0, bull_prob)
+    else if institutional_macro_bear and is_htf_timeframe
+        fc_is_bull := false
+        active_fc_prob := math.max(78.0, bear_prob)
+    else if is_htf_timeframe
+        fc_is_bull := cur_chart_is_bull or htf_trend_up or mtf_4h_up
+        active_fc_prob := math.max(74.0, fc_is_bull ? bull_prob : bear_prob)
+    else if is_fast_rejection_trigger
+        if is_fast_bull_rejection
+            fc_is_bull := true
+            active_fc_prob := math.max(78.0, bull_prob)
+        else
+            fc_is_bull := false
+            active_fc_prob := math.max(78.0, bear_prob)
+    else if is_low_sweep and not macro_is_bear
+        fc_is_bull := true
+        active_fc_prob := math.max(76.0, bull_prob)
+    else if is_high_sweep and not macro_is_bull
+        fc_is_bull := false
+        active_fc_prob := math.max(76.0, bear_prob)
+    else if is_htf_desync
+        fc_is_bull := cur_chart_is_bull
+        active_fc_prob := math.max(76.0, cur_chart_is_bull ? bull_prob : bear_prob)
+    else if alt_scenario_activated or is_adverse_move
+        fc_is_bull := not fc_is_bull
+        active_fc_prob := math.max(74.0, fc_is_bull ? bull_prob : bear_prob)
+    else if is_strong_reversal_setup
+        fc_is_bull := is_strong_bull_setup
+        active_fc_prob := is_strong_bull_setup ? bull_prob : bear_prob
+    else
+        if htf_trend_up and not macro_is_bear
+            fc_is_bull := (bear_prob > 72.0 and (show_all_mtf_cons ? mtf_score_bear >= 7 : bear_score > bull_score)) ? false : true
+            active_fc_prob := fc_is_bull ? math.max(68.0, bull_prob) : bear_prob
+        else if not htf_trend_up and not macro_is_bull
+            fc_is_bull := (bull_prob > 72.0 and (show_all_mtf_cons ? mtf_score_bull >= 7 : bull_score > bear_score)) ? true : false
+            active_fc_prob := not fc_is_bull ? math.max(68.0, bear_prob) : bull_prob
+        else
+            fc_is_bull := (bull_score >= bear_score and (htf_trend_up or not fc_use_mtf or bull_prob >= 58.0)) ? true : ((bear_score > bull_score and (not htf_trend_up or not fc_use_mtf or bear_prob >= 58.0)) ? false : candidate_is_bull)
+            active_fc_prob := fc_is_bull ? bull_prob : bear_prob
+    float mtf_mult = 1.0
+    if fc_use_mtf
+        if fc_is_bull
+            mtf_mult := htf_trend_up ? 1.25 : 0.75
+        else
+            mtf_mult := not htf_trend_up ? 1.25 : 0.75
+    float regime_mult = is_trending ? 1.25 : (is_ranging ? 0.80 : 0.95)
+    float ict_mult = ict_setup_strong ? 1.15 : 1.0
+    float absorb_mult = absorption_signal ? 1.10 : 1.0
+    tp_mult := math.min(1.80, math.max(0.55, final_fc_target_mult * mtf_mult * regime_mult * ict_mult * absorb_mult))
+    float target_p1 = na
+    if is_low_sweep and fc_is_bull
+        target_p1 := math.min(close, low)
+    else if is_high_sweep and not fc_is_bull
+        target_p1 := math.max(close, high)
+    else if fc_is_bull
+        if in_bullish_ob or in_support_zone
+            target_p1 := math.min(close, low + atr * 0.15)
+        else
+            if array.size(bull_ob_boxes) > 0
+                for i = array.size(bull_ob_boxes) - 1 to 0
+                    box bx = array.get(bull_ob_boxes, i)
+                    float ob_top = box.get_top(bx)
+                    float ob_bot = box.get_bottom(bx)
+                    if ob_top < close and ob_top >= close - atr * max_pullback_atr
+                        target_p1 := math.max((ob_top + ob_bot) / 2, close - atr * max_pullback_atr)
+                        break
+            if na(target_p1) and array.size(bull_fvg_boxes) > 0
+                for i = array.size(bull_fvg_boxes) - 1 to 0
+                    box bx = array.get(bull_fvg_boxes, i)
+                    float fvg_top = box.get_top(bx)
+                    if fvg_top < close and fvg_top >= close - atr * max_pullback_atr
+                        target_p1 := math.max((box.get_top(bx) + box.get_bottom(bx)) / 2, close - atr * max_pullback_atr)
+                        break
+            if na(target_p1) and not na(last_st_sh_val) and last_st_sh_val < close and last_st_sh_val >= close - atr * max_pullback_atr
+                target_p1 := last_st_sh_val
+            if na(target_p1)
+                float lir = highest_high_8 - lowest_low_8
+                float disc = (lir > atr * 0.5 and lir < atr * 3.0) ? (highest_high_8 - lir * 0.382) : na
+                if not na(disc) and disc < close and disc >= close - atr * max_pullback_atr
+                    target_p1 := disc
+                else
+                    target_p1 := close - atr * (timeframe.isintraday ? 0.45 : 0.35)
+    else
+        if in_bearish_ob or in_resistance_zone
+            target_p1 := math.max(close, high - atr * 0.15)
+        else
+            if array.size(bear_ob_boxes) > 0
+                for i = array.size(bear_ob_boxes) - 1 to 0
+                    box bx = array.get(bear_ob_boxes, i)
+                    float ob_top = box.get_top(bx)
+                    float ob_bot = box.get_bottom(bx)
+                    if ob_bot > close and ob_bot <= close + atr * max_pullback_atr
+                        target_p1 := math.min((ob_top + ob_bot) / 2, close + atr * max_pullback_atr)
+                        break
+            if na(target_p1) and array.size(bear_fvg_boxes) > 0
+                for i = array.size(bear_fvg_boxes) - 1 to 0
+                    box bx = array.get(bear_fvg_boxes, i)
+                    float fvg_bot = box.get_bottom(bx)
+                    if fvg_bot > close and fvg_bot <= close + atr * max_pullback_atr
+                        target_p1 := math.min((box.get_top(bx) + box.get_bottom(bx)) / 2, close + atr * max_pullback_atr)
+                        break
+            if na(target_p1) and not na(last_st_sl_val) and last_st_sl_val > close and last_st_sl_val <= close + atr * max_pullback_atr
+                target_p1 := last_st_sl_val
+            if na(target_p1)
+                float lir = highest_high_8 - lowest_low_8
+                float prem = (lir > atr * 0.5 and lir < atr * 3.0) ? (lowest_low_8 + lir * 0.382) : na
+                if not na(prem) and prem > close and prem <= close + atr * max_pullback_atr
+                    target_p1 := prem
+                else
+                    target_p1 := close + atr * (timeframe.isintraday ? 0.45 : 0.35)
+    float target_p2 = na
+    if fc_is_bull
+        if array.size(bear_fvg_boxes) > 0
+            for i = array.size(bear_fvg_boxes) - 1 to 0
+                float fb = box.get_bottom(array.get(bear_fvg_boxes, i))
+                if fb >= close + atr * min_tp1_atr and fb <= close + atr * max_tp1_atr * tp_mult
+                    target_p2 := fb
+                    break
+        if na(target_p2) and array.size(bear_ob_boxes) > 0
+            for i = array.size(bear_ob_boxes) - 1 to 0
+                float ob = box.get_bottom(array.get(bear_ob_boxes, i))
+                if ob >= close + atr * min_tp1_atr and ob <= close + atr * max_tp1_atr * tp_mult
+                    target_p2 := ob
+                    break
+        if na(target_p2) and array.size(res_boxes) > 0
+            for i = array.size(res_boxes) - 1 to 0
+                float rb = box.get_bottom(array.get(res_boxes, i))
+                if rb >= close + atr * min_tp1_atr and rb <= close + atr * max_tp1_atr * tp_mult
+                    target_p2 := rb
+                    break
+        if na(target_p2)
+            float bst = highest_high > close ? close + math.max(atr * min_tp1_atr, (highest_high - close) * 0.75) : close + atr * 1.35 * tp_mult
+            target_p2 := close + math.min(atr * max_tp1_atr * tp_mult, math.max(atr * min_tp1_atr, bst - close))
+    else
+        if array.size(bull_fvg_boxes) > 0
+            for i = array.size(bull_fvg_boxes) - 1 to 0
+                float ft = box.get_top(array.get(bull_fvg_boxes, i))
+                if ft <= close - atr * min_tp1_atr and ft >= close - atr * max_tp1_atr * tp_mult
+                    target_p2 := ft
+                    break
+        if na(target_p2) and array.size(bull_ob_boxes) > 0
+            for i = array.size(bull_ob_boxes) - 1 to 0
+                float ot = box.get_top(array.get(bull_ob_boxes, i))
+                if ot <= close - atr * min_tp1_atr and ot >= close - atr * max_tp1_atr * tp_mult
+                    target_p2 := ot
+                    break
+        if na(target_p2) and array.size(sup_boxes) > 0
+            for i = array.size(sup_boxes) - 1 to 0
+                float st = box.get_top(array.get(sup_boxes, i))
+                if st <= close - atr * min_tp1_atr and st >= close - atr * max_tp1_atr * tp_mult
+                    target_p2 := st
+                    break
+        if na(target_p2)
+            float bst = lowest_low < close ? close - math.max(atr * min_tp1_atr, (close - lowest_low) * 0.75) : close - atr * 1.35 * tp_mult
+            target_p2 := close - math.min(atr * max_tp1_atr * tp_mult, math.max(atr * min_tp1_atr, math.abs(close - bst)))
+    float target_p3 = na
+    if fc_is_bull
+        float bst = highest_high > close ? highest_high + atr * 0.35 * tp_mult : close + atr * 2.2 * tp_mult
+        if array.size(res_boxes) > 0
+            for i = array.size(res_boxes) - 1 to 0
+                float rm = (box.get_top(array.get(res_boxes, i)) + box.get_bottom(array.get(res_boxes, i))) / 2
+                if rm > target_p2 + atr * 0.4 and rm <= close + atr * max_tp2_atr * tp_mult
+                    target_p3 := rm
+                    break
+        if na(target_p3)
+            if fc_model_acc == "Conservative"
+                target_p3 := close + atr * (timeframe.isdaily ? 2.0 : 2.2) * tp_mult
+            else if fc_model_acc == "Aggressive"
+                target_p3 := close + atr * (timeframe.isdaily ? 2.6 : 2.8) * tp_mult
+            else
+                float raw = bst > close ? close + (bst - close) * tp_mult : close + atr * 2.2 * tp_mult
+                target_p3 := math.min(close + atr * max_tp2_atr * tp_mult, math.max(target_p2 + atr * min_tp2_atr, raw))
+    else
+        float bst = lowest_low < close ? lowest_low - atr * 0.35 * tp_mult : close - atr * 2.2 * tp_mult
+        if array.size(sup_boxes) > 0
+            for i = array.size(sup_boxes) - 1 to 0
+                float sm = (box.get_top(array.get(sup_boxes, i)) + box.get_bottom(array.get(sup_boxes, i))) / 2
+                if sm < target_p2 - atr * 0.4 and sm >= close - atr * max_tp2_atr * tp_mult
+                    target_p3 := sm
+                    break
+        if na(target_p3)
+            if fc_model_acc == "Conservative"
+                target_p3 := close - atr * (timeframe.isdaily ? 2.0 : 2.2) * tp_mult
+            else if fc_model_acc == "Aggressive"
+                target_p3 := close - atr * (timeframe.isdaily ? 2.6 : 2.8) * tp_mult
+            else
+                float raw = bst < close ? close - (close - bst) * tp_mult : close - atr * 2.2 * tp_mult
+                target_p3 := math.max(close - atr * max_tp2_atr * tp_mult, math.min(target_p2 - atr * min_tp2_atr, raw))
+    if is_high_sweep and not fc_is_bull
+        target_p1 := math.max(close, last_sweep_price - atr * 0.35)
+        float st1 = (htf_trend_up or macro_is_bull) ? 0.9 : 1.35
+        float st2 = (htf_trend_up or macro_is_bull) ? 1.4 : 2.2
+        target_p2 := close - math.max(atr * min_tp1_atr, math.min(atr * max_tp1_atr * tp_mult, atr * st1 * tp_mult))
+        target_p3 := close - math.max(atr * (min_tp1_atr + min_tp2_atr), math.min(atr * max_tp2_atr * tp_mult, atr * st2 * tp_mult))
+    else if is_low_sweep and fc_is_bull
+        target_p1 := math.min(close, last_sweep_price + atr * 0.35)
+        float st1 = (not htf_trend_up or macro_is_bear) ? 0.9 : 1.35
+        float st2 = (not htf_trend_up or macro_is_bear) ? 1.4 : 2.2
+        target_p2 := close + math.max(atr * min_tp1_atr, math.min(atr * max_tp1_atr * tp_mult, atr * st1 * tp_mult))
+        target_p3 := close + math.max(atr * (min_tp1_atr + min_tp2_atr), math.min(atr * max_tp2_atr * tp_mult, atr * st2 * tp_mult))
+    if fc_is_bull
+        target_p1 := math.max(close - atr * max_pullback_atr, math.min(close, target_p1))
+        target_p2 := math.max(target_p1 + atr * min_tp1_atr, math.min(close + atr * max_tp1_atr * tp_mult, math.max(close + atr * min_tp1_atr, target_p2)))
+        target_p3 := math.max(target_p2 + atr * min_tp2_atr, not na(target_p3) and target_p3 > target_p2 ? target_p3 : target_p2 + atr * 0.95 * tp_mult)
+        if fc_use_mtf and htf_trend_up and not na(htf_tp1_target) and htf_tp1_target > target_p2
+            float ch = math.min(close + atr * max_tp2_atr * tp_mult, htf_tp1_target)
+            if ch > target_p2
+                target_p3 := math.max(target_p3, ch)
+        if fc_use_mtf and not htf_trend_up
+            target_p3 := math.min(close + atr * math.max(max_tp1_atr + 0.5, 2.2), target_p3)
+        target_p3 := math.max(target_p2 + atr * min_tp2_atr, math.min(close + atr * max_tp2_atr * tp_mult, target_p3))
+    else
+        target_p1 := math.min(close + atr * max_pullback_atr, math.max(close, target_p1))
+        target_p2 := math.min(target_p1 - atr * min_tp1_atr, math.max(close - atr * max_tp1_atr * tp_mult, math.min(close - atr * min_tp1_atr, target_p2)))
+        target_p3 := math.min(target_p2 - atr * min_tp2_atr, not na(target_p3) and target_p3 < target_p2 ? target_p3 : target_p2 - atr * 0.95 * tp_mult)
+        if fc_use_mtf and not htf_trend_up and not na(htf_tp1_target) and htf_tp1_target < target_p2
+            float ch = math.max(close - atr * max_tp2_atr * tp_mult, htf_tp1_target)
+            if ch < target_p2
+                target_p3 := math.min(target_p3, ch)
+        if fc_use_mtf and htf_trend_up
+            target_p3 := math.max(close - atr * math.max(max_tp1_atr + 0.5, 2.2), target_p3)
+        target_p3 := math.min(target_p2 - atr * min_tp2_atr, math.max(close - atr * max_tp2_atr * tp_mult, target_p3))
+    if use_anti_round
+        target_p2 := f_avoid_round(target_p2, fc_is_bull, atr)
+        target_p3 := f_avoid_round(target_p3, fc_is_bull, atr)
+        if fc_is_bull
+            target_p2 := math.max(target_p1 + atr * min_tp1_atr, target_p2)
+            target_p3 := math.max(target_p2 + atr * min_tp2_atr, target_p3)
+        else
+            target_p2 := math.min(target_p1 - atr * min_tp1_atr, target_p2)
+            target_p3 := math.min(target_p2 - atr * min_tp2_atr, target_p3)
+    if not na(poc_price)
+        if fc_is_bull and poc_price > close and poc_price < target_p2 and poc_price > target_p1 + atr * 0.3
+            target_p2 := math.max(target_p2, poc_price)
+        if not fc_is_bull and poc_price < close and poc_price > target_p2 and poc_price < target_p1 - atr * 0.3
+            target_p2 := math.min(target_p2, poc_price)
+    bool entry_already_hit = fc_is_bull ? low <= target_p1 : high >= target_p1
+    fc_p1 := target_p1
+    fc_p2 := target_p2
+    fc_p3 := target_p3
+    if fc_is_bull
+        float ll = lowest_low_8
+        float ssl = not na(last_st_sl_val) and last_st_sl_val < fc_p1 and last_st_sl_val >= fc_p1 - atr * 1.25 ? last_st_sl_val - atr * 0.15 : (not na(ll) and ll < fc_p1 and ll >= fc_p1 - atr * 1.25 ? ll - atr * 0.15 : fc_p1 - atr * 0.85)
+        if not na(htf_ob_sl) and htf_ob_sl < fc_p1 and htf_ob_sl >= fc_p1 - atr * 1.25
+            ssl := math.min(ssl, htf_ob_sl)
+        fc_invalid_level := math.min(fc_p1 - atr * 0.45, math.max(fc_p1 - atr * 1.35, ssl))
+        fc_invalid_level := math.min(fc_invalid_level, math.min(fc_p1, math.min(close, fc_start_price)) - atr * 0.35)
+    else
+        float lh = highest_high_8
+        float ssl = not na(last_st_sh_val) and last_st_sh_val > fc_p1 and last_st_sh_val <= fc_p1 + atr * 1.35 ? last_st_sh_val + atr * 0.15 : (not na(lh) and lh > fc_p1 and lh <= fc_p1 + atr * 1.35 ? lh + atr * 0.15 : fc_p1 + atr * 0.95)
+        if not na(htf_ob_sl) and htf_ob_sl > fc_p1 and htf_ob_sl <= fc_p1 + atr * 1.35
+            ssl := math.max(ssl, htf_ob_sl)
+        fc_invalid_level := math.max(fc_p1 + atr * 0.45, math.min(fc_p1 + atr * 1.35, ssl))
+        fc_invalid_level := math.max(fc_invalid_level, math.max(fc_p1, math.max(close, fc_start_price)) + atr * 0.35)
+    if use_anti_round
+        fc_invalid_level := f_avoid_round_sl(fc_invalid_level, fc_is_bull, atr)
+    fc_leg1_hit := entry_already_hit
+    fc_leg1_val := entry_already_hit ? target_p1 : na
+    fc_leg1_idx := entry_already_hit ? bar_index : 0
+    fc_leg2_hit := false
+    fc_leg3_hit := false
+    fc_leg4_hit := false
+    fc_leg5_hit := false
+    fc_leg2_idx := 0
+    fc_leg2_val := na
+    fc_leg3_idx := 0
+    fc_leg3_val := na
+    fc_leg4_idx := 0
+    fc_leg5_idx := 0
+    fc_leg4_val := na
+    fc_leg5_val := na
+    current_trailing_sl := fc_invalid_level
+    trailing_stage_str := "🛡️ Начальный SL"
+    trailing_stage_idx := 0
+
+if fc_start_bar > 0 and bar_index >= fc_start_bar
+    if fc_leg1_hit and not fc_leg2_hit
+        bool real = fc_is_bull ? lowest_since_fc <= fc_p1 : highest_since_fc >= fc_p1
+        if not real
+            fc_leg1_hit := false
+            fc_leg1_val := na
+            fc_leg1_idx := 0
+    if fc_is_bull
+        if not fc_leg1_hit and low <= fc_p1
+            fc_leg1_hit := true
+            fc_leg1_idx := bar_index
+            fc_leg1_val := fc_p1
+        if bar_index > fc_start_bar and high >= fc_p2
+            if not fc_leg2_hit
+                fc_leg2_hit := true
+                fc_leg2_idx := bar_index
+                fc_leg2_val := fc_p2
+                if not fc_leg1_hit
+                    fc_leg1_hit := true
+                    fc_leg1_idx := fc_start_bar
+                    fc_leg1_val := fc_start_price
+            if bar_index > fc_start_bar and high >= fc_p3
+                if not fc_leg3_hit
+                    fc_leg3_hit := true
+                    fc_leg3_idx := bar_index
+                    fc_leg3_val := fc_p3
+                if not fc_leg2_hit
+                    fc_leg2_hit := true
+                    fc_leg2_idx := bar_index
+                    fc_leg2_val := fc_p2
+                if not fc_leg1_hit
+                    fc_leg1_hit := true
+                    fc_leg1_idx := fc_start_bar
+                    fc_leg1_val := fc_start_price
+            if fc_leg3_hit and not fc_leg4_hit and low <= fc_p2
+                fc_leg4_hit := true
+                fc_leg4_idx := bar_index
+                fc_leg4_val := fc_p2
+            if fc_leg4_hit and not fc_leg5_hit and high >= (fc_p3 + atr * 1.2 * tp_mult)
+                fc_leg5_hit := true
+                fc_leg5_idx := bar_index
+                fc_leg5_val := fc_p3 + atr * 1.2 * tp_mult
+    else
+        if not fc_leg1_hit and high >= fc_p1
+            fc_leg1_hit := true
+            fc_leg1_idx := bar_index
+            fc_leg1_val := fc_p1
+        if bar_index > fc_start_bar and low <= fc_p2
+            if not fc_leg2_hit
+                fc_leg2_hit := true
+                fc_leg2_idx := bar_index
+                fc_leg2_val := fc_p2
+                if not fc_leg1_hit
+                    fc_leg1_hit := true
+                    fc_leg1_idx := fc_start_bar
+                    fc_leg1_val := fc_start_price
+            if bar_index > fc_start_bar and low <= fc_p3
+                if not fc_leg3_hit
+                    fc_leg3_hit := true
+                    fc_leg3_idx := bar_index
+                    fc_leg3_val := fc_p3
+                if not fc_leg2_hit
+                    fc_leg2_hit := true
+                    fc_leg2_idx := bar_index
+                    fc_leg2_val := fc_p2
+                if not fc_leg1_hit
+                    fc_leg1_hit := true
+                    fc_leg1_idx := fc_start_bar
+                    fc_leg1_val := fc_start_price
+            if fc_leg3_hit and not fc_leg4_hit and high >= fc_p2
+                fc_leg4_hit := true
+                fc_leg4_idx := bar_index
+                fc_leg4_val := fc_p2
+            if fc_leg4_hit and not fc_leg5_hit and low <= (fc_p3 - atr * 1.2 * tp_mult)
+                fc_leg5_hit := true
+                fc_leg5_idx := bar_index
+                fc_leg5_val := fc_p3 - atr * 1.2 * tp_mult
+
+float trail_be_ratio_val = trail_be_trigger == "При 65% пути к TP1" ? 0.65 : (trail_be_trigger == "При 85% пути к TP1" ? 0.85 : 1.0)
+if use_trailing and fc_start_bar > 0 and bar_index >= fc_start_bar and not na(fc_p1) and not na(fc_p2)
+    float pos_entry = not na(fc_leg1_val) ? fc_leg1_val : (not na(fc_p1) ? fc_p1 : fc_start_price)
+    float tp1_dist = math.abs(fc_p2 - pos_entry)
+    if fc_is_bull
+        bool be_cond = (high >= pos_entry + tp1_dist * trail_be_ratio_val) or fc_leg2_hit
+        if be_cond and trailing_stage_idx < 1
+            float be_val = pos_entry + atr * trail_be_buff
+            if be_val > fc_invalid_level
+                current_trailing_sl := be_val
+                trailing_stage_str := "🔒 BE+" + str.tostring(trail_be_buff, "#.##")
+                trailing_stage_idx := 1
+        if (fc_leg2_hit or high >= fc_p2) and trailing_stage_idx < 2
+            float lock_tp1 = pos_entry + (fc_p2 - pos_entry) * 0.50
+            float st_sup = lowest_low_8 - atr * 0.35
+            float safe = math.max(lock_tp1, st_sup)
+            if safe > nz(current_trailing_sl, fc_invalid_level)
+                current_trailing_sl := safe
+                trailing_stage_str := "💰 Защита 50%"
+                trailing_stage_idx := 2
+        if (fc_leg2_hit or high >= fc_p2) and trail_mode != "🔒 Только Безубыток"
+            float atr_f = high - atr * trail_atr_dist
+            float sw_f = lowest_low_10 - atr * 0.40
+            float cand = trail_mode == "🏛️ Smart Money (Свинги BOS)" ? sw_f : (trail_mode == "🌊 Широкий Chandelier (Anti-Whipsaw)" ? atr_f : math.max(sw_f, atr_f))
+            if cand > nz(current_trailing_sl, fc_invalid_level)
+                current_trailing_sl := cand
+                trailing_stage_str := "🚀 Трейл " + str.tostring(trail_atr_dist, "#.#") + "ATR"
+                trailing_stage_idx := 3
+        if trailing_stage_idx == 0
+            current_trailing_sl := fc_invalid_level
+        else
+            current_trailing_sl := math.max(nz(current_trailing_sl[1], fc_invalid_level), nz(current_trailing_sl, fc_invalid_level))
+            current_trailing_sl := math.min(current_trailing_sl, low - atr * 0.20)
+            current_trailing_sl := math.max(current_trailing_sl, fc_invalid_level)
+    else
+        bool be_cond = (low <= pos_entry - tp1_dist * trail_be_ratio_val) or fc_leg2_hit
+        if be_cond and trailing_stage_idx < 1
+            float be_val = pos_entry - atr * trail_be_buff
+            if be_val < fc_invalid_level
+                current_trailing_sl := be_val
+                trailing_stage_str := "🔒 BE-" + str.tostring(trail_be_buff, "#.##")
+                trailing_stage_idx := 1
+        if (fc_leg2_hit or low <= fc_p2) and trailing_stage_idx < 2
+            float lock_tp1 = pos_entry - (pos_entry - fc_p2) * 0.50
+            float st_res = highest_high_8 + atr * 0.35
+            float safe = math.min(lock_tp1, st_res)
+            if safe < nz(current_trailing_sl, fc_invalid_level)
+                current_trailing_sl := safe
+                trailing_stage_str := "💰 Защита 50%"
+                trailing_stage_idx := 2
+        if (fc_leg2_hit or low <= fc_p2) and trail_mode != "🔒 Только Безубыток"
+            float atr_r = low + atr * trail_atr_dist
+            float sw_r = highest_high_10 + atr * 0.40
+            float cand = trail_mode == "🏛️ Smart Money (Свинги BOS)" ? sw_r : (trail_mode == "🌊 Широкий Chandelier (Anti-Whipsaw)" ? atr_r : math.min(sw_r, atr_r))
+            if cand < nz(current_trailing_sl, fc_invalid_level)
+                current_trailing_sl := cand
+                trailing_stage_str := "🚀 Трейл " + str.tostring(trail_atr_dist, "#.#") + "ATR"
+                trailing_stage_idx := 3
+        if trailing_stage_idx == 0
+            current_trailing_sl := fc_invalid_level
+        else
+            current_trailing_sl := math.min(nz(current_trailing_sl[1], fc_invalid_level), nz(current_trailing_sl, fc_invalid_level))
+            current_trailing_sl := math.max(current_trailing_sl, high + atr * 0.20)
+            current_trailing_sl := math.min(current_trailing_sl, fc_invalid_level)
+
+// ==================== PROB OTE / RUNAWAY ====================
+get_bounce_probability(level_price) =>
+    float base_p = 55.0
+    float dist_pct = math.abs(close - level_price) / close * 100
+    if dist_pct < 0.5
+        base_p += 15.0
+    if rsi_val < 30 and level_price < fib_500
+        base_p += 20.0
+    if rsi_val > 70 and level_price > fib_500
+        base_p += 20.0
+    math.min(95.0, math.max(35.0, base_p))
+
+prob_ote = get_bounce_probability(ote_bottom)
+float fc_probability = math.min(72.0, math.max(65.0, active_fc_prob > 0 ? active_fc_prob : candidate_prob))
+
+var line line_ote_1 = na
+var line line_ote_2 = na
+var line line_eq = na
+var label label_ote = na
+var label label_eq = na
+var box zone_ote = na
+
+bool has_htf_align = fc_is_bull == htf_trend_up
+bool has_vol_burst = (volume > vol_sma20 * 1.4) or (fc_is_bull ? vd_extreme_bull : vd_extreme_bear)
+bool has_sweep_cascade = (fc_is_bull and is_low_sweep) or (not fc_is_bull and is_high_sweep)
+bool has_rsi_acceleration = fc_is_bull ? (rsi6_val >= 60.0 and rsi14_val >= 53.0) : (rsi6_val <= 40.0 and rsi14_val <= 47.0)
+float np_score = 15.0
+if has_htf_align
+    np_score += 25.0
+if has_vol_burst
+    np_score += 20.0
+if is_marubozu_expansion
+    np_score += 20.0
+if has_breakaway_fvg
+    np_score += 15.0
+if has_sweep_cascade
+    np_score += 15.0
+if has_rsi_acceleration
+    np_score += 10.0
+float no_pullback_prob = math.min(95.0, math.max(12.0, np_score))
+bool is_high_runaway = no_pullback_prob >= 65.0
+
+var line line_fc_0 = na
+var line line_fc_1 = na
+var line line_fc_2 = na
+var line line_fc_3 = na
+var line line_alt_0 = na
+var line line_alt_1 = na
+var line line_alt_2 = na
+var line line_mtf_0 = na
+var line line_mtf_1 = na
+var label label_fc_0 = na
+var label label_fc_1 = na
+var label label_fc_2 = na
+var label label_fc_3 = na
+var line line_sl = na
+var label label_sl = na
+var label label_alt_desc = na
+var label label_mtf_wave = na
+var box box_tp_cluster = na
+var label label_tp_cluster = na
+
+var float gex_call_wall = na
+var float gex_put_wall  = na
+var float gex_flip      = na
+var float gex_max_pain  = na
+var float gex_sleeper_mag = na
+var float gex_charm_drift = 0.0
+var float gex_iv_eff    = 18.0
+var float gex_step_eff  = 10.0
+var float gex_em_1sd    = 0.0
+var float gex_em_high_68 = na
+var float gex_em_low_68  = na
+var float gex_em_high_95 = na
+var float gex_em_low_95  = na
+var float gex_pcr_val    = 1.05
+var float gex_rv_iv_val  = 0.85
+
+var float[] gex_arr_strikes  = array.new_float()
+var float[] gex_arr_call_gex = array.new_float()
+var float[] gex_arr_put_gex  = array.new_float()
+var float[] gex_arr_net_gex  = array.new_float()
+var float[] gex_arr_tot_gex  = array.new_float()
+
+var line l_call_wall = na
+var line l_put_wall  = na
+var line l_flip_lvl  = na
+var line l_pin_lvl   = na
+var line l_sleep_lvl = na
+var line l_em_h68    = na
+var line l_em_l68    = na
+var line l_em_h95    = na
+var line l_em_l95    = na
+var label lbl_call_wall = na
+var label lbl_put_wall  = na
+var label lbl_flip_lvl  = na
+var label lbl_pin_lvl   = na
+var label lbl_sleep_lvl = na
+var label lbl_em_h68    = na
+var label lbl_em_l68    = na
+var label lbl_em_h95    = na
+var label lbl_em_l95    = na
+var box[] gex_prof_boxes = array.new_box()
+
+disp_active_sl := use_trailing and not na(current_trailing_sl) ? current_trailing_sl : fc_invalid_level
+draw_is_bull := fc_is_bull
+
+// ==================== HUD DYNAMIC TEXT ====================
+f_gex_regime_txt() =>
+    na(gex_flip) or na(gex_call_wall) or na(gex_put_wall) ? f_txt("⚪ Нет данных GEX", "⚪ GEX —", "⚪ —") :
+     close > gex_call_wall ? f_txt("🚀 Сквиз — пробили Потолок, дилеры покупают → сильный рост", "🚀 Сквиз выше CW", "🚀 CW↑") :
+     close < gex_put_wall  ? f_txt("💥 Каскад — пробили Поддержку, дилеры продают → лавина вниз", "💥 Каскад ниже PW", "💥 PW↓") :
+     close > gex_flip      ? f_txt("🟢 Положительная Гамма — дилеры гасят движение, будут откаты", "🟢 +γ Гамма — откаты", "🟢 +γ") :
+     f_txt("🔴 Отрицательная Гамма — дилеры усиливают тренд, мало откатов", "🔴 -γ Гамма — тренд", "🔴 -γ")
+f_gex_zone_txt() =>
+    na(gex_call_wall) or na(gex_put_wall) or na(gex_flip) ? f_txt("⚪ GEX недоступен", "⚪ GEX —", "⚪ —") :
+     close > gex_call_wall ? f_txt("🚀 Сквиз выше Потолка", "🚀 Сквиз ↑CW", "🚀 CW↑") :
+     close < gex_put_wall  ? f_txt("💥 Каскад ниже Поддержки", "💥 Каскад ↓PW", "💥 PW↓") :
+     close > gex_flip      ? f_txt("🟢 +γ Гамма — затухание", "🟢 +γ Гамма", "🟢 +γ") :
+     f_txt("🔴 -γ Гамма — ускорение", "🔴 -γ Гамма", "🔴 -γ")
+f_day_bias_txt() =>
+    na(gex_flip) ? f_txt("⚖️ Нейтрально — нет чёткого уклона", "⚖️ Нейтрально", "⚖️") :
+     close > gex_flip and macro_is_bull ? f_txt("🟢 Уклон LONG (Гамма↑ + Макро↑ — всё за рост)", "🟢 LONG-уклон", "🟢L") :
+     close < gex_flip and macro_is_bear ? f_txt("🔴 Уклон SHORT (Гамма↓ + Макро↓ — всё за падение)", "🔴 SHORT-уклон", "🔴S") :
+     close > gex_flip ? f_txt("🟡 Слабый LONG (Гамма↑, но Макро против)", "🟡 Слаб. LONG", "🟡L") :
+     f_txt("🟡 Слабый SHORT (Гамма↓, но Макро против)", "🟡 Слаб. SHORT", "🟡S")
+f_speed_txt() =>
+    float fd = na(gex_flip) or atr <= 0 ? 0.0 : math.abs(close - gex_flip) / atr
+    fd < 0.3 ? f_txt("😴 Флэт — цена у равновесия", "😴 Флэт", "😴") :
+     fd < 0.8 ? f_txt("⚠️ Умеренно — слабое движение", "⚠️ Умеренно", "⚠️") :
+     fd < 1.5 ? f_txt("⚡ Ускорение — тренд идёт", "⚡ Ускорение", "⚡") :
+     f_txt("🚨 Экстремально — сильный импульс", "🚨 Экстрем.", "🚨")
+f_day_target_txt(float p_call, float p_put, float p_pain, float d_call, float d_put, float d_pain) =>
+    na(gex_max_pain) or na(gex_call_wall) or na(gex_put_wall) ? "—" :
+     d_pain < d_call and d_pain < d_put ? f_txt("Магнит дня " + str.tostring(gex_max_pain, "#.##") + " (" + str.tostring(p_pain, "#") + "%)", "Магнит " + str.tostring(gex_max_pain, "#.##") + " (" + str.tostring(p_pain, "#") + "%)", "P " + str.tostring(gex_max_pain, "#.##")) :
+     d_call < d_put ? f_txt("Потолок " + str.tostring(gex_call_wall, "#.##") + " (" + str.tostring(p_call, "#") + "%)", "Потолок " + str.tostring(gex_call_wall, "#.##") + " (" + str.tostring(p_call, "#") + "%)", "CW " + str.tostring(gex_call_wall, "#.##")) :
+     f_txt("Поддержка " + str.tostring(gex_put_wall, "#.##") + " (" + str.tostring(p_put, "#") + "%)", "Поддержка " + str.tostring(gex_put_wall, "#.##") + " (" + str.tostring(p_put, "#") + "%)", "PW " + str.tostring(gex_put_wall, "#.##"))
+f_rec_action() =>
+    fc_invalidated ? f_txt("❌ НЕ ВХОДИТЬ — прогноз сломан", "❌ НЕ ВХОДИТЬ", "❌") :
+     is_plan_b_active ? f_txt("⚡ ПЛАН Б — слом SL, жди разворот", "⚡ ПЛАН Б", "⚡Б") :
+     fc_leg3_hit ? f_txt("🏆 ЗАКРЫВАЙ — TP2 достигнут", "🏆 ЗАКРЫВАЙ", "🏆") :
+     fc_leg2_hit ? f_txt("📈 ДЕРЖИМ до TP2 " + str.tostring(fc_p3, "#.##"), "📈 ДЕРЖИМ → TP2 " + str.tostring(fc_p3, "#.##"), "📈→" + str.tostring(fc_p3, "#.##")) :
+     fc_leg1_hit ? f_txt("📍 В позиции → ждём TP1 " + str.tostring(fc_p2, "#.##"), "📍 В позиции → TP1 " + str.tostring(fc_p2, "#.##"), "📍→" + str.tostring(fc_p2, "#.##")) :
+     f_txt("⏳ Ждём вход @" + str.tostring(fc_p1, "#.##") + " (" + (fc_is_bull ? "LONG" : "SHORT") + ")", "⏳ Ждём @" + str.tostring(fc_p1, "#.##") + " " + (fc_is_bull ? "L" : "S"), "⏳@" + str.tostring(fc_p1, "#.##"))
+
+f_audit_txt() =>
+    use_gex_audit and aud_total > 0 ? ("🎯 CW " + str.tostring(aud_cw_rate, "#") + "% | PW " + str.tostring(aud_pw_rate, "#") + "% | Flip " + str.tostring(aud_flip_rate, "#") + "% (n=" + str.tostring(aud_total) + ")") : "🔬 Audit: сбор данных..."
+
+// ==================== ОТРИСОВКА ====================
+if barstate.islast
+    line.delete(line_ote_1)
+    line.delete(line_ote_2)
+    line.delete(line_eq)
+    label.delete(label_ote)
+    label.delete(label_eq)
+    box.delete(zone_ote)
+    line.delete(line_fc_0)
+    line.delete(line_fc_1)
+    line.delete(line_fc_2)
+    line.delete(line_fc_3)
+    line.delete(line_sl)
+    line.delete(line_alt_0)
+    line.delete(line_alt_1)
+    line.delete(line_alt_2)
+    line.delete(line_mtf_0)
+    line.delete(line_mtf_1)
+    label.delete(label_fc_0)
+    label.delete(label_fc_1)
+    label.delete(label_fc_2)
+    label.delete(label_fc_3)
+    label.delete(label_sl)
+    label.delete(label_alt_desc)
+    label.delete(label_mtf_wave)
+    box.delete(box_tp_cluster)
+    label.delete(label_tp_cluster)
+    line.delete(l_call_wall)
+    line.delete(l_put_wall)
+    line.delete(l_flip_lvl)
+    line.delete(l_pin_lvl)
+    line.delete(l_sleep_lvl)
+    line.delete(l_em_h68)
+    line.delete(l_em_l68)
+    line.delete(l_em_h95)
+    line.delete(l_em_l95)
+    label.delete(lbl_call_wall)
+    label.delete(lbl_put_wall)
+    label.delete(lbl_flip_lvl)
+    label.delete(lbl_pin_lvl)
+    label.delete(lbl_sleep_lvl)
+    label.delete(lbl_em_h68)
+    label.delete(lbl_em_l68)
+    label.delete(lbl_em_h95)
+    label.delete(lbl_em_l95)
+    if array.size(gex_prof_boxes) > 0
+        for b = 0 to array.size(gex_prof_boxes) - 1
+            box.delete(array.get(gex_prof_boxes, b))
+        array.clear(gex_prof_boxes)
+    if use_gex
+        gex_iv_eff := f_get_effective_iv()
+        gex_step_eff := f_calc_gex_step()
+        float gex_sigma = gex_iv_eff / 100.0
+        int gex_dow = dayofweek
+        float gex_dte_days = gex_dow == dayofweek.monday ? 4.0 : (gex_dow == dayofweek.tuesday ? 3.0 : (gex_dow == dayofweek.wednesday ? 2.0 : (gex_dow == dayofweek.thursday ? 1.0 : 0.5)))
+        float gex_T = math.max(0.5, gex_dte_days) / 365.0
+        gex_em_1sd := close * gex_sigma * math.sqrt(gex_dte_days / 365.0)
+        float gex_em_2sd = gex_em_1sd * 2.0
+        gex_em_high_68 := close + gex_em_1sd
+        gex_em_low_68  := close - gex_em_1sd
+        gex_em_high_95 := close + gex_em_2sd
+        gex_em_low_95  := close - gex_em_2sd
+        var float gex_atm_anchor = na
+        var int   gex_anchor_day = -1
+        float base_cand = math.round(close / gex_step_eff) * gex_step_eff
+        bool day_changed = dayofmonth != gex_anchor_day
+        bool far_from_anchor = false
+        if not na(gex_atm_anchor)
+            if gex_anchor_mode == "⚡ Динамический якорь (3 шага)"
+                far_from_anchor := math.abs(close - gex_atm_anchor) >= gex_step_eff * 3.0
+            else if gex_anchor_mode == "🔒 Полностью фиксированный (5 шагов)"
+                far_from_anchor := math.abs(close - gex_atm_anchor) >= gex_step_eff * 5.0
+            else if gex_anchor_mode == "🎯 Дневной якорь (рекомендовано)"
+                far_from_anchor := math.abs(close - gex_atm_anchor) >= gex_step_eff * 6.0
+        if gex_anchor_mode == "❌ Отключить"
+            gex_atm_anchor := math.round(close / gex_step_eff) * gex_step_eff
+            gex_anchor_day := dayofmonth
+        else
+            if na(gex_atm_anchor) or day_changed or far_from_anchor
+                gex_atm_anchor := base_cand
+                gex_anchor_day := dayofmonth
+        float gex_atm = gex_atm_anchor
+        int gex_num_strikes = 14
+
+        float vp_poc_price = gex_atm
+        if use_vp_poc_weight
+            int vp_bins = 41
+            int vp_half = vp_bins / 2
+            float[] vp_hist = array.new_float(vp_bins, 0.0)
+            int vp_n = math.min(vp_lookback_bars, bar_index)
+            for b = 0 to vp_n - 1
+                if b <= bar_index
+                    int bin_v = math.round((close[b] - close) / gex_step_eff) + vp_half
+                    if bin_v >= 0 and bin_v < vp_bins
+                        array.set(vp_hist, bin_v, array.get(vp_hist, bin_v) + volume[b])
+            float vp_max_v = 0.0
+            int vp_poc_i = vp_half
+            for i = 0 to vp_bins - 1
+                float vv = array.get(vp_hist, i)
+                if vv > vp_max_v
+                    vp_max_v := vv
+                    vp_poc_i := i
+            vp_poc_price := close + (vp_poc_i - vp_half) * gex_step_eff
+
+        float center_shift_steps = (close - gex_atm) / gex_step_eff
+        float center_shift_norm  = center_shift_steps / gex_num_strikes
+        float auto_pcr_centered  = 1.0 + center_shift_norm * 0.5
+        float auto_pcr_clamped   = math.max(0.5, math.min(1.5, auto_pcr_centered))
+
+        float eff_pcr = manual_pcr > 0.0 ? manual_pcr : auto_pcr_clamped
+
+        float cur_rv_auto_local = f_is_btc_asset() ? btc_hv_gex : gen_hv_gex
+        float auto_rv_iv_local  = gex_iv_eff > 0.0 ? (nz(cur_rv_auto_local, gex_iv_eff) / gex_iv_eff) : 1.0
+
+        float eff_rv_iv = manual_rv_iv > 0.0 ? manual_rv_iv : auto_rv_iv_local
+
+        float pcr_bias_raw = eff_pcr - 1.0
+        float pcr_bias     = math.max(-0.5, math.min(0.5, pcr_bias_raw))
+
+        float rv_iv_sigma_mult_raw = 1.0 + (eff_rv_iv - 1.0) * 0.25
+        float rv_iv_sigma_mult     = math.max(0.7, math.min(1.5, rv_iv_sigma_mult_raw))
+
+        array.clear(gex_arr_strikes)
+        array.clear(gex_arr_call_gex)
+        array.clear(gex_arr_put_gex)
+        array.clear(gex_arr_net_gex)
+        array.clear(gex_arr_tot_gex)
+        float best_c_gex = -1.0
+        float best_p_gex = -1.0
+        float abs_max_c_gex = -1.0
+        float abs_max_p_gex = -1.0
+        float best_c_strike = gex_atm + gex_step_eff
+        float best_p_strike = gex_atm - gex_step_eff
+        float abs_c_strike  = gex_atm + gex_step_eff
+        float abs_p_strike  = gex_atm - gex_step_eff
+        float best_pot_mag_val = -1e9
+        float best_pot_strike  = gex_atm
+        float tot_c_gex = 0.0
+        float tot_p_gex = 0.0
+        gex_charm_drift := 0.0
+        float friday_boost = (use_friday_boost and gex_dow == dayofweek.friday) ? 0.8 : 0.0
+        for i = -gex_num_strikes to gex_num_strikes
+            float strike = gex_atm + i * gex_step_eff
+            float moneyness = (strike - close) / close
+            float strike_skew = moneyness < 0 ? (1.0 + math.abs(moneyness) * (close < nz(gex_flip, close) ? 2.05 : 1.35)) : (1.0 - math.abs(moneyness) * 0.3 + math.pow(moneyness, 2) * 1.25)
+            float adj_sigma = math.max(0.06, gex_sigma * strike_skew * rv_iv_sigma_mult)
+            float raw_g = f_calc_gamma(close, strike, adj_sigma, gex_T)
+            float round_w = 1.0
+            if math.abs(strike / (gex_step_eff * 5.0) - math.round(strike / (gex_step_eff * 5.0))) < 0.01
+                round_w := 2.2 + friday_boost
+            else if math.abs(strike / (gex_step_eff * 2.0) - math.round(strike / (gex_step_eff * 2.0))) < 0.01
+                round_w := 1.5 + friday_boost * 0.5
+            float vp_w = 1.0
+            if use_vp_poc_weight
+                float vp_dist = math.abs(strike - vp_poc_price) / gex_step_eff
+                vp_w := 1.0 + 0.6 / (1.0 + vp_dist * vp_dist)
+            float c_w = 1.0 / (1.0 + math.exp(-3.0 * (strike - close) / (gex_step_eff * 5.0)))
+            float p_w = 1.0 - c_w
+            float c_w_adj = c_w * (1.0 - pcr_bias * 0.5)
+            float p_w_adj = p_w * (1.0 + pcr_bias * 0.5)
+            float c_g = raw_g * c_w_adj * round_w * vp_w * 100000.0
+            float p_g = raw_g * p_w_adj * round_w * vp_w * 100000.0
+            tot_c_gex += c_g
+            tot_p_gex += p_g
+            float n_g = c_g - p_g
+            float t_g = c_g + p_g
+            array.push(gex_arr_strikes, strike)
+            array.push(gex_arr_call_gex, c_g)
+            array.push(gex_arr_put_gex, p_g)
+            array.push(gex_arr_net_gex, n_g)
+            array.push(gex_arr_tot_gex, t_g)
+            if strike >= close and c_g > best_c_gex
+                best_c_gex := c_g
+                best_c_strike := strike
+            if c_g > abs_max_c_gex
+                abs_max_c_gex := c_g
+                abs_c_strike := strike
+            if strike <= close and p_g > best_p_gex
+                best_p_gex := p_g
+                best_p_strike := strike
+            if p_g > abs_max_p_gex
+                abs_max_p_gex := p_g
+                abs_p_strike := strike
+            float pot_gex = (round_w * 100.0 * strike) / math.max(0.01, math.abs(strike - close))
+            if math.abs(strike - close) >= (gex_step_eff * 1.5) and pot_gex > best_pot_mag_val
+                best_pot_mag_val := pot_gex
+                best_pot_strike := strike
+            float ch = f_calc_charm(close, strike, adj_sigma, gex_T)
+            gex_charm_drift += (c_g - p_g) * ch
+        gex_call_wall := best_c_gex > 0 ? best_c_strike : abs_c_strike
+        gex_put_wall  := best_p_gex > 0 ? best_p_strike : abs_p_strike
+        gex_sleeper_mag := best_pot_strike
+        gex_pcr_val  := eff_pcr
+        gex_rv_iv_val := eff_rv_iv
+        float closest_d = 1e10
+        float raw_flip = gex_atm
+        bool flip_found = false
+        for i = 1 to array.size(gex_arr_strikes) - 1
+            float s_prev = array.get(gex_arr_strikes, i - 1)
+            float s_curr = array.get(gex_arr_strikes, i)
+            float ng_prev = array.get(gex_arr_net_gex, i - 1)
+            float ng_curr = array.get(gex_arr_net_gex, i)
+            if (ng_prev > 0 and ng_curr <= 0) or (ng_prev < 0 and ng_curr >= 0)
+                float denom = ng_curr - ng_prev
+                float cross_price = denom != 0 ? s_prev + (s_curr - s_prev) * (0.0 - ng_prev) / denom : s_curr
+                if math.abs(cross_price - gex_atm) <= gex_step_eff * flip_search_range
+                    if math.abs(cross_price - close) < closest_d
+                        closest_d := math.abs(cross_price - close)
+                        raw_flip := cross_price
+                        flip_found := true
+        if not flip_found
+            for i = 0 to array.size(gex_arr_strikes) - 1
+                float s = array.get(gex_arr_strikes, i)
+                float ng = array.get(gex_arr_net_gex, i)
+                if math.abs(s - gex_atm) <= gex_step_eff * flip_search_range
+                    if math.abs(ng) < closest_d
+                        closest_d := math.abs(ng)
+                        raw_flip := s
+        float snapped_flip = math.round(raw_flip / gex_step_eff) * gex_step_eff
+        float final_flip = snapped_flip
+        if not na(gex_flip) and math.abs(snapped_flip - gex_flip) < gex_step_eff * 0.99
+            final_flip := gex_flip
+        gex_flip := final_flip
+        float min_p_cost = 1e12
+        float d_pain = gex_atm
+        for j = 0 to array.size(gex_arr_strikes) - 1
+            float test_s = array.get(gex_arr_strikes, j)
+            float tot_pain = 0.0
+            for k = 0 to array.size(gex_arr_strikes) - 1
+                float s_k = array.get(gex_arr_strikes, k)
+                float cg = array.get(gex_arr_call_gex, k)
+                float pg = array.get(gex_arr_put_gex, k)
+                if test_s > s_k
+                    tot_pain += (test_s - s_k) * cg
+                if test_s < s_k
+                    tot_pain += (s_k - test_s) * pg
+            if tot_pain < min_p_cost and tot_pain > 0
+                min_p_cost := tot_pain
+                d_pain := test_s
+        gex_max_pain := d_pain
+        int gx1 = bar_index - line_len
+        int gx2_max = bar_index + gex_right_limit
+        int gx2_base = math.min(bar_index + label_offset + 8, gx2_max)
+        if show_gex_walls and not na(gex_call_wall)
+            l_call_wall := line.new(gx1, gex_call_wall, gx2_base, gex_call_wall, color=color.new(#10b981, 0), width=2, force_overlay=true)
+            lbl_call_wall := label.new(gx2_base, gex_call_wall, f_lbl("cw") + str.tostring(gex_call_wall, "#.##"), color=color.new(#10b981, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        if show_gex_walls and not na(gex_put_wall)
+            l_put_wall := line.new(gx1, gex_put_wall, gx2_base, gex_put_wall, color=color.new(#ef4444, 0), width=2, force_overlay=true)
+            lbl_put_wall := label.new(gx2_base, gex_put_wall, f_lbl("pw") + str.tostring(gex_put_wall, "#.##"), color=color.new(#ef4444, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        bool flip_pain_coincide = not na(gex_flip) and not na(gex_max_pain) and math.abs(gex_flip - gex_max_pain) < (gex_step_eff * 0.95)
+        if flip_pain_coincide
+            if (show_gex_flip or show_gex_pain)
+                int gx2_combo = math.min(gx2_base + 12, gx2_max)
+                l_flip_lvl := line.new(gx1, gex_flip, gx2_combo, gex_flip, color=color.new(#c084fc, 0), width=2, style=line.style_dashed, force_overlay=true)
+                string combo_txt = is_compact ? ("⚡FP: " + str.tostring(gex_flip, "#.##")) : ("⚡ Граница Гаммы & Магнит: " + str.tostring(gex_flip, "#.##"))
+                lbl_flip_lvl := label.new(gx2_combo, gex_flip, combo_txt, color=color.new(#581c87, 10), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        else
+            if show_gex_flip and not na(gex_flip)
+                int gx2_flip = math.min(gx2_base + 6, gx2_max)
+                l_flip_lvl := line.new(gx1, gex_flip, gx2_flip, gex_flip, color=color.new(#a855f7, 0), width=2, style=line.style_dashed, force_overlay=true)
+                lbl_flip_lvl := label.new(gx2_flip, gex_flip, f_lbl("flip") + str.tostring(gex_flip, "#.##"), color=color.new(#a855f7, 20), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+            if show_gex_pain and not na(gex_max_pain)
+                int gx2_pain = math.min(gx2_base + (show_gex_flip ? 24 : 6), gx2_max)
+                l_pin_lvl := line.new(gx1, gex_max_pain, gx2_pain, gex_max_pain, color=color.new(#06b6d4, 0), width=1, style=line.style_dotted, force_overlay=true)
+                lbl_pin_lvl := label.new(gx2_pain, gex_max_pain, f_lbl("pain") + str.tostring(gex_max_pain, "#.##"), color=color.new(#06b6d4, 25), textcolor=color.white, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        if show_gex_sleepers and not na(gex_sleeper_mag)
+            int gx2_sl = math.min(gx2_base + 32, gx2_max)
+            l_sleep_lvl := line.new(gx1, gex_sleeper_mag, gx2_sl, gex_sleeper_mag, color=color.new(#f59e0b, 0), width=1, style=line.style_dashed, force_overlay=true)
+            lbl_sleep_lvl := label.new(gx2_sl, gex_sleeper_mag, f_lbl("magnet") + str.tostring(gex_sleeper_mag, "#.##"), color=color.new(#f59e0b, 25), textcolor=color.white, style=label.style_label_left, size=size.tiny, force_overlay=true)
+        if show_gex_em and not na(gex_em_high_68) and not na(gex_em_low_68)
+            int gx1_em = bar_index - math.min(18, line_len)
+            int gx2_em = math.min(gx2_base + 38, gx2_max)
+            l_em_h68 := line.new(gx1_em, gex_em_high_68, gx2_em, gex_em_high_68, color=color.new(#38bdf8, 25), width=1, style=line.style_dashed, force_overlay=true)
+            lbl_em_h68 := label.new(gx2_em, gex_em_high_68, f_lbl("em_hi") + str.tostring(gex_em_high_68, "#.##"), color=color.new(#0284c7, 25), textcolor=color.white, style=label.style_label_left, size=size.tiny, force_overlay=true)
+            l_em_l68 := line.new(gx1_em, gex_em_low_68, gx2_em, gex_em_low_68, color=color.new(#38bdf8, 25), width=1, style=line.style_dashed, force_overlay=true)
+            lbl_em_l68 := label.new(gx2_em, gex_em_low_68, f_lbl("em_lo") + str.tostring(gex_em_low_68, "#.##"), color=color.new(#0284c7, 25), textcolor=color.white, style=label.style_label_left, size=size.tiny, force_overlay=true)
+            l_em_h95 := line.new(gx1_em, gex_em_high_95, gx2_em, gex_em_high_95, color=color.new(#fbbf24, 30), width=1, style=line.style_dotted, force_overlay=true)
+            lbl_em_h95 := label.new(gx2_em, gex_em_high_95, f_lbl("em95h") + str.tostring(gex_em_high_95, "#.##"), color=color.new(#b45309, 35), textcolor=color.white, style=label.style_label_left, size=size.tiny, force_overlay=true)
+            l_em_l95 := line.new(gx1_em, gex_em_low_95, gx2_em, gex_em_low_95, color=color.new(#fbbf24, 30), width=1, style=line.style_dotted, force_overlay=true)
+            lbl_em_l95 := label.new(gx2_em, gex_em_low_95, f_lbl("em95l") + str.tostring(gex_em_low_95, "#.##"), color=color.new(#b45309, 35), textcolor=color.white, style=label.style_label_left, size=size.tiny, force_overlay=true)
+        if show_gex_bars and array.size(gex_arr_strikes) > 0
+            if array.size(gex_prof_boxes) > 0
+                for b = 0 to array.size(gex_prof_boxes) - 1
+                    box.delete(array.get(gex_prof_boxes, b))
+            array.clear(gex_prof_boxes)
+            float max_abs_net = 1.0
+            for i = 0 to array.size(gex_arr_net_gex) - 1
+                float val_n = math.abs(array.get(gex_arr_net_gex, i))
+                if val_n > max_abs_net
+                    max_abs_net := val_n
+            int bx_base = math.min(gx2_base + 45, gx2_max)
+            float h_step = gex_step_eff * 0.42
+            for i = 0 to array.size(gex_arr_strikes) - 1
+                float s = array.get(gex_arr_strikes, i)
+                float n_val = array.get(gex_arr_net_gex, i)
+                int b_len = math.max(2, math.round((math.abs(n_val) / max_abs_net) * 45))
+                bool is_cw = (s == gex_call_wall)
+                bool is_pw = (s == gex_put_wall)
+                bool is_pn = (s == gex_max_pain)
+                bool is_fl = (s == gex_flip)
+                bool is_key = is_cw or is_pw or is_pn or is_fl
+                color c_fill = n_val > 0 ? color.new(#10b981, is_key ? 30 : 65) : color.new(#ef4444, is_key ? 30 : 65)
+                color c_bord = is_cw ? #10b981 : is_pw ? #ef4444 : is_pn ? #06b6d4 : is_fl ? #a855f7 : (n_val > 0 ? color.new(#10b981, 40) : color.new(#ef4444, 40))
+                int b_w = is_key ? 2 : 1
+                array.push(gex_prof_boxes, box.new(bx_base, s + h_step, bx_base + b_len, s - h_step, bgcolor=c_fill, border_color=c_bord, border_width=b_w, force_overlay=true))
+    color ote_color = is_bull ? c_bull : c_bear
+    string ote_text = is_bull ? "Зона разворота вверх [Подд.]" : "Зона разворота вниз [Сопр.]"
+    if show_reversal
+        line_ote_1 := line.new(bar_index - line_len, ote_top, bar_index + label_offset, ote_top, color=color.new(ote_color, 30), width=1, force_overlay=true)
+        line_ote_2 := line.new(bar_index - line_len, ote_bottom, bar_index + label_offset, ote_bottom, color=color.new(ote_color, 30), width=1, force_overlay=true)
+        zone_ote := box.new(left=bar_index - line_len, top=ote_top, right=bar_index + label_offset, bottom=ote_bottom, bgcolor=color.new(ote_color, 94), border_color=color.new(ote_color, 70), border_style=line.style_dashed, force_overlay=true)
+        label_ote := label.new(bar_index + label_offset, ote_top, ote_text + (show_probs ? " (" + str.tostring(prob_ote) + "%)" : ""), color=color.new(color.black, 100), textcolor=ote_color, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        line_eq := line.new(bar_index - line_len, fib_500, bar_index + label_offset, fib_500, color=color.new(c_neutral, 50), width=1, style=line.style_dashed, force_overlay=true)
+        label_eq := label.new(bar_index + label_offset, fib_500, "0.50 EQ (Баланс)", color=color.new(color.black, 100), textcolor=c_neutral, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+    if show_forecast
+        int x0 = bar_index
+        float y0 = close
+        draw_is_bull := fc_is_bull
+        float tpy1 = na
+        if draw_is_bull
+            if not na(ote_bottom) and ote_bottom < close
+                tpy1 := ote_bottom
+            else if not na(fib_500) and fib_500 < close
+                tpy1 := fib_500
+            else if array.size(bull_ob_boxes) > 0
+                tpy1 := math.min(close - atr * 0.3, box.get_top(array.get(bull_ob_boxes, array.size(bull_ob_boxes) - 1)))
+            else
+                tpy1 := close - atr * (active_bear_div ? 1.4 : 0.8)
+            tpy1 := math.max(tpy1, disp_active_sl + atr * 0.25)
+            tpy1 := math.min(tpy1, math.min(low, close - atr * 0.15))
+        else
+            if not na(ote_top) and ote_top > close
+                tpy1 := ote_top
+            else if not na(fib_500) and fib_500 > close
+                tpy1 := fib_500
+            else if array.size(bear_ob_boxes) > 0
+                tpy1 := math.max(close + atr * 0.3, box.get_bottom(array.get(bear_ob_boxes, array.size(bear_ob_boxes) - 1)))
+            else
+                tpy1 := close + atr * (active_bull_div ? 1.5 : 0.8)
+            tpy1 := math.min(tpy1, disp_active_sl - atr * 0.25)
+            tpy1 := math.max(tpy1, math.max(high, close + atr * 0.15))
+        int x1 = bar_index + 5
+        float y1 = not na(tpy1) ? tpy1 : (draw_is_bull ? close - atr * 0.8 : close + atr * 0.8)
+        int x2 = bar_index + 16
+        float y2 = not na(fc_p2) ? fc_p2 : (draw_is_bull ? close + atr * 1.35 : close - atr * 1.35)
+        int x3 = bar_index + 28
+        float y3 = not na(fc_p3) ? fc_p3 : (draw_is_bull ? y2 + atr * 0.95 : y2 - atr * 0.95)
+        int x4 = bar_index + 36
+        float y4 = y2
+        int x5 = bar_index + 44
+        float y5 = draw_is_bull ? y3 + math.min(atr * 1.2 * tp_mult, math.max(atr * 0.6, math.abs(y3 - y2) * 0.618)) : y3 - math.min(atr * 1.2 * tp_mult, math.max(atr * 0.6, math.abs(y2 - y3) * 0.618))
+        disp_active_sl := use_trailing and not na(current_trailing_sl) ? current_trailing_sl : fc_invalid_level
+        bool leg1_completed = false
+        bool leg2_completed = false
+        bool leg3_completed = false
+        bool leg4_completed = false
+        bool leg5_completed = false
+        if fc_leg2_hit
+            x0 := fc_start_bar
+            y0 := fc_start_price
+            x1 := fc_leg1_hit ? fc_leg1_idx : fc_start_bar + 2
+            y1 := fc_leg1_hit ? fc_leg1_val : fc_p1
+            x2 := math.max(x1 + 3, fc_leg2_idx)
+            y2 := not na(fc_leg2_val) ? fc_leg2_val : fc_p2
+            x3 := math.max(bar_index + 12, fc_leg2_idx + 12)
+            y3 := fc_p3
+            x4 := x3 + 8
+            y4 := y2
+            x5 := x4 + 8
+            y5 := draw_is_bull ? y3 + math.min(atr * 1.1, math.abs(y3 - y2) * 0.618) : y3 - math.min(atr * 1.1, math.abs(y2 - y3) * 0.618)
+            leg1_completed := true
+            leg2_completed := true
+            leg3_completed := fc_leg3_hit
+            leg4_completed := fc_leg4_hit
+            leg5_completed := fc_leg5_hit
+        else
+            x0 := fc_start_bar > 0 ? fc_start_bar : bar_index
+            y0 := fc_start_bar > 0 ? fc_start_price : close
+            x1 := fc_leg1_hit ? fc_leg1_idx : math.max(bar_index + 4, (fc_start_bar > 0 ? fc_start_bar + 4 : bar_index + 4))
+            y1 := fc_leg1_hit ? fc_leg1_val : (not na(tpy1) ? tpy1 : (draw_is_bull ? close - atr * 0.8 : close + atr * 0.8))
+            x2 := x1 + 11
+            x3 := x2 + 12
+            x4 := x3 + 8
+            x5 := x4 + 8
+            leg1_completed := fc_leg1_hit or (draw_is_bull ? low <= y1 : high >= y1)
+        if gex_align_fc and use_gex and not na(gex_call_wall) and not na(gex_put_wall)
+            if draw_is_bull
+                // TP1 (y2): калибровка по Call Wall или 68% Expected Move (строго не ближе min_tp1_atr и выше свечи)
+                float min_bull_tp1 = math.max(close + atr * min_tp1_atr, math.max(y1 + atr * min_tp1_atr, high + atr * 0.15))
+                if not leg2_completed
+                    if gex_call_wall >= min_bull_tp1 and gex_call_wall < y2
+                        y2 := gex_call_wall
+                    else if not na(gex_em_high_68) and gex_em_high_68 >= min_bull_tp1 and gex_em_high_68 < y2
+                        y2 := gex_em_high_68
+                if not leg3_completed
+                    if not na(gex_sleeper_mag) and gex_sleeper_mag > y2 and gex_sleeper_mag <= close + atr * max_tp2_atr * tp_mult
+                        y3 := gex_sleeper_mag
+                    else if not na(gex_em_high_68) and gex_em_high_68 > y2 and gex_em_high_68 <= close + atr * max_tp2_atr * tp_mult
+                        y3 := gex_em_high_68
+                    else if not na(gex_max_pain) and gex_max_pain > y2 and gex_max_pain <= close + atr * max_tp2_atr * tp_mult
+                        y3 := gex_max_pain
+                    if gex_call_wall > y2 and y3 > gex_call_wall
+                        y3 := gex_call_wall
+                    if gex_charm_drift > 0
+                        y3 += atr * 0.10
+                    else if gex_charm_drift < 0
+                        y3 -= atr * 0.10
+                if not leg5_completed and not na(gex_em_high_95) and gex_em_high_95 > y3
+                    y5 := math.max(y3 + atr * 0.50, math.min(gex_em_high_95, close + atr * (max_tp2_atr + 0.8) * tp_mult))
+            else
+                // TP1 (y2): калибровка по Put Wall или 68% Expected Move (строго не ближе min_tp1_atr и ниже свечи)
+                float max_bear_tp1 = math.min(close - atr * min_tp1_atr, math.min(y1 - atr * min_tp1_atr, low - atr * 0.15))
+                if not leg2_completed
+                    if gex_put_wall <= max_bear_tp1 and gex_put_wall > y2
+                        y2 := gex_put_wall
+                    else if not na(gex_em_low_68) and gex_em_low_68 <= max_bear_tp1 and gex_em_low_68 > y2
+                        y2 := gex_em_low_68
+                if not leg3_completed
+                    if not na(gex_sleeper_mag) and gex_sleeper_mag < y2 and gex_sleeper_mag >= close - atr * max_tp2_atr * tp_mult
+                        y3 := gex_sleeper_mag
+                    else if not na(gex_em_low_68) and gex_em_low_68 < y2 and gex_em_low_68 >= close - atr * max_tp2_atr * tp_mult
+                        y3 := gex_em_low_68
+                    else if not na(gex_max_pain) and gex_max_pain < y2 and gex_max_pain >= close - atr * max_tp2_atr * tp_mult
+                        y3 := gex_max_pain
+                    if gex_put_wall < y2 and y3 < gex_put_wall
+                        y3 := gex_put_wall
+                    if gex_charm_drift < 0
+                        y3 -= atr * 0.10
+                    else if gex_charm_drift > 0
+                        y3 += atr * 0.10
+                if not leg5_completed and not na(gex_em_low_95) and gex_em_low_95 < y3
+                    y5 := math.min(y3 - atr * 0.50, math.max(gex_em_low_95, close - atr * (max_tp2_atr + 0.8) * tp_mult))
+        if draw_is_bull
+            if not leg2_completed
+                y2 := math.max(math.max(y1, close) + atr * min_tp1_atr, y2)
+                y2 := math.max(high + atr * 0.15, y2)
+            y3 := math.max(y2 + atr * min_tp2_atr, y3)
+            y4 := y2
+            y5 := math.max(y3 + atr * 0.50, y5)
+        else
+            if not leg2_completed
+                y2 := math.min(math.min(y1, close) - atr * min_tp1_atr, y2)
+                y2 := math.min(low - atr * 0.15, y2)
+            y3 := math.min(y2 - atr * min_tp2_atr, y3)
+            y4 := y2
+            y5 := math.min(y3 - atr * 0.50, y5)
+        if not is_plan_b_active
+            fc_p1 := y1
+            fc_p2 := y2
+            fc_p3 := y3
+        int min_fc_x = math.max(1, bar_index - 450)
+        x0 := math.max(min_fc_x, x0)
+        x1 := math.max(min_fc_x, x1)
+        x2 := math.max(min_fc_x, x2)
+        x3 := math.max(min_fc_x, x3)
+        x4 := math.max(min_fc_x, x4)
+        x5 := math.max(min_fc_x, x5)
+        color col1 = is_plan_b_active ? color.new(color.gray, 60) : draw_is_bull ? (leg1_completed ? color.new(c_bull, 40) : color.new(c_bull, 10)) : (leg1_completed ? color.new(c_bear, 40) : color.new(c_bear, 10))
+        color col2 = is_plan_b_active ? color.new(color.gray, 60) : leg2_completed ? color.new(draw_is_bull ? #10b981 : #ef4444, 35) : color.new(draw_is_bull ? #10b981 : #ef4444, 0)
+        color col3 = is_plan_b_active ? color.new(color.gray, 60) : leg3_completed ? color.new(#0284c7, 35) : color.new(#0284c7, 0)
+        int w1 = is_plan_b_active ? 1 : leg1_completed ? 2 : 4
+        int w2 = is_plan_b_active ? 1 : leg2_completed ? 3 : 4
+        int w3 = is_plan_b_active ? 1 : leg3_completed ? 3 : 4
+        line_fc_0 := line.new(x0, y0, x1, y1, xloc=xloc.bar_index, color=col1, width=w1, style=is_plan_b_active ? line.style_dashed : (leg1_completed ? line.style_dashed : line.style_solid), force_overlay=true)
+        line_fc_1 := line.new(x1, y1, x2, y2, xloc=xloc.bar_index, color=col2, width=w2, style=is_plan_b_active ? line.style_dashed : (leg2_completed ? line.style_dashed : line.style_solid), force_overlay=true)
+        line_fc_2 := line.new(x2, y2, x3, y3, xloc=xloc.bar_index, color=col3, width=w3, style=is_plan_b_active ? line.style_dashed : (leg3_completed ? line.style_dashed : line.style_solid), force_overlay=true)
+        color sl_line_color = is_plan_b_active ? #ef4444 : is_wick_sweep ? #10b981 : trailing_stage_idx >= 2 ? #10b981 : (trailing_stage_idx == 1 ? #f59e0b : #ef4444)
+        int sl_end_x = math.max(x3, x4) + 4
+        line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, xloc=xloc.bar_index, color=sl_line_color, width=is_plan_b_active ? 3 : trailing_stage_idx > 0 ? 3 : 2, style=is_plan_b_active ? line.style_solid : (trailing_stage_idx > 0 ? line.style_dashed : line.style_solid), force_overlay=true)
+        string sl_badge = is_plan_b_active ? " [❌ СЛОМ]" : is_wick_sweep ? " [⚡ СВИП]" : (use_trailing and trailing_stage_idx > 0 ? (" [" + trailing_stage_str + "]") : "")
+        string sl_title = (is_plan_b_active ? "SL ВЫБИТ: " : is_wick_sweep ? "SL (Свип): " : "SL: ") + str.tostring(disp_active_sl, "#.##") + sl_badge
+        label_sl := label.new(sl_end_x, disp_active_sl, sl_title, color=color.new(color.black, 100), textcolor=sl_line_color, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
+        if show_alt_wave and (is_plan_b_active or not plan_b_opposes_mtf)
+            int ax0 = math.max(min_fc_x, bar_index + 3)
+            float ay0 = disp_active_sl
+            int ax1 = ax0 + 8
+            float ay1 = draw_is_bull ? ay0 - atr * 1.5 : ay0 + atr * 1.5
+            int ax2 = ax1 + 10
+            float ay2 = draw_is_bull ? ay0 - atr * 3.0 : ay0 + atr * 3.0
+            int ax3 = ax2 + 8
+            float ay3 = draw_is_bull ? ay2 + atr * 1.2 : ay2 - atr * 1.2
+            color alt_col = is_plan_b_active ? (draw_is_bull ? #ef4444 : #10b981) : (draw_is_bull ? color.new(c_bear, 25) : color.new(c_bull, 25))
+            int alt_w = is_plan_b_active ? 3 : 2
+            line_alt_0 := line.new(ax0, ay0, ax1, ay1, xloc=xloc.bar_index, color=alt_col, width=alt_w, style=is_plan_b_active ? line.style_solid : line.style_dashed, force_overlay=true)
+            line_alt_1 := line.new(ax1, ay1, ax2, ay2, xloc=xloc.bar_index, color=alt_col, width=alt_w, style=is_plan_b_active ? line.style_solid : line.style_dashed, force_overlay=true)
+            if fc_post_target
+                line_alt_2 := line.new(ax2, ay2, ax3, ay3, xloc=xloc.bar_index, color=alt_col, width=alt_w, style=line.style_dotted, force_overlay=true)
+            string alt_lbl_txt = (is_plan_b_active ? "⚡ ПЛАН Б (Слом " : "⚡ Альтернатива (Слом ") + str.tostring(disp_active_sl, "#.##") + ")\n➔ TP1: " + str.tostring(ay1, "#.##") + "\n➔ TP2: " + str.tostring(ay2, "#.##")
+            color alt_txt_col = is_plan_b_active ? (draw_is_bull ? #ef4444 : #10b981) : (draw_is_bull ? c_bear : c_bull)
+            label_alt_desc := label.new(ax2, ay2, alt_lbl_txt, color=color.new(color.black, 100), textcolor=alt_txt_col, style=draw_is_bull ? label.style_label_down : label.style_label_up, size=size.small, force_overlay=true)
+        color col_node = draw_is_bull ? c_bull : c_bear
+        if not leg1_completed and not leg2_completed and not is_plan_b_active
+            string txt_l0 = (draw_is_bull ? "🟢 Прогноз LONG" : "🔴 Прогноз SHORT") + (fc_is_bull != htf_trend_up ? (" ↩ откат " + auto_cur_tf_name) : "") + " (" + str.tostring(fc_probability, "#") + "%)"
+            label_fc_0 := label.new(x0, y0, txt_l0, color=color.new(color.black, 100), textcolor=col_node, style=draw_is_bull ? label.style_label_up : label.style_label_down, size=size.small, force_overlay=true)
+        string runaway_note = (is_high_runaway and not leg1_completed and not leg2_completed and not is_plan_b_active) ? ("\n⚡ Без отката: " + str.tostring(no_pullback_prob, "#") + "%") : ""
+        bool waiting_pullback = not leg1_completed and math.abs(close - y1) > atr * 0.8
+        string entry_tier = ict_setup_strong ? " ⚡S" : (is_low_sweep or is_high_sweep or has_breakaway_fvg ? " ⭐A" : "")
+        string txt_l1 = is_plan_b_active ? ("ВХОД: " + str.tostring(y1, "#.##") + " [❌ СЛОМ SL: " + str.tostring(disp_active_sl, "#.##") + "]") : is_wick_sweep ? ("ВХОД: " + str.tostring(y1, "#.##") + " [⚡ СВИП]" + entry_tier) : waiting_pullback ? ("⏳ Ждём откат к " + str.tostring(y1, "#.##") + entry_tier) : leg1_completed ? ("📍 ВХОД: " + str.tostring(y1, "#.##") + " [OK ✅]" + entry_tier) : ("ВХОД: " + str.tostring(y1, "#.##") + entry_tier + runaway_note)
+        label_fc_1 := label.new(x1, y1, txt_l1, color=color.new(color.black, 100), textcolor=is_plan_b_active ? #ef4444 : is_wick_sweep ? #10b981 : waiting_pullback ? #f59e0b : (leg1_completed ? color.new(col_node, 40) : col_node), style=draw_is_bull ? label.style_label_up : label.style_label_down, size=size.small, force_overlay=true)
+        if not is_plan_b_active
+            string txt_l2 = leg2_completed ? ("TP1: " + str.tostring(y2, "#.##") + " [OK ✅]") : ("TP1: " + str.tostring(y2, "#.##") + (fc_is_bull != htf_trend_up ? " ↩откат" : (draw_is_bull ? " ↗" : " ↘")))
+            label_fc_2 := label.new(x2, y2, txt_l2, color=color.new(color.black, 100), textcolor=draw_is_bull ? #10b981 : #ef4444, style=draw_is_bull ? label.style_label_down : label.style_label_up, size=size.small, force_overlay=true)
+            string txt_l3 = leg3_completed ? ("TP2: " + str.tostring(y3, "#.##") + " [OK ✅]") : ("TP2: " + str.tostring(y3, "#.##") + " (" + str.tostring(fc_probability, "#") + "%)")
+            label_fc_3 := label.new(x3, y3, txt_l3, color=color.new(color.black, 100), textcolor=#0284c7, style=draw_is_bull ? label.style_label_down : label.style_label_up, size=size.small, force_overlay=true)
+        if show_mtf_wave
+            if fc_is_bull == htf_trend_up
+                color mtf_col = fc_is_bull ? #38bdf8 : #f43f5e
+                line_mtf_0 := line.new(x1, y1, x2, y2, color=mtf_col, width=3, style=line.style_solid, force_overlay=true)
+                line_mtf_1 := line.new(x2, y2, x3, y3, color=mtf_col, width=3, style=line.style_arrow_right, force_overlay=true)
+                label_mtf_wave := label.new(x3, y3, "⚡ MTF: " + (fc_is_bull ? "LONG" : "SHORT") + " ➔ " + str.tostring(y3, "#.##"), color=color.new(color.black, 100), textcolor=mtf_col, style=fc_is_bull ? label.style_label_down : label.style_label_up, size=size.small, force_overlay=true)
+            else
+                int mx = x2 + 15
+                float my = htf_tp1_target
+                line_mtf_0 := line.new(x1, y1, x2, y2, color=#f59e0b, width=3, style=line.style_dashed, force_overlay=true)
+                line_mtf_1 := line.new(x2, y2, mx, my, color=htf_trend_up ? c_bull : c_bear, width=3, style=line.style_arrow_right, force_overlay=true)
+                label_mtf_wave := label.new(mx, my, "⚡ MTF ➔ " + str.tostring(my, "#.##"), color=color.new(color.black, 100), textcolor=htf_trend_up ? c_bull : c_bear, style=htf_trend_up ? label.style_label_up : label.style_label_down, size=size.small, force_overlay=true)
+        if show_tp_clusters
+            bool near = math.abs(y3 - htf_tp1_target) <= (atr * 1.8) or math.abs(y2 - htf_tp1_target) <= (atr * 1.8)
+            float cl = near ? ((y3 + htf_tp1_target) / 2.0) : htf_tp1_target
+            float ch = atr * 0.25
+            box_tp_cluster := box.new(bar_index - 5, cl + ch, bar_index + label_offset + 12, cl - ch, bgcolor=color.new(#eab308, 85), border_color=color.new(#eab308, 30), border_style=line.style_dashed, force_overlay=true)
+            label_tp_cluster := label.new(bar_index + label_offset + 12, cl, (near ? "🎯 Кластер: " : "🎯 Цель: ") + str.tostring(cl, "#.##"), color=color.new(color.black, 100), textcolor=#facc15, style=label.style_label_left, size=get_text_size(text_sz_opt), force_overlay=true)
