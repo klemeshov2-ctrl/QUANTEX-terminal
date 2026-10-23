@@ -8,9 +8,31 @@ import dotenv from "dotenv";
 import { exec } from "child_process";
 import { promisify } from "util";
 import WebSocket from "ws";
+import { ProxyAgent, setGlobalDispatcher, Agent as UndiciAgent } from "undici";
 import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts } from "./server/gexEngine";
 
 dotenv.config();
+
+let currentActiveProxy = "";
+export function setOutboundProxy(proxyUrl?: string) {
+  const url = (proxyUrl || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "").trim();
+  if (url && url !== currentActiveProxy) {
+    try {
+      const dispatcher = new ProxyAgent(url);
+      setGlobalDispatcher(dispatcher);
+      currentActiveProxy = url;
+      addServerLog("INFO", `🌐 Исходящий сетевой прокси активирован: ${url.replace(/:[^:@]+@/, ":***@")}`);
+    } catch (e: any) {
+      addServerLog("WARN", `Ошибка активации прокси (${url}): ${e.message}`);
+    }
+  } else if (!url && currentActiveProxy) {
+    try {
+      setGlobalDispatcher(new UndiciAgent());
+      currentActiveProxy = "";
+      addServerLog("INFO", "🌐 Исходящий сетевой прокси отключен (прямой канал)");
+    } catch {}
+  }
+}
 
 const execAsync = promisify(exec);
 
@@ -3169,7 +3191,7 @@ export function normalizeGeminiModel(model?: string): string {
 
 // Universal factory for GoogleGenAI with support for both legacy AIza... keys
 // and new Google AI Studio Auth keys with 'AQ.' prefix
-export function createGeminiClient(key?: string): GoogleGenAI | null {
+export function createGeminiClient(key?: string, customEndpoint?: string): GoogleGenAI | null {
   const apiKey = sanitizeApiKey(key || process.env.GEMINI_API_KEY);
   if (!apiKey || apiKey.length < 5) return null;
 
@@ -3183,11 +3205,18 @@ export function createGeminiClient(key?: string): GoogleGenAI | null {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
+  const httpOptions: Record<string, any> = {
+    headers,
+  };
+
+  const endpoint = (customEndpoint || (unifiedStationSettings as any)?.ai?.geminiEndpoint || "").trim();
+  if (endpoint && endpoint.length > 5) {
+    httpOptions.baseUrl = endpoint.replace(/\/+$/, "");
+  }
+
   return new GoogleGenAI({
     apiKey: apiKey,
-    httpOptions: {
-      headers,
-    },
+    httpOptions,
   });
 }
 
@@ -6068,7 +6097,9 @@ let unifiedStationSettings = {
     qwenModel: "qwen-plus",
     qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
     geminiApiKey: process.env.GEMINI_API_KEY || "",
-    geminiModel: "gemini-3.8-flash",
+    geminiModel: "gemini-3.5-flash",
+    geminiEndpoint: "",
+    proxyUrl: process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "",
     temperature: 0.3
   },
   serverSecurity: {
@@ -6189,6 +6220,9 @@ app.post("/api/settings/unified", (req, res) => {
         ...unifiedStationSettings.ai,
         ...incoming.ai
       };
+      if (incoming.ai.proxyUrl !== undefined) {
+        setOutboundProxy(incoming.ai.proxyUrl);
+      }
     }
     if (incoming.serverSecurity) {
       unifiedStationSettings.serverSecurity = {
@@ -7076,9 +7110,13 @@ app.post("/api/market/news/refresh", async (req, res) => {
 // Test AI Provider API Key (DeepSeek, Qwen / DashScope, Gemini)
 app.post("/api/ai-provider/test", async (req, res) => {
   try {
-    const { provider, apiKey, model, endpoint } = req.body;
+    const { provider, apiKey, model, endpoint, proxyUrl } = req.body;
     if (!provider) {
       return res.status(400).json({ success: false, error: "Укажите провайдера ИИ" });
+    }
+
+    if (proxyUrl !== undefined) {
+      setOutboundProxy(proxyUrl);
     }
 
     const startTime = Date.now();
@@ -7172,7 +7210,7 @@ app.post("/api/ai-provider/test", async (req, res) => {
       }
       try {
         resetGeminiBlock();
-        const genClient = createGeminiClient(gKey);
+        const genClient = createGeminiClient(gKey, endpoint);
         if (!genClient) {
           return res.status(400).json({ success: false, error: "Не удалось инициализировать клиент Gemini. Проверьте формат ключа." });
         }
@@ -7220,7 +7258,13 @@ app.post("/api/ai-provider/test", async (req, res) => {
           }
         } catch {}
 
-        if (rawErr.includes("PERMISSION_DENIED") || rawErr.includes("unregistered callers") || rawErr.includes("403")) {
+        if (
+          rawErr.includes("location") ||
+          rawErr.includes("User location is not supported") ||
+          rawErr.includes("FAILED_PRECONDITION")
+        ) {
+          userFacingError = `🌍 Гео-ограничение Google (User location is not supported):\nGoogle AI Studio блокирует доступ для региона вашего Google-аккаунта (${gKey.slice(0, 6)}...) или IP-подсети дата-центра.\n\nКак обойти:\n1. 🤖 Рекомендуется DeepSeek (V3/R1) — работает глобально без каких-либо гео-блокировок;\n2. 🌐 Включите Outbound HTTP/HTTPS Прокси (US/UK) в настройках станции ниже;\n3. ⚡ Укажите пользовательский Reverse Proxy / Cloudflare Worker в поле Endpoint;\n4. 🔑 Создайте ключ в Google AI Studio под Google-аккаунтом с регионом США.`;
+        } else if (rawErr.includes("PERMISSION_DENIED") || rawErr.includes("unregistered callers") || rawErr.includes("403")) {
           userFacingError = `Ошибка авторизации 403 (PERMISSION_DENIED / unregistered callers): Google отклонил запрос. Проверьте, что ключ (${gKey.slice(0, 6)}...) активен в Google AI Studio / Cloud Console и API включен.`;
         } else if (rawErr.includes("API_KEY_SERVICE_BLOCKED") || rawErr.includes("UNAUTHENTICATED") || rawErr.includes("401")) {
           userFacingError = `Ошибка ключа (401 / UNAUTHENTICATED): Google отклонил указанный ключ. Убедитесь, что скопирован полный и валидный ключ из Google AI Studio (начинающийся с AQ... или AIza...).`;
@@ -8335,7 +8379,7 @@ ${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact}]`).join
       const gKey = aiProviderConfig?.geminiApiKey && aiProviderConfig.geminiApiKey.trim().length > 5
         ? aiProviderConfig.geminiApiKey
         : undefined;
-      const customGeminiClient = gKey ? createGeminiClient(gKey) : client;
+      const customGeminiClient = gKey ? createGeminiClient(gKey, aiProviderConfig?.geminiEndpoint) : client;
 
       if (customGeminiClient) {
         try {

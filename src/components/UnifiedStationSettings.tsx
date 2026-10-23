@@ -167,6 +167,8 @@ export interface UnifiedSettingsData {
     qwenEndpoint: string;
     geminiApiKey: string;
     geminiModel: string;
+    geminiEndpoint?: string;
+    proxyUrl?: string;
     temperature: number;
   };
   serverSecurity: {
@@ -251,7 +253,9 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       qwenModel: "qwen-plus",
       qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
       geminiApiKey: "",
-      geminiModel: "gemini-3.8-flash",
+      geminiModel: "gemini-3.5-flash",
+      geminiEndpoint: "",
+      proxyUrl: "",
       temperature: 0.3
     },
     serverSecurity: {
@@ -463,12 +467,17 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
           ? settings.ai.qwenModel
           : settings.ai.geminiModel;
       const endpoint =
-        provider === "deepseek" ? settings.ai.deepSeekEndpoint : settings.ai.qwenEndpoint;
+        provider === "deepseek"
+          ? settings.ai.deepSeekEndpoint
+          : provider === "qwen"
+          ? settings.ai.qwenEndpoint
+          : settings.ai.geminiEndpoint;
+      const proxyUrl = settings.ai.proxyUrl;
 
       const res = await fetch("/api/ai-provider/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, apiKey, model, endpoint })
+        body: JSON.stringify({ provider, apiKey, model, endpoint, proxyUrl })
       });
       const data = await res.json();
       const statusObj = res.ok && data.success
@@ -1306,6 +1315,94 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                   </div>
                 </div>
 
+                {/* Geo-Bypass & Outbound Proxy Controls */}
+                <div className="pt-2 border-t border-gray-800/80 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-gray-300 flex items-center gap-1.5">
+                      <span>🌐 Обход региональных ограничений Google (Прокси / Endpoint)</span>
+                    </span>
+                    <span className="text-[10px] text-gray-500 font-mono">Опционально</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-gray-400 block mb-1">
+                        Исходящий HTTP/HTTPS Прокси (US / EU):
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.ai.proxyUrl || ""}
+                        onChange={e =>
+                          setSettings(prev => ({
+                            ...prev,
+                            ai: { ...prev.ai, proxyUrl: e.target.value }
+                          }))
+                        }
+                        placeholder="http://user:pass@ip:port или http://proxy:8080"
+                        className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-emerald-500"
+                      />
+                      <span className="text-[10px] text-gray-500 block mt-0.5">
+                        Маршрутизирует все сетевые запросы сервера к Gemini через прокси
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-gray-400 block mb-1">
+                        Пользовательский Endpoint / Reverse Proxy:
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.ai.geminiEndpoint || ""}
+                        onChange={e =>
+                          setSettings(prev => ({
+                            ...prev,
+                            ai: { ...prev.ai, geminiEndpoint: e.target.value }
+                          }))
+                        }
+                        placeholder="https://generativelanguage.googleapis.com"
+                        className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-emerald-500"
+                      />
+                      <span className="text-[10px] text-gray-500 block mt-0.5">
+                        Cloudflare Worker или собственный Nginx реверс-прокси
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Regional block explanation & 1-click DeepSeek switch */}
+                  <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 text-xs text-amber-200/90 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <span className="text-base">ℹ️</span>
+                      <div className="space-y-1">
+                        <div className="font-bold text-amber-300">
+                          Почему Google выдает «User location is not supported» на сервере в Германии?
+                        </div>
+                        <p className="text-[11px] text-gray-300 leading-relaxed">
+                          Google привязывает права API к <strong>стране регистрации Google-аккаунта</strong> (если аккаунт РФ/РБ — Google блокирует ключ даже на серверах в Германии), либо подсеть IP дата-центра VPS внесена в спам-фильтр Google.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-amber-500/20">
+                      <span className="text-[11px] text-amber-300 font-semibold">
+                        Рекомендуемое решение — DeepSeek V3/R1 (без гео-блокировок):
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings(prev => ({
+                            ...prev,
+                            ai: { ...prev.ai, activeProvider: "deepseek" }
+                          }))
+                        }
+                        className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-extrabold text-[11px] transition cursor-pointer flex items-center gap-1 shadow"
+                      >
+                        <Bot className="h-3 w-3" />
+                        <span>Переключить станцию на DeepSeek</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 {settings.ai.geminiApiKey?.length > 5 && settings.ai.activeProvider !== "gemini" && (
                   <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-xs text-emerald-300">
                     <span>Ключ Gemini введен. Переключить станцию на Gemini как основной ИИ?</span>
@@ -1326,7 +1423,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
 
                 {geminiTestStatus && (
                   <div
-                    className={`p-2.5 rounded-lg border text-xs font-mono ${
+                    className={`p-2.5 rounded-lg border text-xs font-mono whitespace-pre-line ${
                       geminiTestStatus.ok
                         ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
                         : "bg-rose-950/40 border-rose-500/40 text-rose-300"
