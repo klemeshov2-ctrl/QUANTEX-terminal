@@ -11,14 +11,13 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@google/genai": "^2.31.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "html2pdf.js": "^0.14.0",
-    "https-proxy-agent": "^9.1.0",
     "jspdf": "^4.2.1",
     "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.546.0",
@@ -28,7 +27,6 @@
     "react-dom": "^19.0.1",
     "react-markdown": "^10.1.0",
     "recharts": "^3.9.2",
-    "undici": "^8.12.3",
     "vite": "^6.2.3",
     "ws": "^8.22.0"
   },

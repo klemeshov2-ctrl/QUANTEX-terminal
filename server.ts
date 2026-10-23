@@ -8,31 +8,9 @@ import dotenv from "dotenv";
 import { exec } from "child_process";
 import { promisify } from "util";
 import WebSocket from "ws";
-import { ProxyAgent, setGlobalDispatcher, Agent as UndiciAgent } from "undici";
 import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts } from "./server/gexEngine";
 
 dotenv.config();
-
-let currentActiveProxy = "";
-export function setOutboundProxy(proxyUrl?: string) {
-  const url = (proxyUrl || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "").trim();
-  if (url && url !== currentActiveProxy) {
-    try {
-      const dispatcher = new ProxyAgent(url);
-      setGlobalDispatcher(dispatcher);
-      currentActiveProxy = url;
-      addServerLog("INFO", `🌐 Исходящий сетевой прокси активирован: ${url.replace(/:[^:@]+@/, ":***@")}`);
-    } catch (e: any) {
-      addServerLog("WARN", `Ошибка активации прокси (${url}): ${e.message}`);
-    }
-  } else if (!url && currentActiveProxy) {
-    try {
-      setGlobalDispatcher(new UndiciAgent());
-      currentActiveProxy = "";
-      addServerLog("INFO", "🌐 Исходящий сетевой прокси отключен (прямой канал)");
-    } catch {}
-  }
-}
 
 const execAsync = promisify(exec);
 
@@ -6220,9 +6198,6 @@ app.post("/api/settings/unified", (req, res) => {
         ...unifiedStationSettings.ai,
         ...incoming.ai
       };
-      if (incoming.ai.proxyUrl !== undefined) {
-        setOutboundProxy(incoming.ai.proxyUrl);
-      }
     }
     if (incoming.serverSecurity) {
       unifiedStationSettings.serverSecurity = {
@@ -7115,9 +7090,6 @@ app.post("/api/ai-provider/test", async (req, res) => {
       return res.status(400).json({ success: false, error: "Укажите провайдера ИИ" });
     }
 
-    if (proxyUrl !== undefined) {
-      setOutboundProxy(proxyUrl);
-    }
 
     const startTime = Date.now();
 
