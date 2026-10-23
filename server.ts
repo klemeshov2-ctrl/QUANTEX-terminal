@@ -3146,23 +3146,49 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 // Sanitization & normalization utilities for Gemini keys and models
 export function sanitizeApiKey(rawKey?: string | null): string {
   if (!rawKey) return "";
-  return rawKey.trim().replace(/^["']|["']$/g, "").trim();
+  const cleaned = rawKey.trim().replace(/^["']|["']$/g, "").trim();
+  if (
+    cleaned === "AIzaSyAhY9_p0DAtmyGbmXsMLjZko2zAav5pAGc" ||
+    cleaned.startsWith("AIzaSyAhY9_") ||
+    cleaned === "YOUR_GEMINI_API_KEY" ||
+    cleaned === "YOUR_API_KEY" ||
+    cleaned.toLowerCase().includes("placeholder")
+  ) {
+    return "";
+  }
+  return cleaned;
 }
 
 export function normalizeGeminiModel(model?: string): string {
-  if (!model) return "gemini-3.5-flash";
+  if (!model) return "gemini-3.1-flash-lite";
   const m = model.trim();
+  if (m === "gemini-flash" || m === "gemini-flash-latest") {
+    return "gemini-flash-latest";
+  }
+  if (m === "gemini-lite" || m === "flash-lite" || m === "gemini-3.1-flash-lite") {
+    return "gemini-3.1-flash-lite";
+  }
+  if (m === "gemini-3.8-flash") {
+    return "gemini-3.8-flash";
+  }
+  if (m === "gemini-4-argon" || m === "gemini-argon" || m === "gemini-4" || m === "gemini-pro") {
+    return "gemini-4-argon";
+  }
+  if (m === "gemini-3.1-pro-preview") {
+    return "gemini-3.1-pro-preview";
+  }
+  // Deprecated models mapped to active modern aliases
   if (
+    m === "gemini-3.5-flash" ||
     m === "gemini-2.5-flash" ||
     m === "gemini-1.5-flash" ||
     m === "gemini-2.0-flash" ||
-    m === "gemini-pro" ||
     m === "gemini-2.0-flash-thinking"
   ) {
-    return "gemini-3.5-flash";
+    return "gemini-3.1-flash-lite";
   }
   if (m === "gemini-1.5-pro" || m === "gemini-2.0-pro" || m === "gemini-2.5-pro") {
-    return "gemini-3.1-pro-preview";
+    return "gemini-4-argon";
   }
   return m;
 }
@@ -3207,31 +3233,37 @@ export function resetGeminiBlock() {
   geminiQuotaOrDunningBlockedUntil = 0;
 }
 
-export function isGeminiApiAvailable(): boolean {
-  const key = sanitizeApiKey(process.env.GEMINI_API_KEY);
+export function isGeminiApiAvailable(overrideKey?: string): boolean {
+  const key = sanitizeApiKey(
+    overrideKey ||
+    (unifiedStationSettings as any)?.ai?.geminiApiKey ||
+    process.env.GEMINI_API_KEY
+  );
   return Boolean(key && key.length > 5) && Date.now() >= geminiQuotaOrDunningBlockedUntil;
 }
 
 export function handleGeminiError(context: string, err: any) {
   const errMsg = String(err?.message || err?.status || err || "");
+  const isInvalidKey = errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID");
   const isDunningOr403 = errMsg.includes("403") || errMsg.includes("dunning") || errMsg.includes("PERMISSION_DENIED");
   const isQuotaOr429 = errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota");
 
-  if (isDunningOr403 || isQuotaOr429) {
-    // Gracefully engage autonomous institutional quant engine and silence 403 error spam
-    geminiQuotaOrDunningBlockedUntil = Date.now() + 60000;
-    addServerLog("INFO", `Автономный квант-модуль QUANTEX активен (${context}: внешний Gemini API временно ограничен квотой/проектом)`);
+  if (isInvalidKey) {
+    addServerLog("WARN", `Gemini API (${context}): API-ключ недействителен. Укажите корректный ключ в настройках станции.`);
+  } else if (isDunningOr403 || isQuotaOr429) {
+    addServerLog("INFO", `Автономный квант-модуль QUANTEX активен (${context}: Gemini API временно ограничен квотой/проектом)`);
   } else {
     addServerLog("WARN", `Уведомление Gemini (${context}): ${errMsg.slice(0, 120)}`);
   }
 }
 
 function getGeminiClient(overrideKey?: string): GoogleGenAI | null {
-  const targetKey = sanitizeApiKey(overrideKey || process.env.GEMINI_API_KEY);
+  const targetKey = sanitizeApiKey(
+    overrideKey ||
+    (unifiedStationSettings as any)?.ai?.geminiApiKey ||
+    process.env.GEMINI_API_KEY
+  );
   if (!targetKey || targetKey.length < 5) {
-    return null;
-  }
-  if (!overrideKey && !isGeminiApiAvailable()) {
     return null;
   }
   if (!aiClient || lastApiKeyUsed !== targetKey) {
@@ -5656,20 +5688,28 @@ app.post("/api/browser/analyze-multi-tf", async (req, res) => {
           text: fullPrompt
         });
 
-        const geminiPromise = client.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: contentsParts,
-          config: {
-            systemInstruction: defaultInstruction,
-            temperature: 0.25
-          }
-        });
-        const timeoutPromise = new Promise<null>((_, reject) => setTimeout(() => reject(new Error("Timeout calling Gemini API")), 7000));
-        const geminiRes: any = await Promise.race([geminiPromise, timeoutPromise]);
+        const candidateVisionModels = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-4-argon"];
+        for (const visModel of candidateVisionModels) {
+          try {
+            const geminiPromise = client.models.generateContent({
+              model: visModel,
+              contents: contentsParts,
+              config: {
+                systemInstruction: defaultInstruction,
+                temperature: 0.25
+              }
+            });
+            const timeoutPromise = new Promise<null>((_, reject) => setTimeout(() => reject(new Error("Timeout calling Gemini API")), 25000));
+            const geminiRes: any = await Promise.race([geminiPromise, timeoutPromise]);
 
-        if (geminiRes && geminiRes.text) {
-          analysisText = geminiRes.text;
-          modelUsed = "Gemini 2.5 Flash (Multimodal Multi-TF Vision)";
+            if (geminiRes && geminiRes.text) {
+              analysisText = geminiRes.text;
+              modelUsed = `Gemini (${visModel} Multimodal Vision)`;
+              break;
+            }
+          } catch (modelErr: any) {
+            console.warn(`Notice calling Gemini ${visModel} in multi-TF analysis:`, modelErr.message);
+          }
         }
       } catch (gemErr: any) {
         console.warn("Notice calling Gemini Vision in multi-TF analysis:", gemErr.message);
@@ -6067,7 +6107,7 @@ let unifiedStationSettings = {
     enableServerAlerts: true
   },
   ai: {
-    activeProvider: "deepseek",
+    activeProvider: (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5 ? "gemini" : "deepseek"),
     deepSeekApiKey: process.env.DEEPSEEK_API_KEY || "",
     deepSeekModel: "deepseek-chat",
     deepSeekEndpoint: "https://api.deepseek.com/chat/completions",
@@ -6075,7 +6115,7 @@ let unifiedStationSettings = {
     qwenModel: "qwen-plus",
     qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
     geminiApiKey: process.env.GEMINI_API_KEY || "",
-    geminiModel: "gemini-3.5-flash",
+    geminiModel: "gemini-3.1-flash-lite",
     geminiEndpoint: "",
     proxyUrl: process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "",
     temperature: 0.3
@@ -6141,6 +6181,14 @@ function loadUnifiedSettings() {
         serverPreferences: { ...unifiedStationSettings.serverPreferences, ...(parsed.serverPreferences || {}) },
         users: Array.isArray(parsed.users) && parsed.users.length > 0 ? parsed.users : unifiedStationSettings.users
       };
+      if (
+        (!unifiedStationSettings.ai.deepSeekApiKey || unifiedStationSettings.ai.deepSeekApiKey.length < 5) &&
+        unifiedStationSettings.ai.geminiApiKey &&
+        unifiedStationSettings.ai.geminiApiKey.length > 5 &&
+        (unifiedStationSettings.ai.activeProvider === "deepseek" || unifiedStationSettings.ai.activeProvider === "autonomous")
+      ) {
+        unifiedStationSettings.ai.activeProvider = "gemini";
+      }
       if (typeof parsed.serverSecurity?.requireAuth === "boolean") {
         requirePasswordAuth = parsed.serverSecurity.requireAuth;
       }
@@ -7186,7 +7234,7 @@ app.post("/api/ai-provider/test", async (req, res) => {
         if (!genClient) {
           return res.status(400).json({ success: false, error: "Не удалось инициализировать клиент Gemini. Проверьте формат ключа." });
         }
-        let gModel = normalizeGeminiModel(model || "gemini-3.5-flash");
+        let gModel = normalizeGeminiModel(model || "gemini-3.1-flash-lite");
         let resp: any = null;
         try {
           resp = await genClient.models.generateContent({
@@ -7201,12 +7249,22 @@ app.post("/api/ai-provider/test", async (req, res) => {
             firstErrMsg.includes("NOT_FOUND") ||
             firstErrMsg.includes("404");
           if (isHighDemandOrNotFound) {
-            const fallbackModel = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
-            resp = await genClient.models.generateContent({
-              model: fallbackModel,
-              contents: "Ответь одним словом: OK"
-            });
-            gModel = fallbackModel;
+            const fallbackCascade = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-4-argon", "gemini-3.1-pro-preview"].filter(m => m !== gModel);
+            let testPassed = false;
+            for (const fallbackModel of fallbackCascade) {
+              try {
+                resp = await genClient.models.generateContent({
+                  model: fallbackModel,
+                  contents: "Ответь одним словом: OK"
+                });
+                gModel = fallbackModel;
+                testPassed = true;
+                break;
+              } catch {}
+            }
+            if (!testPassed) {
+              throw firstErr;
+            }
           } else {
             throw firstErr;
           }
@@ -7478,9 +7536,12 @@ app.get("/api/download-manual-pdf", async (req, res) => {
 
 app.post("/api/analyze-chart", async (req, res) => {
   try {
-    const { asset, timeframe, indicators, candlesticks } = req.body;
+    const { asset, timeframe, indicators, candlesticks, query } = req.body;
 
-    const client = getGeminiClient();
+    const serverAi = (unifiedStationSettings as any)?.ai || {};
+    const effectiveGeminiKey = req.body.geminiApiKey || serverAi.geminiApiKey || process.env.GEMINI_API_KEY;
+    const client = getGeminiClient(effectiveGeminiKey);
+
     if (!client) {
       // Return simulated commentary if API key is missing, so the app remains fully functional
       return res.json({
@@ -7488,7 +7549,7 @@ app.post("/api/analyze-chart", async (req, res) => {
       
 **Инструмент:** ${asset} | **Таймфрейм:** ${timeframe}
 
-Для полноценного анализа с использованием искусственного интеллекта настройте **GEMINI_API_KEY** в панели secrets в AI Studio. 
+Для полноценного анализа с использованием искусственного интеллекта настройте **GEMINI_API_KEY** в панели secrets в AI Studio или в «⚙️ Настройки станции». 
 
 **Текущая техническая картина:**
 1. **Рыночный нарратив (SMC):** Наблюдается структура *${candlesticks[candlesticks.length - 1]?.close > candlesticks[candlesticks.length - 5]?.close ? "Bullish (Восходящая)" : "Bearish (Нисходящая)"}*. Последний зафиксированный триггер структуры: **BOS (Break of Structure)**.
@@ -7499,12 +7560,16 @@ app.post("/api/analyze-chart", async (req, res) => {
       });
     }
 
-    // Construct a comprehensive prompt for Gemini
+    // Construct a comprehensive prompt for Gemini with global macroeconomic context
     const lastCandle = candlesticks[candlesticks.length - 1];
-    const prompt = `Ты — ведущий финансовый аналитик и эксперт по Smart Money Concepts (SMC) и анализу дельты объёмов (voldelta).
-Проведи глубокий технический анализ для актива ${asset} на таймфрейме ${timeframe} на основе переданных данных индикаторов:
+    const prompt = `Ты — ведущий институциональный макро-аналитик и эксперт по Smart Money Concepts (SMC), потоку ордеров (CVD) и опционному позиционированию дилеров GEX.
+Проведи глубокий технический и макроэкономический анализ для актива ${asset} на таймфрейме ${timeframe}:
 
-1. **Cumulative Volume Delta (voldelta/CVD):** Текущее значение CVD: ${Math.round(indicators.cvd)}. Динамика дельты: ${indicators.cvdTrend}. Есть ли дивергенция между дельтой и ценой? (Если цена растет, а CVD падает — медвежья дивергенция; если цена падает, а CVD растет — бычья дивергенция).
+ТЫ МЫСЛИШЬ ГЛОБАЛЬНО:
+- Включай общемировой макроэкономический контекст: индекс доллара DXY, ожидания шагов по ставке ФРС США, динамику доходностей трежерис US10Y, спрос центробанков и мировые сырьевые тенденции.
+- Синтезируй глобальный фон с точными показателями терминала QUANTEX:
+
+1. **Cumulative Volume Delta (voldelta/CVD):** Текущее значение CVD: ${Math.round(indicators.cvd)}. Динамика дельты: ${indicators.cvdTrend}. Оцени наличие дивергенций между ценой и реальным потоком ликвидности.
 2. **Нарратив рынка (Market Narrative / SMC):**
    - Структура тренда: ${indicators.marketStructure} (BOS, CHoCH)
    - Последние зоны дисбаланса (Fair Value Gaps - FVG): ${indicators.fvgStatus}
@@ -7517,31 +7582,60 @@ app.post("/api/analyze-chart", async (req, res) => {
    - Max Pain Strike: ${indicators.gex?.maxPain ? indicators.gex.maxPain.toFixed(2) : "Определяется"}
 4. **Предиктивный алгоритм машинного обучения (Lorentzian Classifier):** Текущий сигнал: ${indicators.mlSignal > 0 ? "BUY (Покупка)" : indicators.mlSignal < 0 ? "SELL (Продажа)" : "NEUTRAL (Нейтрально)"} (Уровень уверенности: ${Math.round(indicators.mlConfidence * 100)}%).
 
+${query && query !== "default" ? `❓ СПЕЦИАЛЬНЫЙ ВОПРОС ТРЕЙДЕРА: "${query}"` : ""}
+
 Данные последних 5 свечей:
 ${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: O:${c.open.toFixed(2)}, H:${c.high.toFixed(2)}, L:${c.low.toFixed(2)}, C:${c.close.toFixed(2)}, V:${Math.round(c.volume)}`).join("\n")}
 
 Подготовь подробный, структурированный и профессиональный анализ на русском языке. 
 Разделы должны включать:
-- **Общая рыночная картина (Market Narrative):** Анализ текущей структуры, зон ликвидности и Order Blocks.
-- **Опционные уровни GEX и дилеры:** Интерпретация Call Wall, Put Wall, Zero-Gamma Flip и текущего режима волатильности.
-- **Анализ Потока Ордеров (voldelta / CVD):** Интерпретация кумулятивной дельты, выявление скрытых покупателей/продавцов, наличие дивергенций.
-- **Оценка ИИ (Lorentzian ML):** Пояснение сигнала машинного обучения в многомерном пространстве параметров (RSI, CCI, ADX).
-- **Торговый план (Рекомендация):** Конкретные точки входа, цели (Take Profit) с опорой на GEX стены и ближайшие зоны ликвидности, уровни ограничения убытков (Stop Loss).
+- **Глобальная макро-картина и рыночный нарратив (Market Narrative):** Анализ макро-драйверов, структуры, зон ликвидности и Order Blocks.
+- **Опционные барьеры GEX и дилеры:** Интерпретация Call Wall, Put Wall, Zero-Gamma Flip и текущего режима волатильности.
+- **Анализ Потока Ордеров (voldelta / CVD):** Интерпретация кумулятивной дельты, скрытые покупатели/продавцы, дивергенции.
+- **Оценка ИИ (Lorentzian ML):** Пояснение сигнала машинного обучения в многомерном пространстве параметров.
+- **Торговый план (Рекомендация):** Конкретные точки входа, цели (Take Profit 1 и 2) с опорой на GEX стены, уровни ограничения убытков (Stop Loss) и альтернативный сценарий.
 
-Пиши стильно, профессионально, кратко и структурированно, без лишней "воды".`;
+Пиши стильно, профессионально, авторитетно и четко структурированно.`;
 
-    let response: any;
-    try {
-      response = await client.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: prompt,
-        config: {
-          systemInstruction: "Ты элитный крипто-трейдер и создатель передовых торговых алгоритмов. Твоя цель — дать максимально точный и полезный технический анализ на основе концепций Smart Money, опционных уровней GEX и дельты объёмов.",
-          temperature: 0.7,
-        },
-      });
-    } catch (genErr: any) {
-      handleGeminiError("/api/analyze-chart", genErr);
+    // Multi-model fallback cascade to guarantee high availability without 503 or 429 quota failures
+    const preferredChartModel = normalizeGeminiModel(req.body.model || serverAi.geminiModel || "gemini-3.1-flash-lite");
+    const candidateModels = Array.from(new Set([
+      preferredChartModel,
+      "gemini-3.1-flash-lite",
+      "gemini-3.8-flash",
+      "gemini-flash-latest",
+      "gemini-4-argon"
+    ]));
+    let responseText = "";
+    let finalModelUsed = "";
+
+    for (const modelCandidate of candidateModels) {
+      try {
+        const resp = await client.models.generateContent({
+          model: modelCandidate,
+          contents: prompt,
+          config: {
+            systemInstruction: "Ты элитный институциональный квант-аналитик и макро-стратег. Твоя цель — дать глубокий, глобальный и практически применимый технический и макро-анализ на основе концепций Smart Money, опционных уровней GEX и дельты объёмов.",
+            temperature: 0.35,
+          },
+        });
+        if (resp && resp.text) {
+          responseText = resp.text;
+          finalModelUsed = modelCandidate;
+          break;
+        }
+      } catch (err: any) {
+        const errMsg = String(err?.message || "");
+        const isInvalidKey = errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID");
+        if (isInvalidKey) {
+          addServerLog("WARN", `Ключ Gemini API недействителен в /api/analyze-chart. Укажите действительный ключ в настройках.`);
+          break;
+        }
+        addServerLog("INFO", `Модель ${modelCandidate} в /api/analyze-chart недоступна (${errMsg.slice(0, 70)}...). Переключаемся на резерв...`);
+      }
+    }
+
+    if (!responseText) {
       const gexInfo = indicators.gex || {
         regime: "+GAMMA (Сжатие волатильности)",
         callWall: (lastCandle?.close || 2750) * 1.015,
@@ -7572,7 +7666,8 @@ ${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: 
     }
 
     res.json({
-      analysis: response.text,
+      analysis: responseText,
+      provider: `Gemini (${finalModelUsed})`,
       isSimulated: false
     });
   } catch (err: any) {
@@ -8004,7 +8099,7 @@ ${additionalData && additionalData.trim().length > 0 ? `ДОПОЛНИТЕЛЬН
       });
     }
 
-    const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
+    const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-4-argon"];
     let responseText = "";
     let lastError: any = null;
 
@@ -8104,7 +8199,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       eventContext = null,
       userQuery = "",
       history = [],
-      aiProviderConfig = null
+      aiProviderConfig = null,
+      responseStyle = "detailed"
     } = req.body;
 
     const now = new Date();
@@ -8122,10 +8218,44 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
     }).format(now);
 
     const isBull = indicatorForecast?.isBull ?? true;
+
+    // If user explicitly selected "autonomous" mode in AI Analyst settings, execute built-in quant engine directly
+    if (responseStyle === "autonomous") {
+      const autonomousPlan = generateAutonomousAiPlan({
+        ticker,
+        timeframe,
+        currentPrice,
+        multiTfMetrics,
+        indicatorForecast,
+        gex,
+        events,
+        mode,
+        eventContext,
+        userQuery: userQuery || "",
+        timeMsk,
+        dateMsk,
+        responseStyle: "autonomous"
+      });
+      return res.json({
+        plan: autonomousPlan,
+        provider: "🤖 Автономный ИИ QUANTEX",
+        isSimulated: false,
+        timestamp: `${timeMsk} МСК`
+      });
+    }
+
     const client = getGeminiClient();
+    const isShortMode = responseStyle === "short";
 
     // Construct institutional global macro & quantitative analyst system instruction
-    const systemInstruction = `Ты — ведущий институциональный макроэкономист, квант-аналитик и главный стратег платформы QUANTEX.
+    const systemInstruction = isShortMode
+      ? `Ты — главный квант-аналитик и макро-стратег платформы QUANTEX.
+Твоя задача — выдать КОРОТКИЙ, предельно четкий и емкий ответ на русском языке (максимум 6–8 строк, без воды и длинных абзацев).
+Структура короткого ответа:
+1. Главный макро-драйвер (1–2 предложения: влияние ФРС, DXY, ликвидности M2 или свежей статистики на актив).
+2. Конкретный торговый сетап: Направление (LONG/SHORT), Вход, TP1, TP2, защитный Stop-Loss.
+3. Ключевые стены дилеров GEX (Call Wall / Put Wall) и ближайшее опасное окно по МСК.`
+      : `Ты — ведущий институциональный макроэкономист, квант-аналитик и главный стратег платформы QUANTEX.
 Твоя задача — выдавать глубокую, масштабную и бескомпромиссно точную аналитику на русском языке.
 
 ТЫ МЫСЛИШЬ ГЛОБАЛЬНО И НЕ ОГРАНИЧИВАЕШЬСЯ ТОЛЬКО ЧИСЛАМИ ИЗ ПРИЛОЖЕНИЯ:
@@ -8146,6 +8276,7 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       : "";
 
     let prompt = `Инструмент: ${ticker} | Таймфрейм: ${timeframe} | Текущая цена: ${currentPrice} | Время: ${dateMsk} ${timeMsk} МСК.
+Формат ответа: ${isShortMode ? "КОРОТКИЙ ОТВЕТ (лаконичная выжимка 6–8 строк)" : "РАЗВЕРНУТЫЙ ИНСТИТУЦИОНАЛЬНЫЙ РАЗБОР"}.
 Режим: ${mode === "morning_brief" ? "Утренний макро-брифинг (08:50 МСК)" : mode === "noon_update" ? "Дневной апдейт (12:30 МСК)" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : "Глобальный торговый и макро-план"}.
 
 🌐 СОБЫТИЯ И СТАТИСТИКА КАЛЕНДАРЯ:
@@ -8167,19 +8298,47 @@ ${newsListFormatted}
 ${JSON.stringify(multiTfMetrics, null, 2)}
 `;
 
+    if (Array.isArray(history) && history.length > 0) {
+      prompt += `\n💬 ИСТОРИЯ ПРЕДЫДУЩЕГО ДИАЛОГА С ТРЕЙДЕРОМ:\n${history.slice(-6).map((h: any) => `[${h.role === "user" ? "Трейдер" : "Аналитик"}]: ${String(h.text || "").slice(0, 350)}`).join("\n")}\n`;
+    }
     if (userQuery && userQuery.trim().length > 0) {
-      prompt += `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий ответ на вопрос трейдера. Если вопрос касается макростатистики, новостей или глобальной ситуации — привлеки все доступные мировые данные, объясни влияние на актив и свяжи с текущими уровнями на графике.`;
+      prompt += isShortMode
+        ? `\n❓ ЗАПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция: Ответь максимально кратко и по сути (до 6–8 строк): главный макро-фактор + точные уровни входа, целей, стопа и GEX.`
+        : `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий, фундаментально аргументированный ответ на вопрос трейдера. Обязательно раскрой макроэкономическую логику (политика ФРС США, динамика индекса доллара DXY, доходности казначейских облигаций US 10Y, циклы глобальной ликвидности M2, институциональный спрос и геополитика), объясни причинно-следственные связи и органично синтезируй их с алгоритмическими уровнями и опционным профилем GEX.`;
     }
     if (eventContext) {
       prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
     }
 
-    const activeProvider = aiProviderConfig?.provider || "autonomous";
+    const serverAi = (unifiedStationSettings as any)?.ai || {};
+    const clientAi = aiProviderConfig || {};
+
+    const effectiveDsKey = sanitizeApiKey(clientAi.deepSeekApiKey || serverAi.deepSeekApiKey || process.env.DEEPSEEK_API_KEY || "");
+    const effectiveQwenKey = sanitizeApiKey(clientAi.qwenApiKey || serverAi.qwenApiKey || process.env.QWEN_API_KEY || "");
+    const effectiveGeminiKey = sanitizeApiKey(clientAi.geminiApiKey || serverAi.geminiApiKey || process.env.GEMINI_API_KEY || "");
+
+    let activeProvider = clientAi.provider || serverAi.activeProvider || "autonomous";
+
+    const hasValidDs = Boolean(effectiveDsKey && effectiveDsKey.trim().length > 5);
+    const hasValidQwen = Boolean(effectiveQwenKey && effectiveQwenKey.trim().length > 5);
+    const hasValidGemini = Boolean(effectiveGeminiKey && effectiveGeminiKey.trim().length > 5);
+
+    // Smart auto-routing: if the active provider has no API key, or is set to autonomous,
+    // but a valid Gemini key is available, automatically route to Gemini!
+    if (activeProvider === "autonomous" || (activeProvider === "deepseek" && !hasValidDs) || (activeProvider === "qwen" && !hasValidQwen)) {
+      if (hasValidGemini) {
+        activeProvider = "gemini";
+      } else if (hasValidDs) {
+        activeProvider = "deepseek";
+      } else if (hasValidQwen) {
+        activeProvider = "qwen";
+      }
+    }
 
     // 1. DeepSeek AI Provider execution
     if (activeProvider === "deepseek") {
-      const dsKey = aiProviderConfig?.deepSeekApiKey || process.env.DEEPSEEK_API_KEY;
-      const dsModel = aiProviderConfig?.deepSeekModel || "deepseek-chat";
+      const dsKey = effectiveDsKey;
+      const dsModel = clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat";
       if (!dsKey || dsKey.trim().length < 5) {
         const fallback = generateAutonomousAiPlan({
           ticker,
@@ -8196,8 +8355,8 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           dateMsk
         });
         return res.json({
-          plan: `ℹ️ **API-ключ DeepSeek не настроен.**\nОткройте вкладку **«⚙️ API ИИ»** и введите ваш ключ DeepSeek (\`sk-...\`).\n\nНиже сформирован **автономный квант-план QUANTEX Multi-TF**:\n\n---\n\n${fallback}`,
-          provider: "DeepSeek (Ключ не задан -> QUANTEX Algo)",
+          plan: fallback,
+          provider: "QUANTEX Macro & Quant Engine",
           isSimulated: true,
           timestamp: `${timeMsk} МСК`
         });
@@ -8251,8 +8410,8 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
             dateMsk
           });
           return res.json({
-            plan: `⚠️ **Ответ DeepSeek API (${dsRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ API ИИ». Сформирован резервный квант-план:_\n\n---\n\n${fallback}`,
-            provider: `DeepSeek (Ошибка ${dsRes.status} -> QUANTEX Резерв)`,
+            plan: `⚠️ **Ответ DeepSeek API (${dsRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ Настройки станции -> API ИИ». Сформирован развернутый макро-план:_\n\n---\n\n${fallback}`,
+            provider: `DeepSeek (Ошибка ${dsRes.status} -> QUANTEX Macro)`,
             isSimulated: true,
             timestamp: `${timeMsk} МСК`
           });
@@ -8264,7 +8423,7 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
 
     // 2. Qwen / Alibaba DashScope Provider execution
     if (activeProvider === "qwen") {
-      const qwenKey = aiProviderConfig?.qwenApiKey || process.env.QWEN_API_KEY;
+      const qwenKey = effectiveQwenKey;
       const qwenModel = aiProviderConfig?.qwenModel || "qwen-plus";
       const qwenEndpoint = aiProviderConfig?.qwenEndpoint || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions";
       
@@ -8284,8 +8443,8 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           dateMsk
         });
         return res.json({
-          plan: `ℹ️ **API-ключ Qwen / DashScope не настроен.**\nОткройте вкладку **«⚙️ API ИИ»** и введите ваш ключ (\`sk-...\`).\n\nНиже сформирован **автономный квант-план QUANTEX Multi-TF**:\n\n---\n\n${fallback}`,
-          provider: "Qwen (Ключ не задан -> QUANTEX Algo)",
+          plan: fallback,
+          provider: "QUANTEX Macro & Quant Engine",
           isSimulated: true,
           timestamp: `${timeMsk} МСК`
         });
@@ -8338,8 +8497,8 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
             dateMsk
           });
           return res.json({
-            plan: `⚠️ **Ответ Qwen / DashScope (${qwenRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ API ИИ». Сформирован резервный квант-план:_\n\n---\n\n${fallback}`,
-            provider: `Qwen (Ошибка ${qwenRes.status} -> QUANTEX Резерв)`,
+            plan: `⚠️ **Ответ Qwen / DashScope (${qwenRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ Настройки станции -> API ИИ». Сформирован развернутый макро-план:_\n\n---\n\n${fallback}`,
+            provider: `Qwen (Ошибка ${qwenRes.status} -> QUANTEX Macro)`,
             isSimulated: true,
             timestamp: `${timeMsk} МСК`
           });
@@ -8349,84 +8508,65 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
       }
     }
 
-    // 3. Gemini Provider execution
+    // 3. Gemini Provider execution across all official Gemini models
     if (activeProvider === "gemini") {
-      const gKey = aiProviderConfig?.geminiApiKey && aiProviderConfig.geminiApiKey.trim().length > 5
-        ? aiProviderConfig.geminiApiKey
-        : undefined;
-      const customGeminiClient = gKey ? createGeminiClient(gKey, aiProviderConfig?.geminiEndpoint) : client;
+      const gKey = effectiveGeminiKey && effectiveGeminiKey.trim().length > 5 ? effectiveGeminiKey : undefined;
+      const gEndpoint = clientAi.geminiEndpoint || serverAi.geminiEndpoint;
+      const customGeminiClient = gKey ? createGeminiClient(gKey, gEndpoint) : client;
 
       if (customGeminiClient) {
         try {
-          let gModel = normalizeGeminiModel(aiProviderConfig?.geminiModel || "gemini-3.5-flash");
-          let response: any = null;
-          let usedSearchGrounding = false;
+          const preferredModel = normalizeGeminiModel(clientAi.geminiModel || serverAi.geminiModel || "gemini-3.1-flash-lite");
+          // Multi-model fallback cascade across all official @google/genai models:
+          const candidateModels = Array.from(new Set([
+            preferredModel,
+            "gemini-3.1-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-4-argon",
+            "gemini-3.1-pro-preview"
+          ]));
 
-          // 1. Attempt Google Search Grounding if enabled
-          const allowSearch = aiProviderConfig?.enableWebSearch !== false;
-          if (allowSearch) {
+          let responseText = "";
+          let finalModelUsed = preferredModel;
+
+          for (const modelCandidate of candidateModels) {
             try {
-              response = await customGeminiClient.models.generateContent({
-                model: gModel,
+              const res = await customGeminiClient.models.generateContent({
+                model: modelCandidate,
                 contents: prompt,
                 config: {
                   systemInstruction,
-                  temperature: 0.3,
-                  tools: [{ googleSearch: {} }],
+                  temperature: 0.35,
                 }
               });
-              if (response && response.text) {
-                usedSearchGrounding = true;
+
+              if (res && res.text) {
+                responseText = res.text;
+                finalModelUsed = modelCandidate;
+                break;
               }
-            } catch {
-              // If Search tool encounters quota limits (429) or is not supported by key tier,
-              // smoothly proceed to pure global macro synthesis
+            } catch (candErr: any) {
+              const errMsg = String(candErr?.message || "");
+              const isInvalidKey = errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID");
+              if (isInvalidKey) {
+                addServerLog("WARN", `Ключ Gemini API недействителен. Проверьте ключ в Настройках станции.`);
+                break;
+              }
+              addServerLog("INFO", `Модель ${modelCandidate} недоступна (${errMsg.slice(0, 70)}...). Переключаемся на резерв...`);
             }
           }
 
-          // 2. Standard generation with global macro synthesis
-          if (!response || !response.text) {
-            try {
-              response = await customGeminiClient.models.generateContent({
-                model: gModel,
-                contents: prompt,
-                config: {
-                  systemInstruction,
-                  temperature: 0.3,
-                }
-              });
-            } catch (modelErr: any) {
-              const mErr = String(modelErr?.message || "");
-              if (mErr.includes("high demand") || mErr.includes("503") || mErr.includes("404") || mErr.includes("NOT_FOUND")) {
-                const fallbackM = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
-                response = await customGeminiClient.models.generateContent({
-                  model: fallbackM,
-                  contents: prompt,
-                  config: {
-                    systemInstruction,
-                    temperature: 0.3,
-                  }
-                });
-                gModel = fallbackM;
-              } else {
-                throw modelErr;
-              }
-            }
-          }
-
-          if (response && response.text) {
-            const providerTag = usedSearchGrounding
-              ? `Gemini (${gModel} + Live Web Grounding 🌐)`
-              : `Gemini (${gModel} + Global Macro 🌐)`;
-
+          if (responseText) {
             return res.json({
-              plan: response.text,
-              provider: providerTag,
+              plan: responseText,
+              provider: `Gemini (${finalModelUsed} 🌐)`,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });
           }
         } catch (err: any) {
+          console.error("Gemini cascade error in generate-plan:", err);
           handleGeminiError("/api/ai-analyst/generate-plan", err);
         }
       }
@@ -8445,11 +8585,13 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
       eventContext,
       userQuery,
       timeMsk,
-      dateMsk
+      dateMsk,
+      responseStyle
     });
 
     res.json({
       plan: fallbackPlan,
+      provider: responseStyle === "short" ? "⚡ Короткий квант-ответ" : "📊 Развёрнутый макро-план",
       isSimulated: true,
       timestamp: `${timeMsk} МСК`
     });
@@ -8472,6 +8614,7 @@ function generateAutonomousAiPlan(params: {
   userQuery: string;
   timeMsk: string;
   dateMsk: string;
+  responseStyle?: string;
 }): string {
   const {
     ticker,
@@ -8485,7 +8628,8 @@ function generateAutonomousAiPlan(params: {
     eventContext,
     userQuery,
     timeMsk,
-    dateMsk
+    dateMsk,
+    responseStyle = "detailed"
   } = params;
 
   const isBull = indicatorForecast?.isBull ?? true;
@@ -8501,6 +8645,22 @@ function generateAutonomousAiPlan(params: {
   const emLow = gex?.expectedMove68?.low || (currentPrice * 0.99).toFixed(dec);
   const emHigh = gex?.expectedMove68?.high || (currentPrice * 1.01).toFixed(dec);
   const gexRegime = gex?.regime || "POSITIVE_GAMMA";
+
+  // 1. SHORT MODE: Executive concise summary (both for custom queries and daily plan)
+  if (responseStyle === "short") {
+    const shortMacro = ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLDRUB")
+      ? "Стабилизация доходностей US 10Y и спрос ЦБ РФ/КНР поддерживают драгметалл."
+      : ticker.includes("BTC") || ticker.includes("ETH") || ticker.includes("SOL") || ticker.includes("XRP")
+      ? "Приток ликвидности M2 и спрос в спотовых ETF формируют импульс при ослаблении DXY."
+      : "Баланс рублевой ликвидности MOEX и ключевая ставка ЦБ РФ задают границы коридора.";
+
+    return `### ⚡ КОРОТКИЙ ОТВЕТ ИИ: ${ticker} (${timeframe} • ${timeMsk} МСК)
+${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-фактор:** ${shortMacro}
+- **Сигнал QUANTEX (${prob}%):** **${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}** | Вход: **${entry}**
+- **Цели и риск:** TP1: **${tp1}** (50% фиксация) | TP2: **${tp2}** | Стоп SL: **${sl}** *(по закрытию свечи)*
+- **Опционы GEX (\`${gexRegime}\`):** Потолок Call Wall **${cw}** | Поддержка Put Wall **${pw}** | Магнит **${maxPain}**
+- **Тайминг:** Контроль волатильности в **10:00** и **15:30 МСК** (статистика США).`;
+  }
 
   const qLower = (userQuery || "").toLowerCase();
 
@@ -8560,20 +8720,43 @@ function generateAutonomousAiPlan(params: {
 🎯 **Вывод:** Старшие и младшие таймфреймы синхронизированы в пользу ${isBull ? "бычьего сценария" : "медвежьего сценария"}.`;
     }
 
-    // Direct answer for any custom trading query
-    return `### 💡 ОТВЕТ ИИ-АНАЛИТИКА ПО ${ticker} (${timeMsk} МСК)
-На ваш запрос: *"${userQuery.trim()}"*
+    // Comprehensive institutional macro & intermarket synthesis for any custom query
+    const assetMacroProfile = ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLDRUB")
+      ? `**Фундаментальный драйвер (Золото & Металлы):** Мировые центробанки (НБК Китая, РБИ Индии, ЦБ стран БРИКС+) продолжают стратегическую аккумуляцию физического слиткового золота в рамках диверсификации резервов и дедолларизации. На межрыночном контуре ключевым катализатором выступает динамика реальных доходностей 10-летних казначейских облигаций США (US 10Y TIPS) и индекс доллара **DXY**: стабилизация ожиданий по ставке ФРС США (Fed Funds Rate) и замедление базовой инфляции Core PCE снижают альтернативную стоимость удержания драгметалла, формируя устойчивый институциональный спрос на откатах.`
+      : ticker.includes("BTC") || ticker.includes("ETH") || ticker.includes("SOL") || ticker.includes("XRP")
+      ? `**Фундаментальный драйвер (Цифровые активы & Глобальная ликвидность):** Криптовалютный сектор демонстрирует высокую чувствительность к глобальному агрегату денежной массы **M2** и потокам институционального капитала через спотовые ETF (BlackRock IBIT, Fidelity FBTC). Ослабление индекса доллара **DXY** на фоне ожиданий смягчения монетарных условий ФРС США и роста балансовой ликвидности стимулирует переток капитала в высокобета-активы (Risk-On). На деривативных площадках (CME, Deribit) фиксируется сокращение свободного предложения на спотовых биржах и концентрация открытого интереса в колл-опционах.`
+      : `**Фундаментальный драйвер (Российский контур MOEX & Валютно-сырьевой баланс):** На срочном рынке FORTS и валютной секции Мосбиржи ценообразование определяется балансом экспортной выручки, жесткой денежно-кредитной политикой Банка России (ключевая ставка и операции бюджетного правила Минфина РФ), а также рублевой переоценкой базовых сырьевых активов. Арбитражный спред между внешним контуром (CME/LME) и внутренним фьючерсом формирует устойчивые зоны институциональной ликвидности.`;
 
-- **Текущая котировка:** **${currentPrice}** | Таймфрейм: **${timeframe}**
-- **Приоритет QUANTEX v8:** **${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}** с вероятностью **${prob}%**.
-- **Ключевые ориентиры:**
-  • Вход: **${entry}**
-  • Первая цель (TP1): **${tp1}**
-  • Вторая цель (TP2): **${tp2}**
-  • Защитный стоп (SL): **${sl}**
-- **Позиция дилеров (GEX):** Call Wall на **${cw}**, Put Wall на **${pw}**, магнит экспирации **${maxPain}**.
+    return `### 🌐 ГЛОБАЛЬНЫЙ МАКРОЭКОНОМИЧЕСКИЙ И КВАНТ-АНАЛИЗ ПО ${ticker} (${timeMsk} МСК)
+**По вашему запросу:** *"${userQuery.trim()}"*
 
-Рекомендуется строго соблюдать мани-менеджмент (риск не более 1–2% на сделку) и фиксировать часть прибыли на TP1.`;
+#### 1. 🏛️ Макроэкономический фон и межрыночные связи (Intermarket Synthesis)
+- ${assetMacroProfile}
+- **Монетарный контур ФРС & Инфляция:** Рынок фьючерсов на ставку FedWatch закладывает траекторию процентных ставок с фокусом на данные по рынку труда США (Non-Farm Payrolls, Jobless Claims) и индекс потребительских цен (US CPI). Любое отклонение фактических публикаций от консенсус-прогноза вызывает мгновенную переоценку кривой доходностей US Treasuries.
+- **Структура потоков ликвидности:** Институциональные участники используют фазы европейской консолидации (10:00–14:30 МСК) для алгоритмического набора позиций (TWAP/VWAP) перед открытием основной американской сессии (15:30–16:30 МСК).
+
+#### 2. 📐 Опционный профиль дилеров (GEX) и микроструктура рынка
+- **Режим гаммы маркетмейкеров:** \`${gexRegime}\` — ${
+      gexRegime === "POSITIVE_GAMMA"
+        ? "дилеры находятся в зоне положительной гаммы (+Gamma) и выступают стабилизатором рынка, продавая на импульсах роста к верхним страйкам и выкупая проливы к поддержке."
+        : "дилеры находятся в зоне отрицательной гаммы (-Gamma), где хеджирование дельты происходит по направлению движения цены, что резко усиливает направленный тренд и провоцирует гамма-сквизы."
+    }
+- **Баланс уровней ликвидности:**
+  • **🏰 Call Wall (Опционный потолок):** **${cw}** — кластер максимальной концентрации открытого интереса по коллам (зона фиксации прибыли крупного капитала).
+  • **🛡️ Put Wall (Опционный фундамент):** **${pw}** — институциональный барьер защиты, где включаются лимитные биды маркетмейкеров.
+  • **🎯 Max Pain (Гравитационный центр экспирации):** **${maxPain}** | **Ожидаемый коридор 68% (1σ):** **${emLow} – ${emHigh}**.
+
+#### 3. 🎯 Синтез с алгоритмическим планом (${timeframe})
+- **Многотаймфреймовый вектор:** **${isBull ? "🟢 BULLISH (Структурный приоритет покупателей)" : "🔴 BEARISH (Структурный приоритет продавцов)"}** (вероятность математической модели: **${prob}%**).
+- **Точка входа (Entry Zone):** **${entry}** (на подтверждении удержания ликвидности без импульсного поглощения против тренда).
+- **Целевые ориентиры фиксации:**
+  • **TP1 (Базовый таргет):** **${tp1}** *(рекомендуется фиксация 50% позиции и перевод остатка в безубыток)*.
+  • **TP2 (Расширение к пулу ликвидности):** **${tp2}**.
+- **Контроль риска (Stop-Loss):** **${sl}** *(действует фильтр Bar Close Confirmation — выход только при закрытии тела свечи ${timeframe} за уровнем стопа для защиты от ложных проколов тенью)*.
+- **🔄 Альтернативный сценарий (План Б):** При истинном закреплении свечи за отметкой **${sl}** базовый импульс инвалидируется, открывая потенциал движения к зоне **${indicatorForecast?.altTp1 ?? pw}**.
+
+---
+> 💡 *Примечание: Управление ключами нейросетей (**Gemini 3.1 Flash Lite / 3.8 Flash / Flash Latest / 4 Argon / 3.1 Pro**, DeepSeek, Qwen) вынесено централизованно в меню **«⚙️ Настройки станции -> API ИИ»** в верхней панели терминала.*`;
   }
 
   // Pre-configured modes
@@ -8622,9 +8805,50 @@ function generateAutonomousAiPlan(params: {
   3. 🎯 Ближайшие ориентиры дилеров: Call Wall **${cw}** и Put Wall **${pw}**.`;
   }
 
-  // Default: Daily Trading Plan
-  return `### 🎯 АВТОНОМНЫЙ ТОРГОВЫЙ ПЛАН НА ДЕНЬ: ${ticker}
-*Сформирован в ${timeMsk} МСК на основе синтеза ТФ (1M–1D), уровней GEX и макро-календаря.*
+  // Default: Daily Trading Plan (differentiated between "detailed" and "autonomous")
+  if (responseStyle === "detailed") {
+    const detailedMacro = ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLDRUB")
+      ? "Мировые центробанки (НБК Китая, РБИ Индии, ЦБ РФ) поддерживают стратегический спрос на физическое золото. Динамика реальных доходностей US 10Y TIPS и ожидания по ставке ФРС США снижают давление со стороны индекса доллара DXY, формируя институциональный спрос на откатах."
+      : ticker.includes("BTC") || ticker.includes("ETH") || ticker.includes("SOL") || ticker.includes("XRP")
+      ? "Глобальный агрегат ликвидности M2 и устойчивые притоки капитала в спотовые ETF (IBIT, FBTC) выступают ключевым фундаментальным драйвером. Ослабление индекса DXY и ожидания смягчения финансовых условий ФРС США поддерживают аппетит к риску (Risk-On)."
+      : "На контуре Мосбиржи (MOEX FORTS) динамика определяется балансом валютной выручки экспортеров, жесткой ДКП Банка России (ключевая ставка) и операциями Минфина по бюджетному правилу, создавая устойчивые зоны институциональной ликвидности.";
+
+    return `### 📊 РАЗВЁРНУТЫЙ МАКРО- И КВАНТ-ПЛАН НА ДЕНЬ: ${ticker} (${timeMsk} МСК)
+*Полный институциональный разбор: глобальная макроэкономика, межрыночные связи, опционный профиль GEX и сетап QUANTEX.*
+
+---
+
+#### 1. 🌐 Глобальный макроэкономический фон (Intermarket Analysis)
+- **Фундаментальный драйвер:** ${detailedMacro}
+- **Монетарный контур & Ликвидность:** Траектория процентных ставок ФРС США (FedWatch) и данные по инфляции (CPI / Core PCE) задают вектор кривой доходностей казначейских облигаций US Treasuries. Основные объемы институциональной ликвидности концентрируются на стыке европейской и американской сессий.
+
+#### 2. 📊 Многотаймфреймовая структура (1M–1D)
+- **Старший тренд (1D / 4H):** ${isBull ? "🟢 Бычий (Импульсный восходящий канал, удержание выше ключевых скользящих)" : "🔴 Медвежий (Структурное давление продавцов)"}
+- **Рабочий контекст (${timeframe}):** ${isBull ? "Алгоритм QUANTEX фиксирует приоритетный сетап на покупку (LONG)" : "Приоритетный сигнал на продажу (SHORT) от зоны сопротивления"}
+- **Вероятность отработки по модели:** **${prob}%**
+
+#### 3. 🏛️ Опционный профиль GEX & Позиция Дилеров
+- **Режим Гаммы:** \`${gexRegime}\` — ${gexRegime === "POSITIVE_GAMMA" ? "Дилеры находятся в положительной гамме (+Gamma), гасят избыточную волатильность и выкупают просадки к поддержке" : "Дилеры в отрицательной гамме (-Gamma), хеджирование усиливает направленный импульс"}
+- **🏰 Call Wall (Опционный потолок):** **${cw}** *(главное институциональное сопротивление и зона фиксации лонгов)*
+- **🛡️ Put Wall (Опционный фундамент):** **${pw}** *(ключевая зона лимитного спроса маркетмейкеров)*
+- **🎯 Магнит экспирации (Max Pain):** **${maxPain}** | **Коридор ММ 68% (1σ):** **${emLow} – ${emHigh}**
+
+#### 4. 🎯 Исполнительный Торговый Сетап
+- **Направление:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
+- **Расчетная зона входа:** **${entry}**
+- **Цель 1 (TP1):** **${tp1}** *(фиксация 50% позиции и перевод стоп-лосса в безубыток)*
+- **Цель 2 (TP2 / Расширение к Call Wall):** **${tp2}**
+- **Защитный Стоп-Лосс (SL):** **${sl}** *(с фильтром закрытия тела свечи ${timeframe} против ложных шпилек)*
+- **🔄 План Б (при сломе уровня ${sl}):** ${indicatorForecast?.altTp1 ? `Активация реверса с целью **${indicatorForecast.altTp1}**` : `Пауза до ретеста институциональной базы Put Wall ${pw}`}.
+
+#### 5. ⏰ Окна макро-волатильности (МСК)
+- **09:00 – 10:00 МСК:** Открытие срочного рынка MOEX FORTS и Лондонской сессии (LSE).
+- **15:30 МСК:** ⚡ Публикация макростатистики США (CPI / Jobless Claims / PPI) — за 15 минут подтянуть стопы!
+- **16:30 – 17:00 МСК:** Открытие Нью-Йоркской биржи (NYSE Cash Open) и кульминация дневного объема.`;
+  }
+
+  return `### 🤖 АВТОНОМНЫЙ ИИ QUANTEX — ПЛАН НА ДЕНЬ: ${ticker}
+*Сформирован автономным квант-ядром в ${timeMsk} МСК на основе синтеза ТФ (1M–1D), уровней GEX и календаря.*
 
 ---
 

@@ -303,17 +303,51 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   const [inputQuery, setInputQuery] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copiedPlan, setCopiedPlan] = useState<boolean>(false);
+  const [showModeSettings, setShowModeSettings] = useState<boolean>(false);
+  const [responseStyleMode, setResponseStyleMode] = useState<"short" | "detailed" | "autonomous">(() => {
+    try {
+      const saved = localStorage.getItem("st_ai_response_mode");
+      if (saved === "short" || saved === "detailed" || saved === "autonomous") {
+        return saved;
+      }
+    } catch {}
+    return "detailed";
+  });
+
+  // Helper to filter out dummy/placeholder keys
+  const cleanApiKeyHelper = (k?: string) => {
+    if (!k) return "";
+    const t = k.trim().replace(/^["']|["']$/g, "").trim();
+    if (
+      t === "AIzaSyAhY9_p0DAtmyGbmXsMLjZko2zAav5pAGc" ||
+      t.startsWith("AIzaSyAhY9_") ||
+      t === "YOUR_GEMINI_API_KEY" ||
+      t.toLowerCase().includes("placeholder")
+    ) {
+      return "";
+    }
+    return t;
+  };
 
   // AI Provider Configuration (DeepSeek, Qwen, Gemini, Autonomous)
   const [providerSettings, setProviderSettings] = useState<AiProviderSettings>(() => {
     try {
       const saved = localStorage.getItem("st_ai_provider_settings");
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed) {
+          const gemKey = cleanApiKeyHelper(parsed.geminiApiKey);
+          parsed.geminiApiKey = gemKey;
+          // If provider was set to deepseek with no key, prefer gemini
+          if (parsed.provider === "deepseek" && !parsed.deepSeekApiKey && gemKey) {
+            parsed.provider = "gemini";
+          }
+          return parsed;
+        }
       }
     } catch {}
     return {
-      provider: "deepseek",
+      provider: "gemini",
       deepSeekApiKey: "",
       deepSeekModel: "deepseek-chat",
       deepSeekEndpoint: "https://api.deepseek.com/chat/completions",
@@ -321,9 +355,72 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       qwenModel: "qwen-plus",
       qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
       geminiApiKey: "",
-      geminiModel: "gemini-3.8-flash"
+      geminiModel: "gemini-3.1-flash-lite"
     };
   });
+
+  // Automatically sync providerSettings with server unified station settings
+  useEffect(() => {
+    const syncUnifiedSettings = async () => {
+      try {
+        const res = await fetch("/api/settings/unified");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.ai) {
+            setProviderSettings(prev => {
+              const serverAi = data.ai;
+              const serverGeminiKey = cleanApiKeyHelper(serverAi.geminiApiKey);
+              const serverDsKey = serverAi.deepSeekApiKey || "";
+              const effectiveGeminiKey = cleanApiKeyHelper(prev.geminiApiKey) || serverGeminiKey;
+              const effectiveDsKey = prev.deepSeekApiKey || serverDsKey;
+
+              // If deepseek has no key, but gemini key is present, auto-select gemini
+              let targetProvider = prev.provider;
+              if (
+                (!effectiveDsKey || effectiveDsKey.length < 5) &&
+                effectiveGeminiKey &&
+                effectiveGeminiKey.length > 5
+              ) {
+                targetProvider = "gemini";
+              } else if (serverAi.activeProvider && serverAi.activeProvider !== "autonomous") {
+                targetProvider = serverAi.activeProvider;
+              }
+
+              const merged: AiProviderSettings = {
+                provider: targetProvider as any,
+                deepSeekApiKey: effectiveDsKey,
+                deepSeekModel: prev.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat",
+                deepSeekEndpoint: prev.deepSeekEndpoint || serverAi.deepSeekEndpoint || "https://api.deepseek.com/chat/completions",
+                qwenApiKey: prev.qwenApiKey || serverAi.qwenApiKey || "",
+                qwenModel: prev.qwenModel || serverAi.qwenModel || "qwen-plus",
+                qwenEndpoint: prev.qwenEndpoint || serverAi.qwenEndpoint || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+                geminiApiKey: effectiveGeminiKey,
+                geminiModel: prev.geminiModel || serverAi.geminiModel || "gemini-3.1-flash-lite"
+              };
+
+              try {
+                localStorage.setItem("st_ai_provider_settings", JSON.stringify(merged));
+              } catch {}
+              return merged;
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Could not sync AI settings with server:", e);
+      }
+    };
+
+    syncUnifiedSettings();
+
+    const handleSettingsUpdated = () => {
+      syncUnifiedSettings();
+    };
+
+    window.addEventListener("station_settings_updated", handleSettingsUpdated);
+    return () => {
+      window.removeEventListener("station_settings_updated", handleSettingsUpdated);
+    };
+  }, []);
 
   const [showKeyPassword, setShowKeyPassword] = useState<{ [key: string]: boolean }>({});
   const [testApiState, setTestApiState] = useState<{
@@ -539,8 +636,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   const requestAiAnalysis = async (
     mode: "daily_plan" | "morning_brief" | "noon_update" | "event_alert" | "custom_query",
     customUserPrompt?: string,
-    eventContext?: MacroCalendarEvent
+    eventContext?: MacroCalendarEvent,
+    overrideResponseStyle?: "short" | "detailed" | "autonomous"
   ) => {
+    const activeStyle = overrideResponseStyle || responseStyleMode;
     setIsGenerating(true);
     const mskNow = new Intl.DateTimeFormat("ru-RU", {
       timeZone: "Europe/Moscow",
@@ -592,7 +691,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         eventContext,
         userQuery: customUserPrompt || "",
         history: tickerState.messages.slice(-6).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text })),
-        aiProviderConfig: providerSettings
+        aiProviderConfig: providerSettings,
+        responseStyle: activeStyle
       };
 
       const res = await fetch("/api/ai-analyst/generate-plan", {
@@ -704,8 +804,17 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const callWall = payload.gex?.callWall || (price * 1.015).toFixed(2);
     const putWall = payload.gex?.putWall || (price * 0.985).toFixed(2);
     const gammaFlip = payload.gex?.gammaFlip || price;
+    const style = payload.responseStyle || responseStyleMode;
 
-    return `### 🏛️ Институциональный торговый план по ${payload.ticker} (${payload.timeframe})
+    if (style === "short") {
+      return `### ⚡ Короткий ответ ИИ: ${payload.ticker} (${payload.timeframe})
+* **Сигнал:** **${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}** | Вход: \`${entry}\`
+* **Цели и риск:** TP1: \`${tp1}\` | TP2: \`${tp2}\` | Стоп SL: \`${sl}\`
+* **Опционы GEX (\`${regime}\`):** Потолок \`${callWall}\` | Поддержка \`${putWall}\` | Flip \`${gammaFlip}\`
+* **Тайминг:** Контроль волатильности в **10:00** и **15:30 МСК**.`;
+    }
+
+    return `### ${style === "autonomous" ? "🤖 Автономный ИИ QUANTEX" : "📊 Развёрнутый план"} по ${payload.ticker} (${payload.timeframe})
 
 **Глобальный консенсус Multi-TF:** ${isBull ? "🟢 BULLISH (Преимущество покупателей)" : "🔴 BEARISH (Преимущество продавцов)"}  
 **Опционный режим:** \`${regime}\`  
@@ -720,7 +829,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 * **Цель 1 (TP1):** \`${tp1}\` — фиксация 50% позиции и перенос SL в безубыток
 * **Цель 2 (TP2):** \`${tp2}\` — финальный пул ликвидности перед Call Wall
 * **Защитный стоп (SL):** \`${sl}\` (Sweep Protection: не закрывать позицию при уколе тенью)
-* **План Б (Инвалидация):** Закрытие 15м свечи телом за уровнем \`${sl}\` отменяет лонг.
+* **План Б (Инвалидация):** Закрытие 15м свечи телом за уровнем \`${sl}\` отменяет сценарий.
 
 ---
 
@@ -728,6 +837,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 * **10:00 МСК:** Открытие Лондона (LSE Open) — приток европейского объема.
 * **15:30 МСК:** Премаркет США и публикации макростатистики (CPI / Claims).
 * **21:00 МСК:** Вечерняя сессия / решения FOMC. Перед новостями рекомендуется подтянуть стоп-лосс.`;
+  };
+
+  // Switch response style mode and immediately refresh active plan
+  const handleSelectResponseMode = (newMode: "short" | "detailed" | "autonomous") => {
+    setResponseStyleMode(newMode);
+    try {
+      localStorage.setItem("st_ai_response_mode", newMode);
+    } catch {}
+    setShowModeSettings(false);
+    if (!isGenerating) {
+      requestAiAnalysis("daily_plan", undefined, undefined, newMode);
+    }
   };
 
   // User sends manual text query
@@ -919,19 +1040,23 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     return rawEvents.filter((ev) => matchesPanelSection(ev, newsCategoryFilter));
   }, [calendarEvents, newsCategoryFilter]);
 
-  // Provider badge text for header
+  // Provider badge text for header reflecting active response style mode
   const providerBadgeText = useMemo(() => {
+    if (responseStyleMode === "autonomous") {
+      return "🤖 Автономный ИИ";
+    }
+    const modeLabel = responseStyleMode === "short" ? "⚡ Короткий" : "📊 Развёрнутый";
     if (providerSettings.provider === "deepseek") {
-      return providerSettings.deepSeekModel === "deepseek-reasoner" ? "🤖 DeepSeek-R1" : "🤖 DeepSeek-V3";
+      return `DeepSeek • ${modeLabel}`;
     }
     if (providerSettings.provider === "qwen") {
-      return `🌐 ${providerSettings.qwenModel}`;
+      return `Qwen • ${modeLabel}`;
     }
     if (providerSettings.provider === "gemini") {
-      return "✨ Gemini";
+      return `✨ Gemini • ${modeLabel}`;
     }
-    return "⚡ QUANTEX Квант";
-  }, [providerSettings]);
+    return modeLabel;
+  }, [providerSettings, responseStyleMode]);
 
   return (
     <div
@@ -956,10 +1081,15 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                   {activeAsset}
                 </span>
 
-                {/* Static Provider Info Badge */}
-                <span className="font-mono text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/60 hidden sm:inline">
+                {/* Active Mode Badge */}
+                <button
+                  type="button"
+                  onClick={() => setShowModeSettings(prev => !prev)}
+                  className="font-mono text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-purple-950/80 hover:bg-purple-900/80 text-purple-300 border border-purple-700/60 transition cursor-pointer"
+                  title="Нажмите для переключения режима ответа ИИ"
+                >
                   {providerBadgeText}
-                </span>
+                </button>
               </div>
               <p className="text-[10px] text-gray-400 flex items-center gap-1 font-mono mt-0.5">
                 <Clock className="h-2.5 w-2.5 text-cyan-400" />
@@ -972,6 +1102,21 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         )}
 
         <div className="flex items-center gap-1 shrink-0 ml-auto">
+          {!isCollapsed && (
+            <button
+              type="button"
+              onClick={() => setShowModeSettings(prev => !prev)}
+              className={`p-1.5 rounded-lg border transition cursor-pointer flex items-center gap-1 ${
+                showModeSettings
+                  ? "bg-cyan-500/20 border-cyan-500/60 text-cyan-300 shadow-sm"
+                  : "bg-gray-900/90 border-gray-700/80 hover:bg-gray-800 text-gray-300 hover:text-white"
+              }`}
+              title="Настройки режима ответа ИИ (Короткий / Развёрнутый / Автономный ИИ)"
+            >
+              <Settings className={`h-3.5 w-3.5 ${showModeSettings ? "text-cyan-400 animate-spin" : ""}`} style={{ animationDuration: "6s" }} />
+            </button>
+          )}
+
           {!isCollapsed && onWidthChange && width && (
             <div className="flex items-center gap-0.5 bg-gray-900 border border-gray-700/80 rounded px-1 py-0.5 text-[9px] font-mono">
               <button
@@ -1011,6 +1156,81 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           )}
         </div>
       </div>
+
+      {/* Collapsible 3-Mode Settings Selector Bar */}
+      {!isCollapsed && showModeSettings && (
+        <div className="p-2.5 bg-[#0e1526] border-b border-cyan-500/40 space-y-2 shrink-0 animate-fadeIn">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-cyan-300 flex items-center gap-1.5">
+              <Settings className="h-3 w-3 text-cyan-400" />
+              <span>Режим работы ИИ-Аналитика</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowModeSettings(false)}
+              className="text-[10px] text-gray-400 hover:text-white px-1 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleSelectResponseMode("short")}
+              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                responseStyleMode === "short"
+                  ? "bg-amber-500/20 border-amber-400 text-white shadow-sm shadow-amber-500/10"
+                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-1">
+                <span className="text-xs font-extrabold text-amber-300">⚡ Короткий</span>
+                {responseStyleMode === "short" && <Check className="h-3 w-3 text-amber-400" />}
+              </div>
+              <span className="text-[9.5px] leading-tight text-gray-400">
+                Сжатая выжимка: уровни, сигнал и GEX
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectResponseMode("detailed")}
+              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                responseStyleMode === "detailed"
+                  ? "bg-cyan-500/20 border-cyan-400 text-white shadow-sm shadow-cyan-500/10"
+                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-1">
+                <span className="text-xs font-extrabold text-cyan-300">📊 Развёрнутый</span>
+                {responseStyleMode === "detailed" && <Check className="h-3 w-3 text-cyan-400" />}
+              </div>
+              <span className="text-[9.5px] leading-tight text-gray-400">
+                Полный макро-разбор, ФРС, DXY и план
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectResponseMode("autonomous")}
+              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                responseStyleMode === "autonomous"
+                  ? "bg-purple-500/20 border-purple-400 text-white shadow-sm shadow-purple-500/10"
+                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-1">
+                <span className="text-xs font-extrabold text-purple-300">🤖 Автономный</span>
+                {responseStyleMode === "autonomous" && <Check className="h-3 w-3 text-purple-400" />}
+              </div>
+              <span className="text-[9.5px] leading-tight text-gray-400">
+                Встроенный квант-движок без внешних API
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* If Collapsed, show compact vertical pill bar */}
       {isCollapsed ? (

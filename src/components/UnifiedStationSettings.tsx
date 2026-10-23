@@ -254,7 +254,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       qwenModel: "qwen-plus",
       qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
       geminiApiKey: "",
-      geminiModel: "gemini-3.5-flash",
+      geminiModel: "gemini-3.1-flash-lite",
       geminiEndpoint: "",
       proxyUrl: "",
       enableWebSearch: true,
@@ -385,6 +385,9 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
               geminiModel: settings.ai.geminiModel
             })
           );
+        } catch {}
+        try {
+          window.dispatchEvent(new CustomEvent("station_settings_updated"));
         } catch {}
       } else {
         setSaveStatus("❌ Ошибка при сохранении настроек");
@@ -1309,10 +1312,11 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                       }
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
                     >
-                      <option value="gemini-3.5-flash">gemini-3.5-flash (Рекомендуемая, сверхбыстрая)</option>
-                      <option value="gemini-3.8-flash">gemini-3.8-flash (Продвинутая аналитика)</option>
-                      <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Флагман Pro)</option>
-                      <option value="gemini-4-argon">gemini-4-argon (Элитный квант)</option>
+                      <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite — максимальная скорость и высокий лимит квоты)</option>
+                      <option value="gemini-3.8-flash">gemini-3.8-flash (Flash 3.8 — флагманский аналитический Flash)</option>
+                      <option value="gemini-flash-latest">gemini-flash-latest (Flash Latest — актуальная версия Flash)</option>
+                      <option value="gemini-4-argon">gemini-4-argon (Argon 4 / Pro — элитная квант-аналитика и макро-логика)</option>
+                      <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Pro Preview — расширенный мультимодальный аудит)</option>
                     </select>
                   </div>
                 </div>

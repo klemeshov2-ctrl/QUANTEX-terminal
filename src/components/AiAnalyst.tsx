@@ -23,6 +23,7 @@ export default function AiAnalyst({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isSimulated, setIsSimulated] = useState<boolean>(false);
+  const [activeProviderName, setActiveProviderName] = useState<string>("Gemini Active");
 
   const { fvgZones, orderBlocks, breaks, mlSignals, cvdMa } = computedState;
 
@@ -105,6 +106,9 @@ export default function AiAnalyst({
       const data = await response.json();
       setAnalysis(data.analysis);
       setIsSimulated(!!data.isSimulated);
+      if (data.provider) {
+        setActiveProviderName(data.provider);
+      }
     } catch (err: any) {
       console.error(err);
       setError(err.message || "Не удалось связаться с ИИ-аналитиком.");
@@ -131,8 +135,12 @@ export default function AiAnalyst({
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
               Sync & Trade ИИ-Аналитик
-              <span className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-md font-mono">
-                Gemini Active
+              <span className={`text-[10px] px-2 py-0.5 rounded-md font-mono border ${
+                isSimulated
+                  ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                  : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+              }`}>
+                {activeProviderName}
               </span>
             </h3>
             <p className="text-xs text-gray-400">Конструктор нативного глубокого анализа рыночной структуры</p>
