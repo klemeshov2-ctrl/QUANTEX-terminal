@@ -251,7 +251,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       qwenModel: "qwen-plus",
       qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
       geminiApiKey: "",
-      geminiModel: "gemini-2.5-flash",
+      geminiModel: "gemini-3.8-flash",
       temperature: 0.3
     },
     serverSecurity: {
@@ -1144,7 +1144,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-gray-400 block mb-1">API Key (AIza...):</label>
+                    <label className="text-[11px] text-gray-400 block mb-1">API Key (AQ... или AIza...):</label>
                     <input
                       type={showTokens ? "text" : "password"}
                       value={settings.ai.geminiApiKey}
@@ -1154,7 +1154,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                           ai: { ...prev.ai, geminiApiKey: e.target.value }
                         }))
                       }
-                      placeholder="AIzaSy..."
+                      placeholder="AQ... или AIzaSy..."
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-emerald-500"
                     />
                   </div>
@@ -1171,8 +1171,9 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                       }
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
                     >
-                      <option value="gemini-2.5-flash">gemini-2.5-flash (Рекомендуемая)</option>
-                      <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                      <option value="gemini-3.8-flash">gemini-3.8-flash (Рекомендуемая)</option>
+                      <option value="gemini-4-argon">gemini-4-argon (Элитный анализ)</option>
+                      <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Быстрая)</option>
                     </select>
                   </div>
                 </div>

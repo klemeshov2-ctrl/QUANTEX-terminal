@@ -1809,17 +1809,17 @@ sudo journalctl -u st-indicator-studio -f`}
 
                 <div>
                   <label className="text-gray-300 font-semibold block mb-1">
-                    Google Gemini API Key (от AI Studio):
+                    Google Gemini API Key (AQ... или AIza...):
                   </label>
                   <input
                     type="password"
                     value={geminiApiKeyInput}
                     onChange={(e) => setGeminiApiKeyInput(e.target.value)}
                     className="w-full bg-black/60 border border-gray-700 rounded px-3 py-2 text-white font-mono"
-                    placeholder="AIzaSy..."
+                    placeholder="AQ... или AIzaSy..."
                   />
                   <span className="text-[10px] text-gray-500 mt-1 block">
-                    Необходим для мультимодального анализа графиков и OCR скриншотов.
+                    Поддерживает новые ключи Google Auth (префикс AQ.*) и стандартные (AIza*). Необходим для мультимодального анализа графиков и OCR скриншотов.
                   </span>
                 </div>
 

@@ -50,9 +50,9 @@ export default function App() {
   return (
     <div className="h-[100dvh] w-full max-w-[100vw] overflow-hidden bg-[#07090e] text-gray-100 font-sans flex flex-col antialiased selection:bg-blue-500/30 selection:text-white">
       
-      {/* 🚀 COMPACT UNIFIED HEADER & NAVIGATION (Fits cleanly without left-to-right scrolling) */}
-      <header className="bg-[#0b0e17] border-b border-gray-800/90 px-2 sm:px-4 py-1 flex items-center justify-between gap-1.5 shrink-0">
-        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+      {/* 🚀 HORIZONTALLY SCROLLABLE TOP NAVIGATION (Enables smooth left/right drag & scroll on mobile devices) */}
+      <header className="bg-[#0b0e17] border-b border-gray-800/90 px-2 sm:px-4 py-1 flex items-center justify-between gap-2 shrink-0 overflow-x-auto scrollbar-none touch-pan-x select-none">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="bg-gradient-to-tr from-amber-500 via-purple-600 to-cyan-500 p-1 rounded-lg shadow-md shadow-amber-500/20 border border-amber-400/30">
               <Cpu className="h-3.5 w-3.5 text-white" />
@@ -64,11 +64,11 @@ export default function App() {
 
           <div className="h-3.5 w-px bg-gray-800 shrink-0" />
 
-          {/* Navigation Tabs (Compact, fits 100% on any screen without horizontal scroll) */}
+          {/* Navigation Tabs (Smooth horizontal scrolling on mobile) */}
           <nav className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => setCurrentAppTab("station")}
-              className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                 currentAppTab === "station"
                   ? "bg-gradient-to-r from-amber-500 via-orange-600 to-yellow-600 text-black shadow-md shadow-amber-500/30 ring-1 ring-amber-400/50"
                   : "text-gray-400 hover:text-white hover:bg-gray-800/60"
@@ -82,7 +82,7 @@ export default function App() {
               <>
                 <button
                   onClick={() => setCurrentAppTab("gold_deepseek")}
-                  className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                     currentAppTab === "gold_deepseek"
                       ? "bg-gradient-to-r from-amber-500 via-orange-600 to-yellow-600 text-white shadow-md shadow-amber-500/30 ring-1 ring-amber-400/50"
                       : "text-gray-400 hover:text-white hover:bg-gray-800/60"
@@ -95,7 +95,7 @@ export default function App() {
 
                 <button
                   onClick={() => setCurrentAppTab("server_deploy")}
-                  className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                     currentAppTab === "server_deploy"
                       ? "bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 text-white shadow-md shadow-cyan-500/20"
                       : "text-gray-400 hover:text-white hover:bg-gray-800/60"
@@ -110,7 +110,7 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 pl-2">
           <div className="hidden lg:flex items-center gap-1.5 bg-gray-900 border border-gray-800 px-2 py-0.5 rounded-lg text-[10px] text-gray-300 font-mono">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span>UTC+3 (МСК)</span>
@@ -118,7 +118,7 @@ export default function App() {
 
           {/* Quick Active User Badge in top App Bar */}
           <div
-            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-900 border border-gray-800 text-[11px] font-mono text-gray-200"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-900 border border-gray-800 text-[11px] font-mono text-gray-200 shrink-0"
             title={`Пользователь сервера: ${currentUser.username} (${currentUser.role})`}
           >
             {currentUser.role === "admin" ? (

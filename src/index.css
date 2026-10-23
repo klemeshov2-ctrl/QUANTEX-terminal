@@ -51,3 +51,29 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+/* Hide TradingView attribution logos and watermarks across all charts */
+#tv-attr-logo,
+a[href*="tradingview.com"],
+a[href*="tradingview"],
+.tv-lightweight-charts-logo,
+[class*="tv-lightweight-charts"] a,
+[class*="tv-lightweight-charts"] [class*="watermark"],
+[class*="tradingview"],
+[id*="tradingview"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Utility to hide scrollbars while allowing touch/horizontal scrolling */
+.scrollbar-none::-webkit-scrollbar {
+  display: none !important;
+}
+.scrollbar-none {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}

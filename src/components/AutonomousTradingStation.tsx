@@ -381,6 +381,10 @@ interface ChartOverlaysProps {
   };
   barCountdownFormatted: string;
   candles: any[];
+  showTables?: boolean;
+  isHudMinimized?: boolean;
+  onToggleHudMinimize?: () => void;
+  indicatorOutput?: SuperIndicatorOutput | null;
 }
 
 const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
@@ -391,7 +395,11 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   activeTf,
   marketStatus,
   barCountdownFormatted,
-  candles
+  candles,
+  showTables,
+  isHudMinimized,
+  onToggleHudMinimize,
+  indicatorOutput
 }) => {
   const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
   const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
@@ -481,54 +489,78 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
     }).format(new Date(displayCandle.time * 1000)).replace(",", "") + " МСК";
 
     ohlcBlock = (
-      <div className="absolute top-1.5 left-1.5 sm:left-2 z-15 pointer-events-none flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-mono bg-[#080c16]/96 px-2 py-0.5 sm:py-1 rounded-lg border border-slate-800/90 select-none shadow-lg flex-wrap max-w-[calc(100%-64px)] sm:max-w-[94%]">
-        <div className="flex items-center gap-1 font-bold">
-          <span className="text-white tracking-tight">{activeAsset}</span>
-          <span className="text-cyan-300 bg-cyan-950/90 px-1 py-0.2 rounded text-[9.5px] border border-cyan-700/60">{activeTf}</span>
-          {marketStatus.isPremarket ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold hidden sm:flex items-center gap-1">
-              <span className="w-1 h-1 rounded-full bg-amber-300 animate-ping" />
-              <span>{marketStatus.statusBadge || "Премаркет"}</span>
+      <div className="absolute top-1.5 left-1.5 sm:left-2 z-20 flex flex-col gap-1 pointer-events-none select-none max-w-[calc(100%-12px)] sm:max-w-fit">
+        {/* Row 1: Compact HUD Expand Pill */}
+        {showTables && isHudMinimized && (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={onToggleHudMinimize}
+              className="pointer-events-auto flex items-center gap-1.5 bg-[#080d1a]/95 hover:bg-[#121c33] border border-cyan-500/50 text-cyan-300 px-2 py-0.5 rounded-md text-[9.5px] sm:text-[10px] font-mono font-bold cursor-pointer transition shadow-md"
+              title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
+            >
+              <span className="font-extrabold text-cyan-400">📊 HUD:</span>
+              <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
+                indicatorOutput?.forecast.isBull
+                  ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
+                  : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
+              }`}>
+                {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} {indicatorOutput?.forecast.probability || 74}%
+              </span>
+              <span className="text-gray-300 hidden xs:inline text-[9px]">
+                Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+              </span>
+              <span className="text-emerald-400 hidden xs:inline text-[9px]">
+                TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+              </span>
+              <span className="text-cyan-400 text-[9px] font-bold">▾</span>
+            </button>
+          </div>
+        )}
+
+        {/* Row 2: OHLC Candle Prices (Ultra-compact squeeze on mobile to fit 100% within screen width) */}
+        <div className="flex items-center gap-1 sm:gap-2 text-[8px] xs:text-[8.5px] sm:text-[10.5px] font-mono tracking-tight bg-[#080c16]/96 px-1.5 sm:px-2 py-0.5 rounded-md border border-slate-800/90 shadow-md whitespace-nowrap select-none max-w-[calc(100vw-12px)] sm:max-w-fit overflow-x-auto scrollbar-none">
+          <div className="flex items-center gap-0.5 sm:gap-1 font-bold shrink-0">
+            <span className="text-white tracking-tight text-[8px] xs:text-[9px] sm:text-[11px]">{activeAsset}</span>
+            <span className="text-cyan-300 bg-cyan-950/90 px-1 py-0.2 rounded text-[7.5px] xs:text-[8px] sm:text-[9.5px] border border-cyan-700/60 font-mono">{activeTf}</span>
+            {marketStatus.isPremarket ? (
+              <span className="text-[7.5px] sm:text-[8.5px] px-1 py-0.2 rounded bg-amber-500/25 text-amber-200 border border-amber-400/50 font-sans font-bold hidden sm:inline">
+                Премаркет
+              </span>
+            ) : !marketStatus.isOpen ? (
+              <span className="text-[7.5px] sm:text-[8.5px] px-1 py-0.2 rounded bg-slate-800/95 text-slate-300 border border-slate-700 font-sans font-bold hidden sm:inline">
+                Закрыто
+              </span>
+            ) : (
+              <span className="text-[7.5px] sm:text-[8.5px] px-1 py-0.2 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-800/60 font-sans font-bold hidden sm:inline">
+                Онлайн
+              </span>
+            )}
+            {isHover && (
+              <span className="text-[7.5px] sm:text-[8.5px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 hidden xs:inline">
+                Свеча
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 xs:gap-1.5 sm:gap-2 shrink-0">
+            <span className="text-slate-400">О:<span className={`font-semibold ${toneClass}`}>{o.toFixed(dec)}</span></span>
+            <span className="text-slate-400">В:<span className={`font-semibold ${toneClass}`}>{h.toFixed(dec)}</span></span>
+            <span className="text-slate-400">Н:<span className={`font-semibold ${toneClass}`}>{l.toFixed(dec)}</span></span>
+            <span className="text-slate-400">З:<span className={`font-bold ${toneClass}`}>{c.toFixed(dec)}</span></span>
+            <span className={`font-bold ${toneClass}`}>
+              <span className="inline sm:hidden">{chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%</span>
+              <span className="hidden sm:inline">{chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)</span>
             </span>
-          ) : marketStatus.isClearing ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-yellow-500/25 text-yellow-200 border border-yellow-400/50 font-sans font-bold hidden sm:inline">
-              {marketStatus.statusBadge || "Клиринг"}
+            {displayCandle.volume ? (
+              <span className="text-slate-400 hidden lg:inline">
+                Объём: <span className="text-slate-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
+              </span>
+            ) : null}
+            <span className="text-cyan-300/90 text-[9px] sm:text-[10px] hidden md:flex items-center gap-1 border-l border-slate-700/80 pl-1">
+              <span>{mskTimeStr}</span>
             </span>
-          ) : !marketStatus.isOpen ? (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800/95 text-slate-300 border border-slate-700 font-sans font-bold hidden sm:inline">
-              {marketStatus.statusBadge || "⏸ Сейчас нет торгов"}
-            </span>
-          ) : (
-            <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-800/60 font-sans font-bold hidden sm:inline">
-              {marketStatus.statusBadge || "Торги онлайн"}
-            </span>
-          )}
-          {isHover && (
-            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-              Свеча
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-          <span className="text-slate-400">О:<span className={`font-semibold ml-0.5 ${toneClass}`}>{o.toFixed(dec)}</span></span>
-          <span className="text-slate-400">В:<span className={`font-semibold ml-0.5 ${toneClass}`}>{h.toFixed(dec)}</span></span>
-          <span className="text-slate-400">Н:<span className={`font-semibold ml-0.5 ${toneClass}`}>{l.toFixed(dec)}</span></span>
-          <span className="text-slate-400">З:<span className={`font-bold ml-0.5 ${toneClass}`}>{c.toFixed(dec)}</span></span>
-          <span className={`font-bold ${toneClass}`}>
-            {chg >= 0 ? "+" : ""}{chg.toFixed(dec)} ({chg >= 0 ? "+" : ""}{chgPct.toFixed(2)}%)
-          </span>
-          {displayCandle.volume ? (
-            <span className="text-slate-400 hidden lg:inline">
-              Объём: <span className="text-slate-200">{displayCandle.volume.toLocaleString("ru-RU")}</span>
-            </span>
-          ) : null}
-          <span className="text-cyan-300 text-[9.5px] sm:text-[10.5px] font-mono font-bold hidden sm:flex items-center gap-1 border-l border-slate-700/80 pl-1.5">
-            <Clock className="h-2.5 w-2.5 text-cyan-400 animate-pulse" />
-            <span>Бар: {barCountdownFormatted}</span>
-          </span>
-          <span className="text-cyan-300/90 text-[9.5px] sm:text-[10.5px] hidden md:flex items-center gap-1 border-l border-slate-700/80 pl-1.5">
-            <span>{mskTimeStr}</span>
-          </span>
+          </div>
         </div>
       </div>
     );
@@ -595,10 +627,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [isMoreToolsOpen, setIsMoreToolsOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [isMobileTfOpen, setIsMobileTfOpen] = useState<boolean>(false);
+  const [isGexHorizonDropdownOpen, setIsGexHorizonDropdownOpen] = useState<boolean>(false);
   const assetDropdownRef = useRef<HTMLDivElement | null>(null);
   const moreToolsRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
   const mobileTfRef = useRef<HTMLDivElement | null>(null);
+  const gexHorizonDropdownRef = useRef<HTMLDivElement | null>(null);
+  const desktopGexHorizonDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Short human-friendly label for ultra-compact mobile header (~6" screens)
   const getShortAssetLabel = (asset: AssetSymbol): string => {
@@ -790,13 +825,33 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
         setIsMobileMenuOpen(false);
       }
+      const isInsideGex =
+        (gexHorizonDropdownRef.current && gexHorizonDropdownRef.current.contains(e.target as Node)) ||
+        (desktopGexHorizonDropdownRef.current && desktopGexHorizonDropdownRef.current.contains(e.target as Node));
+      if (!isInsideGex) {
+        setIsGexHorizonDropdownOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   // Live Market & GEX Data
-  const [candles, setCandles] = useState<any[]>(() => generateFallbackCandles("XAUUSD", "15m", 140));
+  // Fast hydration: retrieve cached real server candles from sessionStorage to eliminate split-second fallback flash
+  const [candles, setCandles] = useState<any[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = sessionStorage.getItem("quantex_real_candles_XAUUSD_15m");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
+            return parsed;
+          }
+        }
+      } catch {}
+    }
+    return [];
+  });
   const [candlesKey, setCandlesKey] = useState<string>("XAUUSD_15m");
   const activeAssetRef = useRef<AssetSymbol>(activeAsset);
   const activeTfRef = useRef<Timeframe>(activeTf);
@@ -807,12 +862,39 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const fetchSeqRef = useRef<number>(0);
   const clientCandlesCacheRef = useRef<Map<string, any[]>>(new Map());
 
+  // Populate in-memory cache from sessionStorage if available
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const initialStored = sessionStorage.getItem("quantex_real_candles_XAUUSD_15m");
+        if (initialStored) {
+          const parsed = JSON.parse(initialStored);
+          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
+            clientCandlesCacheRef.current.set("XAUUSD_15m", parsed);
+          }
+        }
+      } catch {}
+    }
+  }, []);
+
   // Instant hydration and cache lookup for timeframe switching
   const handleSelectTimeframe = (tf: Timeframe) => {
     if (tf === activeTf) return;
     activeTfRef.current = tf;
     const key = `${activeAsset}_${tf}`;
-    const cached = clientCandlesCacheRef.current.get(key);
+    let cached = clientCandlesCacheRef.current.get(key);
+    if (!cached && typeof window !== "undefined") {
+      try {
+        const stored = sessionStorage.getItem("quantex_real_candles_" + key);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
+            cached = parsed;
+            clientCandlesCacheRef.current.set(key, cached);
+          }
+        }
+      } catch {}
+    }
     if (cached && cached.length > 0) {
       setCandles(cached);
       setCandlesKey(key);
@@ -825,7 +907,19 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     if (asset === activeAsset) return;
     activeAssetRef.current = asset;
     const key = `${asset}_${activeTf}`;
-    const cached = clientCandlesCacheRef.current.get(key);
+    let cached = clientCandlesCacheRef.current.get(key);
+    if (!cached && typeof window !== "undefined") {
+      try {
+        const stored = sessionStorage.getItem("quantex_real_candles_" + key);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
+            cached = parsed;
+            clientCandlesCacheRef.current.set(key, cached);
+          }
+        }
+      } catch {}
+    }
     if (cached && cached.length > 0) {
       setCandles(cached);
       setCandlesKey(key);
@@ -881,6 +975,67 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     statusText: string;
   }>({ isOpen: true, statusBadge: "Торги идут", statusText: "Торги идут в реальном времени" });
   const [popoverActiveTab, setPopoverActiveTab] = useState<"ALL" | "GOLD" | "MOEX" | "CRYPTO">("ALL");
+
+  // Dynamic chart font size & mobile badge border preferences
+  const [chartLabelFontSize, setChartLabelFontSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("quantex_chart_font_size");
+      if (saved) return Number(saved);
+    } catch {}
+    return typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 10;
+  });
+
+  const [showChartBadgeBorders, setShowChartBadgeBorders] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("quantex_chart_badge_borders") === "true";
+    } catch {}
+    return false;
+  });
+
+  const handleUpdateChartFontSize = (sz: number) => {
+    setChartLabelFontSize(sz);
+    try {
+      localStorage.setItem("quantex_chart_font_size", String(sz));
+    } catch {}
+  };
+
+  const handleToggleChartBadgeBorders = (val: boolean) => {
+    setShowChartBadgeBorders(val);
+    try {
+      localStorage.setItem("quantex_chart_badge_borders", String(val));
+    } catch {}
+  };
+
+  // Live indicator values displayed at top of each pane (Binance-style)
+  const [liveIndicatorValues, setLiveIndicatorValues] = useState<{
+    macd?: { dif: number; dea: number; hist: number };
+    rsi?: { rsi6: number; rsi14: number };
+    stoch?: { k: number; d: number };
+  }>({});
+
+  // Time scale synchronization across main chart and indicator sub-panes
+  const isSyncingTimeScaleRef = useRef<boolean>(false);
+
+  const syncTimeScales = (sourceChart: IChartApi, targetCharts: () => (IChartApi | null)[]) => {
+    try {
+      sourceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (isSyncingTimeScaleRef.current || !range) return;
+        isSyncingTimeScaleRef.current = true;
+        try {
+          const targets = targetCharts();
+          for (const target of targets) {
+            if (target && target !== sourceChart) {
+              try {
+                target.timeScale().setVisibleLogicalRange(range);
+              } catch {}
+            }
+          }
+        } finally {
+          isSyncingTimeScaleRef.current = false;
+        }
+      });
+    } catch {}
+  };
 
   // 1-second live ticker for TradingView bar close countdown
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(() => Math.floor(Date.now() / 1000));
@@ -1267,8 +1422,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // Selected strike for GEX detail modal / breakdown
   const [selectedStrikeDetail, setSelectedStrikeDetail] = useState<GexStrikeData | null>(null);
-  const [gexHorizon, setGexHorizon] = useState<"DAY" | "WEEK" | "MONTH" | "ALL">("WEEK");
-  const gexHorizonRef = useRef<"DAY" | "WEEK" | "MONTH" | "ALL">("WEEK");
+  const [gexHorizon, setGexHorizon] = useState<"DAY" | "WEEK" | "MONTH" | "ALL">("DAY");
+  const gexHorizonRef = useRef<"DAY" | "WEEK" | "MONTH" | "ALL">("DAY");
   useEffect(() => {
     gexHorizonRef.current = gexHorizon;
   }, [gexHorizon]);
@@ -1576,6 +1731,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             }
           }
           clientCandlesCacheRef.current.set(key, finalBars);
+          if (typeof window !== "undefined") {
+            try {
+              sessionStorage.setItem("quantex_real_candles_" + key, JSON.stringify(finalBars.slice(-300)));
+            } catch {}
+          }
           setCandles(finalBars);
           setCandlesKey(key);
           setLastUpdatedMsk(new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК");
@@ -1638,6 +1798,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const data = await res.json();
         if (data.report) {
           setGexReport(data.report);
+          if (targetH === "DAY") {
+            setDayGexReport(data.report);
+          }
         }
       }
     } catch (e: any) {
@@ -2031,9 +2194,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
   }, [activeTf, presetSel]);
 
-  // 1. Initialize Main Lightweight Chart (ONCE per activeTab === "chart" mount)
+  // 1. Initialize Main Lightweight Chart (ONCE on mount)
   useEffect(() => {
-    if (activeTab !== "chart") return;
     const container = chartContainerRef.current;
     if (!container) return;
 
@@ -2278,6 +2440,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     resizeObserver.observe(container);
 
+    // 🚀 Synchronize horizontal timeScale across main chart and indicator sub-panes
+    syncTimeScales(chart, () => [macdChartInstanceRef.current, rsiChartInstanceRef.current, stochChartInstanceRef.current]);
+
+    // 🚀 Suppress TradingView attribution logos
+    try {
+      container.querySelectorAll('a[href*="tradingview"], #tv-attr-logo').forEach(el => el.remove());
+    } catch {}
+
     return () => {
       try {
         cancelAnimationFrame(rafId);
@@ -2307,6 +2477,27 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         } catch {}
       }
     };
+  }, []);
+
+  // Responsive dimension sync when returning to chart tab (instant without recreating canvas)
+  useEffect(() => {
+    if (activeTab === "chart") {
+      const raf = requestAnimationFrame(() => {
+        if (chartInstanceRef.current && chartContainerRef.current) {
+          const w = chartContainerRef.current.clientWidth;
+          const h = chartContainerRef.current.clientHeight;
+          if (w > 50 && h > 50) {
+            try {
+              chartInstanceRef.current.applyOptions({
+                width: Math.floor(w),
+                height: Math.floor(Math.max(h, 220))
+              });
+            } catch {}
+          }
+        }
+      });
+      return () => cancelAnimationFrame(raf);
+    }
   }, [activeTab]);
 
   // Chart Navigation & Panning Handlers
@@ -2376,7 +2567,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // 2. Initialize MACD Sub-Panel (if showMacdPane is true)
   useEffect(() => {
-    if (activeTab !== "chart" || !showMacdPane) return;
+    if (!showMacdPane) return;
     const container = macdContainerRef.current;
     if (!container) return;
 
@@ -2447,7 +2638,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           mouseWheel: true,
           pressedMouseMove: true,
           horzTouchDrag: true,
-          vertTouchDrag: false
+          vertTouchDrag: true
+        },
+        handleScale: {
+          axisPressedMouseMove: { time: true, price: true },
+          mouseWheel: true,
+          pinch: true,
+          axisDoubleClickReset: { time: true, price: true }
         }
       });
     } catch {
@@ -2455,17 +2652,21 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     const histSeries = macdChart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" }
+      priceFormat: { type: "volume" },
+      priceLineVisible: false,
+      lastValueVisible: false
     });
     const fastSeries = macdChart.addSeries(LineSeries, {
       color: "#facc15",
       lineWidth: 1,
-      title: "MACD DIF"
+      priceLineVisible: false,
+      lastValueVisible: false
     });
     const slowSeries = macdChart.addSeries(LineSeries, {
       color: "#ec4899",
       lineWidth: 1,
-      title: "MACD DEA"
+      priceLineVisible: false,
+      lastValueVisible: false
     });
 
     macdChartInstanceRef.current = macdChart;
@@ -2473,6 +2674,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     macdFastSeriesRef.current = fastSeries;
     macdSlowSeriesRef.current = slowSeries;
     lastFittedKeyRef.current = "";
+
+    // 🚀 Synchronize horizontal timeScale with main chart and other indicator sub-panes
+    syncTimeScales(macdChart, () => [chartInstanceRef.current, rsiChartInstanceRef.current, stochChartInstanceRef.current]);
+    try {
+      const curRange = chartInstanceRef.current?.timeScale().getVisibleLogicalRange();
+      if (curRange) macdChart.timeScale().setVisibleLogicalRange(curRange);
+      container.querySelectorAll('a[href*="tradingview"], #tv-attr-logo').forEach(el => el.remove());
+    } catch {}
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2501,11 +2710,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         } catch {}
       }
     };
-  }, [activeTab, showMacdPane]);
+  }, [showMacdPane]);
 
   // 2b. Initialize RSI Sub-Panel (RSI 6 and RSI 14)
   useEffect(() => {
-    if (activeTab !== "chart" || !showRsiPane) return;
+    if (!showRsiPane) return;
     const container = rsiContainerRef.current;
     if (!container) return;
 
@@ -2572,7 +2781,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           mouseWheel: true,
           pressedMouseMove: true,
           horzTouchDrag: true,
-          vertTouchDrag: false
+          vertTouchDrag: true
+        },
+        handleScale: {
+          axisPressedMouseMove: { time: true, price: true },
+          mouseWheel: true,
+          pinch: true,
+          axisDoubleClickReset: { time: true, price: true }
         }
       });
     } catch {
@@ -2580,25 +2795,35 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     const rsi6Series = rsiChart.addSeries(LineSeries, {
-      color: "#a855f7",
-      lineWidth: 1,
-      title: "RSI 6"
-    });
-    const rsi14Series = rsiChart.addSeries(LineSeries, {
       color: "#38bdf8",
       lineWidth: 1,
-      title: "RSI 14"
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+    const rsi14Series = rsiChart.addSeries(LineSeries, {
+      color: "#f59e0b",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false
     });
 
     try {
-      rsi6Series.createPriceLine({ price: 70, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "70" });
-      rsi6Series.createPriceLine({ price: 30, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "30" });
+      rsi6Series.createPriceLine({ price: 70, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      rsi6Series.createPriceLine({ price: 30, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
     } catch {}
 
     rsiChartInstanceRef.current = rsiChart;
     rsi6SeriesRef.current = rsi6Series;
     rsi14SeriesRef.current = rsi14Series;
     lastFittedKeyRef.current = "";
+
+    // 🚀 Synchronize horizontal timeScale with main chart and other indicator sub-panes
+    syncTimeScales(rsiChart, () => [chartInstanceRef.current, macdChartInstanceRef.current, stochChartInstanceRef.current]);
+    try {
+      const curRange = chartInstanceRef.current?.timeScale().getVisibleLogicalRange();
+      if (curRange) rsiChart.timeScale().setVisibleLogicalRange(curRange);
+      container.querySelectorAll('a[href*="tradingview"], #tv-attr-logo').forEach(el => el.remove());
+    } catch {}
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2620,11 +2845,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         try { c.remove(); } catch {}
       }
     };
-  }, [activeTab, showRsiPane]);
+  }, [showRsiPane]);
 
   // 2c. Initialize Stochastic Sub-Panel (%K 14, %D 3)
   useEffect(() => {
-    if (activeTab !== "chart" || !showStochPane) return;
+    if (!showStochPane) return;
     const container = stochContainerRef.current;
     if (!container) return;
 
@@ -2691,7 +2916,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           mouseWheel: true,
           pressedMouseMove: true,
           horzTouchDrag: true,
-          vertTouchDrag: false
+          vertTouchDrag: true
+        },
+        handleScale: {
+          axisPressedMouseMove: { time: true, price: true },
+          mouseWheel: true,
+          pinch: true,
+          axisDoubleClickReset: { time: true, price: true }
         }
       });
     } catch {
@@ -2699,25 +2930,35 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     const kSeries = stochChart.addSeries(LineSeries, {
-      color: "#3b82f6",
+      color: "#06b6d4",
       lineWidth: 1,
-      title: "%K"
+      priceLineVisible: false,
+      lastValueVisible: false
     });
     const dSeries = stochChart.addSeries(LineSeries, {
-      color: "#f59e0b",
+      color: "#f43f5e",
       lineWidth: 1,
-      title: "%D"
+      priceLineVisible: false,
+      lastValueVisible: false
     });
 
     try {
-      kSeries.createPriceLine({ price: 80, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "80" });
-      kSeries.createPriceLine({ price: 20, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "20" });
+      kSeries.createPriceLine({ price: 80, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      kSeries.createPriceLine({ price: 20, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
     } catch {}
 
     stochChartInstanceRef.current = stochChart;
     stochKSeriesRef.current = kSeries;
     stochDSeriesRef.current = dSeries;
     lastFittedKeyRef.current = "";
+
+    // 🚀 Synchronize horizontal timeScale with main chart and other indicator sub-panes
+    syncTimeScales(stochChart, () => [chartInstanceRef.current, macdChartInstanceRef.current, rsiChartInstanceRef.current]);
+    try {
+      const curRange = chartInstanceRef.current?.timeScale().getVisibleLogicalRange();
+      if (curRange) stochChart.timeScale().setVisibleLogicalRange(curRange);
+      container.querySelectorAll('a[href*="tradingview"], #tv-attr-logo').forEach(el => el.remove());
+    } catch {}
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2739,7 +2980,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         try { c.remove(); } catch {}
       }
     };
-  }, [activeTab, showStochPane]);
+  }, [showStochPane]);
 
   // Dynamic Height Resizing Synchronizers for MACD, RSI, and Stochastic
   useEffect(() => {
@@ -2849,7 +3090,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 3. Handle Chart Style change smoothly without destroying main chart on mount
   useEffect(() => {
     const chart = chartInstanceRef.current;
-    if (!chart || activeTab !== "chart") return;
+    if (!chart) return;
     if (prevChartStyleRef.current === chartStyle && seriesInstanceRef.current) return;
     prevChartStyleRef.current = chartStyle;
 
@@ -2906,14 +3147,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     priceLinesRef.current = [];
     lastFittedKeyRef.current = "";
     prevCleanCandlesRef.current = [];
-  }, [chartStyle, activeTab]);
+  }, [chartStyle]);
 
   // 4. Update Market Data, MACD, Trend Lines, GEX Levels, Zones, and Forecast Lines
   useEffect(() => {
     const chart = chartInstanceRef.current;
     const series = seriesInstanceRef.current;
     const volumeSeries = volumeSeriesRef.current;
-    if (!chart || !series || !candles || candles.length === 0 || activeTab !== "chart") return;
+    if (!chart || !series || !candles || candles.length === 0 || candles[0]?._isFallback) return;
 
     // Do NOT run until candles match the active asset and timeframe
     if (candlesKey !== `${activeAsset}_${activeTf}`) return;
@@ -3085,6 +3326,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             macdSlowSeriesRef.current?.update({ time: cleanCandles[idx].time, value: Math.round(deaValues[idx] * 100) / 100 });
           }
         }
+        const lastI = cleanCandles.length - 1;
+        if (lastI >= 0) {
+          const dif = difValues[lastI] ?? 0;
+          const dea = deaValues[lastI] ?? 0;
+          const hist = dif - dea;
+          setLiveIndicatorValues(prev => ({
+            ...prev,
+            macd: { dif: Math.round(dif * 100) / 100, dea: Math.round(dea * 100) / 100, hist: Math.round(hist * 100) / 100 }
+          }));
+        }
       } catch {}
     }
 
@@ -3105,6 +3356,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             if (pt.time >= minTime) rsi14SeriesRef.current.update(pt);
           }
         }
+        if (rsi6Data.length > 0 && rsi14Data.length > 0) {
+          const r6 = rsi6Data[rsi6Data.length - 1].value;
+          const r14 = rsi14Data[rsi14Data.length - 1].value;
+          setLiveIndicatorValues(prev => ({
+            ...prev,
+            rsi: { rsi6: Math.round(r6 * 100) / 100, rsi14: Math.round(r14 * 100) / 100 }
+          }));
+        }
       } catch {}
     }
 
@@ -3123,6 +3382,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           for (const pt of dData) {
             if (pt.time >= minTime) stochDSeriesRef.current.update(pt);
           }
+        }
+        if (kData.length > 0 && dData.length > 0) {
+          const kVal = kData[kData.length - 1].value;
+          const dVal = dData[dData.length - 1].value;
+          setLiveIndicatorValues(prev => ({
+            ...prev,
+            stoch: { k: Math.round(kVal * 100) / 100, d: Math.round(dVal * 100) / 100 }
+          }));
         }
       } catch {}
     }
@@ -3593,7 +3860,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const lineEndTime = lastCandle.time + tfSec * Math.max(labelOffset, 16);
 
       const fc = indicatorOutput?.forecast;
-      const trailingNote = fc?.trailingStageStr ? ` (${fc.trailingStageStr})` : "";
+      const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
+      const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
 
       // SL (Red dashed line)
       boundedLines.push({
@@ -3809,6 +4077,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       eqLine: eqData,
       lines: boundedLines,
       gexProfile: null,
+      chartFontSize: chartLabelFontSize,
+      showBadgeBorders: showChartBadgeBorders,
       currentPriceCountdown: lastCandle ? {
         price: lastCandle.close,
         text: barCountdown.formatted,
@@ -3887,6 +4157,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     showSignals,
     gexReport,
     dayGexReport,
+    gexHorizon,
     showMacdPane,
     macdFast,
     macdSlow,
@@ -3900,7 +4171,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     showEma200,
     labelOffset,
     lineLen,
-    indicatorOutput
+    indicatorOutput,
+    chartLabelFontSize,
+    showChartBadgeBorders
   ]);
 
   // AI Assistant Analysis Dispatcher
@@ -4113,9 +4386,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         {/* Left: Compact Ticker Trigger (e.g. XAUUSD, GDZ6, SiZ6) */}
         <div className="flex items-center gap-1.5 min-w-0">
           <button
-            onClick={() => setIsAssetDropdownOpen(prev => !prev)}
-            className="flex items-center gap-1 px-2 py-1 rounded-md bg-[#121622] hover:bg-[#1a2030] border border-amber-500/50 text-amber-300 text-xs font-mono font-extrabold transition cursor-pointer shadow-xs shrink-0"
-            title="Выбор торгового инструмента"
+            type="button"
+            onClick={() => setIsAssetDropdownOpen(true)}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              setIsAssetDropdownOpen(true);
+            }}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#121622] hover:bg-[#1a2030] active:bg-[#20273c] border border-amber-500/60 text-amber-300 text-xs font-mono font-extrabold transition cursor-pointer shadow-xs shrink-0"
+            title="Выбор торгового инструмента (нажмите для смены тикера)"
           >
             <span>{getShortAssetLabel(activeAsset)}</span>
             <ChevronDown className={`h-3 w-3 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
@@ -4149,51 +4427,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           )}
         </div>
 
-        {/* Right: Live Bar Countdown Pill + Quick TF + Mobile Menu */}
+        {/* Right: Mobile Drawer Trigger (☰) - Bar countdown and duplicate TF removed per user request */}
         <div className="flex items-center gap-1 shrink-0">
-          {/* ⏱ Always-Visible Bar Close Countdown Pill */}
-          <div
-            className="flex items-center gap-1 bg-[#0b1728] border border-cyan-500/60 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 shadow-xs"
-            title={`Отсчёт закрытия бара ${activeTf}: ${barCountdown.formatted}`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
-            <span>{barCountdown.formatted}</span>
-          </div>
-
-          {/* Quick TF selector trigger */}
-          <div className="relative" ref={mobileTfRef}>
-            <button
-              onClick={() => setIsMobileTfOpen(prev => !prev)}
-              className="px-1.5 py-1 rounded-md bg-gray-900 border border-gray-700 hover:border-cyan-500 text-cyan-300 text-[10.5px] font-mono font-bold transition flex items-center gap-0.5 cursor-pointer"
-              title="Сменить таймфрейм"
-            >
-              <span>{activeTf.toUpperCase()}</span>
-              <ChevronDown className="h-2.5 w-2.5 text-gray-400" />
-            </button>
-
-            {/* Mobile Timeframe Dropdown */}
-            {isMobileTfOpen && (
-              <div className="absolute right-0 top-full mt-1 w-32 bg-[#0c0f18] border border-cyan-500/40 rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5">
-                {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
-                  <button
-                    key={tf}
-                    onClick={() => {
-                      handleSelectTimeframe(tf);
-                      setIsMobileTfOpen(false);
-                    }}
-                    className={`w-full px-2 py-1.5 rounded text-left font-mono text-xs font-bold transition cursor-pointer flex items-center justify-between ${
-                      activeTf === tf ? "bg-cyan-600 text-white" : "text-gray-300 hover:bg-gray-800"
-                    }`}
-                  >
-                    <span>{tf.toUpperCase()}</span>
-                    {activeTf === tf && <Check className="h-3 w-3 text-white" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Mobile Drawer Trigger (☰) */}
           <div className="relative" ref={mobileMenuRef}>
             <button
               onClick={() => setIsMobileMenuOpen(prev => !prev)}
@@ -4394,251 +4629,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               <ChevronDown className={`h-3.5 w-3.5 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
             </button>
 
-            {/* Floating Popover: Unified Standardized Ticker Directory (All 13 Instruments) */}
-            {isAssetDropdownOpen && (
-              <div className="absolute left-0 top-full mt-1.5 w-[92vw] sm:w-[540px] max-h-[82vh] overflow-y-auto bg-[#0c0f18]/98 border border-amber-500/40 rounded-xl shadow-2xl shadow-black/95 backdrop-blur-md z-50 p-3 space-y-2.5">
-                {/* Popover Header & Category Filters */}
-                <div className="flex flex-col gap-2 pb-2 border-b border-gray-800/90 sticky top-0 bg-[#0c0f18] z-10">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-extrabold text-amber-300 tracking-wide uppercase">
-                        Единый каталог инструментов (13)
-                      </span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
-                        Стандарт БИРЖА:ТИКЕР
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => setIsAssetDropdownOpen(false)}
-                      className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-800/60 cursor-pointer"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  {/* Category Filter Pills */}
-                  <div className="flex items-center gap-1 bg-[#121622] p-0.5 rounded-lg border border-gray-800 flex-wrap">
-                    {[
-                      { id: "ALL" as const, label: "Все (13)" },
-                      { id: "GOLD" as const, label: "🥇 Золото (5)" },
-                      { id: "MOEX" as const, label: "🇷🇺 Фьючерсы РФ (7)" },
-                      { id: "CRYPTO" as const, label: "⚡ Крипто 24/7 (5)" }
-                    ].map((cat) => (
-                      <button
-                        key={cat.id}
-                        onClick={() => setPopoverActiveTab(cat.id)}
-                        className={`flex-1 px-2 py-1 rounded text-[11px] font-bold transition cursor-pointer whitespace-nowrap text-center ${
-                          popoverActiveTab === cat.id
-                            ? "bg-amber-500/25 text-amber-300 border border-amber-500/50"
-                            : "text-gray-400 hover:text-white"
-                        }`}
-                      >
-                        {cat.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Unified Table Column Headers */}
-                <div className="grid grid-cols-12 gap-2 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-gray-400 border-b border-gray-800/60">
-                  <div className="col-span-5">Стандарт Тикера</div>
-                  <div className="col-span-4">Инструмент / Рынок</div>
-                  <div className="col-span-3 text-right">Котировка / ОИ</div>
-                </div>
-
-                {/* Standardized Ticker Rows */}
-                <div className="space-y-1">
-                  {[
-                    {
-                      id: "XAUUSD" as AssetSymbol,
-                      category: ["GOLD"],
-                      code: "OANDA:XAUUSD",
-                      badge: "OANDA SPOT",
-                      badgeTone: "bg-amber-500/20 text-amber-300 border-amber-500/40",
-                      name: "Золото Спот (1 oz USD)",
-                      sub: "Эталон TradingView • symbols/XAUUSD/?exchange=OANDA",
-                      price: `$${(oandaData?.price || (activeAsset === "XAUUSD" && latestCandle ? latestCandle.close : 4132.35)).toFixed(2)}`,
-                      meta: `Bid/Ask: ${(oandaData?.bid || 4132.01).toFixed(2)}/${(oandaData?.ask || 4132.37).toFixed(2)}`
-                    },
-                    {
-                      id: "PAXGUSDT" as AssetSymbol,
-                      category: ["GOLD", "CRYPTO"],
-                      code: "BINANCE:PAXGUSDT",
-                      badge: "SPOT 24/7",
-                      badgeTone: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",
-                      name: "Крипто-золото PAX Gold",
-                      sub: "Binance Spot • 1 токен = 1 тройская унция (24/7)",
-                      price: activeAsset === "PAXGUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$4135.40",
-                      meta: "Торги 24/7 без выходных"
-                    },
-                    {
-                      id: "MOEX_GOLD" as AssetSymbol,
-                      category: ["GOLD", "MOEX"],
-                      code: `MOEX:${moexContracts?.large?.secId || "GDZ6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
-                      sub: "МосБиржа • Срочный контракт (1 унция, USD)",
-                      price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
-                      meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "MOEX_MINI" as AssetSymbol,
-                      category: ["GOLD", "MOEX"],
-                      code: `MOEX:${moexContracts?.mini?.secId || "GNZ6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
-                      sub: "МосБиржа • Мини-контракт (0.1 унции, USD)",
-                      price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
-                      meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "GLDRUBF" as AssetSymbol,
-                      category: ["GOLD", "MOEX"],
-                      code: "MOEX:GLDRUBF",
-                      badge: "MOEX ВЕЧНЫЙ",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: "Вечный фьючерс Золото (₽/г)",
-                      sub: "МосБиржа • Рублевое золото за 1 грамм (RUB)",
-                      price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
-                      meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "MOEX_SI" as AssetSymbol,
-                      category: ["MOEX"],
-                      code: `MOEX:${moexContracts?.si?.secId || "SiZ6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Фьючерс Курс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
-                      sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
-                      price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
-                      meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "MOEX_RI" as AssetSymbol,
-                      category: ["MOEX"],
-                      code: `MOEX:${moexContracts?.ri?.secId || "RIZ6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
-                      sub: "МосБиржа • Индексный фьючерс (пункты)",
-                      price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
-                      meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "MOEX_BR" as AssetSymbol,
-                      category: ["MOEX"],
-                      code: `MOEX:${moexContracts?.br?.secId || "BRX6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
-                      sub: "МосБиржа • Товарный фьючерс (10 баррелей, USD)",
-                      price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
-                      meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "MOEX_NG" as AssetSymbol,
-                      category: ["MOEX"],
-                      code: `MOEX:${moexContracts?.ng?.secId || "NGV6"}`,
-                      badge: "MOEX FORTS",
-                      badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                      name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
-                      sub: "МосБиржа • Товарный фьючерс (100 MMBtu, USD)",
-                      price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
-                      meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
-                    },
-                    {
-                      id: "BTCUSDT" as AssetSymbol,
-                      category: ["CRYPTO"],
-                      code: "BINANCE:BTCUSDT",
-                      badge: "SPOT 24/7",
-                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                      name: "Bitcoin Спот (BTC/USDT)",
-                      sub: "Binance Spot • Опционный профиль Deribit GEX",
-                      price: activeAsset === "BTCUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$82,200",
-                      meta: "24/7 Онлайн"
-                    },
-                    {
-                      id: "ETHUSDT" as AssetSymbol,
-                      category: ["CRYPTO"],
-                      code: "BINANCE:ETHUSDT",
-                      badge: "SPOT 24/7",
-                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                      name: "Ethereum Спот (ETH/USDT)",
-                      sub: "Binance Spot • Опционный профиль Deribit GEX",
-                      price: activeAsset === "ETHUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$2,430",
-                      meta: "24/7 Онлайн"
-                    },
-                    {
-                      id: "SOLUSDT" as AssetSymbol,
-                      category: ["CRYPTO"],
-                      code: "BINANCE:SOLUSDT",
-                      badge: "SPOT 24/7",
-                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                      name: "Solana Спот (SOL/USDT)",
-                      sub: "Binance Spot • Институциональный профиль GEX",
-                      price: activeAsset === "SOLUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$185.00",
-                      meta: "24/7 Онлайн"
-                    },
-                    {
-                      id: "XRPUSDT" as AssetSymbol,
-                      category: ["CRYPTO"],
-                      code: "BINANCE:XRPUSDT",
-                      badge: "SPOT 24/7",
-                      badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                      name: "Ripple Спот (XRP/USDT)",
-                      sub: "Binance Spot • Институциональный профиль GEX",
-                      price: activeAsset === "XRPUSDT" && latestCandle ? `$${latestCandle.close.toFixed(4)}` : "$1.3000",
-                      meta: "24/7 Онлайн"
-                    }
-                  ]
-                    .filter((item) => popoverActiveTab === "ALL" || item.category.includes(popoverActiveTab))
-                    .map((item) => {
-                      const isSelected = activeAsset === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          onClick={() => {
-                            handleSelectAsset(item.id);
-                            setIsAssetDropdownOpen(false);
-                          }}
-                          className={`w-full grid grid-cols-12 gap-2 items-center px-2.5 py-2 rounded-lg text-left transition cursor-pointer border ${
-                            isSelected
-                              ? "bg-amber-500/15 border-amber-500 text-white shadow-sm"
-                              : "bg-[#121622]/85 hover:bg-[#1a2030] border-gray-800/80 text-gray-300"
-                          }`}
-                        >
-                          {/* Col 1: Standard Ticker Code + Feed Badge */}
-                          <div className="col-span-5 flex flex-col gap-0.5 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono font-extrabold text-xs text-white truncate">
-                                {item.code}
-                              </span>
-                              {isSelected && <Check className="h-3.5 w-3.5 text-amber-400 shrink-0" />}
-                            </div>
-                            <span className={`inline-flex w-fit text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${item.badgeTone}`}>
-                              {item.badge}
-                            </span>
-                          </div>
-
-                          {/* Col 2: Standardized Instrument Name */}
-                          <div className="col-span-4 flex flex-col min-w-0">
-                            <span className="text-[11px] font-bold text-gray-100 truncate">{item.name}</span>
-                            <span className="text-[9.5px] text-gray-400 truncate">{item.sub}</span>
-                          </div>
-
-                          {/* Col 3: Price & Open Interest / Status */}
-                          <div className="col-span-3 text-right flex flex-col items-end min-w-0">
-                            <span className="font-mono font-extrabold text-xs text-white whitespace-nowrap">{item.price}</span>
-                            <span className="font-mono text-[9.5px] text-amber-400/90 whitespace-nowrap truncate max-w-full">{item.meta}</span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Live Price + Change % + Trading Status */}
@@ -4672,15 +4662,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 {priceChange >= 0 ? "+" : ""}
                 {priceChangePct.toFixed(2)}%
               </span>
-
-              {/* ⏱ Desktop Bar Close Countdown Pill */}
-              <div
-                className="flex items-center gap-1.5 bg-[#0b1728] border border-cyan-500/60 px-2 py-0.5 rounded text-xs font-mono font-bold text-cyan-300 shadow-sm"
-                title={`Отсчёт времени закрытия текущего бара (${activeTf}): ${barCountdown.formatted}`}
-              >
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
-                <span>Бара: {barCountdown.formatted}</span>
-              </div>
 
               {marketStatus.isPremarket ? (
                 <span
@@ -4858,20 +4839,277 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         </div>
       </div>
 
+      {/* 📋 GLOBAL UNIFIED ASSET SELECTOR MODAL (Universal for Mobile & Desktop) */}
+      {isAssetDropdownOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150 select-none"
+          onClick={() => setIsAssetDropdownOpen(false)}
+        >
+          <div
+            ref={assetDropdownRef}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg max-h-[85vh] flex flex-col bg-[#0c0f18] border border-amber-500/50 rounded-2xl shadow-2xl overflow-hidden shadow-black/95"
+          >
+            {/* Popover Header & Category Filters */}
+            <div className="flex flex-col gap-2 p-3 pb-2 border-b border-gray-800/90 bg-[#0f1422] shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs sm:text-sm font-extrabold text-amber-300 tracking-wide uppercase">
+                    Выбор инструмента ({popoverActiveTab === "ALL" ? "13" : popoverActiveTab})
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
+                    Стандарт БИРЖА:ТИКЕР
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAssetDropdownOpen(false)}
+                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-800/60 cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Category Filter Pills */}
+              <div className="flex items-center gap-1 bg-[#121622] p-0.5 rounded-lg border border-gray-800 flex-wrap">
+                {[
+                  { id: "ALL" as const, label: "Все (13)" },
+                  { id: "GOLD" as const, label: "🥇 Золото (5)" },
+                  { id: "MOEX" as const, label: "🇷🇺 Фьючерсы РФ (7)" },
+                  { id: "CRYPTO" as const, label: "⚡ Крипто 24/7 (5)" }
+                ].map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setPopoverActiveTab(cat.id)}
+                    className={`flex-1 px-2 py-1 rounded text-[11px] font-bold transition cursor-pointer whitespace-nowrap text-center ${
+                      popoverActiveTab === cat.id
+                        ? "bg-amber-500/25 text-amber-300 border border-amber-500/50"
+                        : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Unified Table Column Headers */}
+            <div className="grid grid-cols-12 gap-2 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-gray-400 border-b border-gray-800/60 bg-[#0c0f18] shrink-0">
+              <div className="col-span-5">Стандарт Тикера</div>
+              <div className="col-span-4">Инструмент / Рынок</div>
+              <div className="col-span-3 text-right">Котировка / ОИ</div>
+            </div>
+
+            {/* Standardized Ticker Rows */}
+            <div className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
+              {[
+                {
+                  id: "XAUUSD" as AssetSymbol,
+                  category: ["GOLD"],
+                  code: "OANDA:XAUUSD",
+                  badge: "OANDA SPOT",
+                  badgeTone: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+                  name: "Золото Спот (1 oz USD)",
+                  sub: "Эталон TradingView • symbols/XAUUSD/?exchange=OANDA",
+                  price: `$${(oandaData?.price || (activeAsset === "XAUUSD" && latestCandle ? latestCandle.close : 4132.35)).toFixed(2)}`,
+                  meta: `Bid/Ask: ${(oandaData?.bid || 4132.01).toFixed(2)}/${(oandaData?.ask || 4132.37).toFixed(2)}`
+                },
+                {
+                  id: "PAXGUSDT" as AssetSymbol,
+                  category: ["GOLD", "CRYPTO"],
+                  code: "BINANCE:PAXGUSDT",
+                  badge: "SPOT 24/7",
+                  badgeTone: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",
+                  name: "Крипто-золото PAX Gold",
+                  sub: "Binance Spot • 1 токен = 1 тройская унция (24/7)",
+                  price: activeAsset === "PAXGUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$4135.40",
+                  meta: "Торги 24/7 без выходных"
+                },
+                {
+                  id: "MOEX_GOLD" as AssetSymbol,
+                  category: ["GOLD", "MOEX"],
+                  code: `MOEX:${moexContracts?.large?.secId || "GDZ6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
+                  sub: "МосБиржа • Срочный контракт (1 унция, USD)",
+                  price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
+                  meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "MOEX_MINI" as AssetSymbol,
+                  category: ["GOLD", "MOEX"],
+                  code: `MOEX:${moexContracts?.mini?.secId || "GNZ6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
+                  sub: "МосБиржа • Мини-контракт (0.1 унции, USD)",
+                  price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
+                  meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "GLDRUBF" as AssetSymbol,
+                  category: ["GOLD", "MOEX"],
+                  code: "MOEX:GLDRUBF",
+                  badge: "MOEX ВЕЧНЫЙ",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: "Вечный фьючерс Золото (₽/г)",
+                  sub: "МосБиржа • Рублевое золото за 1 грамм (RUB)",
+                  price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
+                  meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "MOEX_SI" as AssetSymbol,
+                  category: ["MOEX"],
+                  code: `MOEX:${moexContracts?.si?.secId || "SiZ6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Фьючерс Курс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
+                  sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
+                  price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
+                  meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "MOEX_RI" as AssetSymbol,
+                  category: ["MOEX"],
+                  code: `MOEX:${moexContracts?.ri?.secId || "RIZ6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
+                  sub: "МосБиржа • Индексный фьючерс (пункты)",
+                  price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
+                  meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "MOEX_BR" as AssetSymbol,
+                  category: ["MOEX"],
+                  code: `MOEX:${moexContracts?.br?.secId || "BRX6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
+                  sub: "МосБиржа • Товарный фьючерс (10 баррелей, USD)",
+                  price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
+                  meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "MOEX_NG" as AssetSymbol,
+                  category: ["MOEX"],
+                  code: `MOEX:${moexContracts?.ng?.secId || "NGV6"}`,
+                  badge: "MOEX FORTS",
+                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+                  name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
+                  sub: "МосБиржа • Товарный фьючерс (100 MMBtu, USD)",
+                  price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
+                  meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
+                },
+                {
+                  id: "BTCUSDT" as AssetSymbol,
+                  category: ["CRYPTO"],
+                  code: "BINANCE:BTCUSDT",
+                  badge: "SPOT 24/7",
+                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                  name: "Bitcoin Спот (BTC/USDT)",
+                  sub: "Binance Spot • Опционный профиль Deribit GEX",
+                  price: activeAsset === "BTCUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$82,200",
+                  meta: "24/7 Онлайн"
+                },
+                {
+                  id: "ETHUSDT" as AssetSymbol,
+                  category: ["CRYPTO"],
+                  code: "BINANCE:ETHUSDT",
+                  badge: "SPOT 24/7",
+                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                  name: "Ethereum Спот (ETH/USDT)",
+                  sub: "Binance Spot • Опционный профиль Deribit GEX",
+                  price: activeAsset === "ETHUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$2,430",
+                  meta: "24/7 Онлайн"
+                },
+                {
+                  id: "SOLUSDT" as AssetSymbol,
+                  category: ["CRYPTO"],
+                  code: "BINANCE:SOLUSDT",
+                  badge: "SPOT 24/7",
+                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                  name: "Solana Спот (SOL/USDT)",
+                  sub: "Binance Spot • Институциональный профиль GEX",
+                  price: activeAsset === "SOLUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$185.00",
+                  meta: "24/7 Онлайн"
+                },
+                {
+                  id: "XRPUSDT" as AssetSymbol,
+                  category: ["CRYPTO"],
+                  code: "BINANCE:XRPUSDT",
+                  badge: "SPOT 24/7",
+                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+                  name: "Ripple Спот (XRP/USDT)",
+                  sub: "Binance Spot • Институциональный профиль GEX",
+                  price: activeAsset === "XRPUSDT" && latestCandle ? `$${latestCandle.close.toFixed(4)}` : "$1.3000",
+                  meta: "24/7 Онлайн"
+                }
+              ]
+                .filter((item) => popoverActiveTab === "ALL" || item.category.includes(popoverActiveTab))
+                .map((item) => {
+                  const isSelected = activeAsset === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        handleSelectAsset(item.id);
+                        setIsAssetDropdownOpen(false);
+                      }}
+                      className={`w-full grid grid-cols-12 gap-2 items-center px-2.5 py-2.5 rounded-xl text-left transition cursor-pointer border ${
+                        isSelected
+                          ? "bg-amber-500/15 border-amber-500 text-white shadow-sm"
+                          : "bg-[#121622]/85 hover:bg-[#1a2030] active:bg-[#20273c] border-gray-800/80 text-gray-300"
+                      }`}
+                    >
+                      {/* Col 1: Standard Ticker Code + Feed Badge */}
+                      <div className="col-span-5 flex flex-col gap-0.5 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-extrabold text-xs text-white truncate">
+                            {item.code}
+                          </span>
+                          {isSelected && <Check className="h-3.5 w-3.5 text-amber-400 shrink-0" />}
+                        </div>
+                        <span className={`inline-flex w-fit text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${item.badgeTone}`}>
+                          {item.badge}
+                        </span>
+                      </div>
+
+                      {/* Col 2: Standardized Instrument Name */}
+                      <div className="col-span-4 flex flex-col min-w-0">
+                        <span className="text-[11px] font-bold text-gray-100 truncate">{item.name}</span>
+                        <span className="text-[9.5px] text-gray-400 truncate">{item.sub}</span>
+                      </div>
+
+                      {/* Col 3: Price & Open Interest / Status */}
+                      <div className="col-span-3 text-right flex flex-col items-end min-w-0">
+                        <span className="font-mono font-extrabold text-xs text-white whitespace-nowrap">{item.price}</span>
+                        <span className="font-mono text-[9.5px] text-amber-400/90 whitespace-nowrap truncate max-w-full">{item.meta}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 🚀 MAIN CONTENT AREA */}
       <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden relative">
         
         {/* ======================================================== */}
         {/* 1. CHART & QUANTEX GRAPHICAL ENGINE TAB                  */}
         {/* ======================================================== */}
-        {activeTab === "chart" && (
-          <div className="flex-1 flex flex-col min-h-0 h-full relative">
+        <div className={`flex-1 flex flex-col min-h-0 h-full relative ${activeTab === "chart" ? "" : "hidden"}`}>
             {/* 📱 MOBILE 1-TAP QUICK BAR: Direct Timeframe Pills + Indicators + AI Toggle (Visible on mobile < md) */}
             <div
-              className="md:hidden border-b px-1.5 py-1 flex items-center justify-between gap-1 shrink-0 select-none overflow-x-auto no-scrollbar"
+              className="md:hidden border-b px-1.5 py-1 flex items-center justify-between gap-1 shrink-0 select-none relative z-40 overflow-visible"
               style={{ backgroundColor: curPalette.surfaceAlt, borderColor: curPalette.border }}
             >
-              <div className="flex items-center gap-0.5 bg-[#060911] p-0.5 rounded-lg border border-slate-800 shrink-0">
+              <div className="flex items-center gap-0.5 bg-[#060911] p-0.5 rounded-lg border border-slate-800 shrink-0 overflow-x-auto no-scrollbar max-w-[calc(100vw-180px)]">
                 {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
                   <button
                     key={tf}
@@ -4887,7 +5125,60 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 ))}
               </div>
 
-              <div className="flex items-center gap-1 shrink-0">
+              <div className="flex items-center gap-1 shrink-0 relative z-50">
+                {/* Collapsible GEX Expiration Horizon Tab */}
+                <div className="relative shrink-0" ref={gexHorizonDropdownRef}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsGexHorizonDropdownOpen(!isGexHorizonDropdownOpen);
+                    }}
+                    className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-purple-500/15 text-purple-300 border border-purple-500/40 flex items-center gap-0.5 cursor-pointer"
+                    title="Горизонт экспирации опционов (GEX)"
+                  >
+                    <span>{gexHorizon === "DAY" ? "⚡ День" : gexHorizon === "WEEK" ? "📅 Неделя" : gexHorizon === "MONTH" ? "🗓️ Месяц" : "🌐 Все"}</span>
+                    <ChevronDown className="h-2.5 w-2.5 text-purple-400" />
+                  </button>
+                  {isGexHorizonDropdownOpen && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute top-full right-0 mt-1.5 z-50 bg-[#0b0e17] border border-purple-500/80 rounded-xl p-1 shadow-2xl flex flex-col gap-0.5 min-w-[145px] font-mono ring-1 ring-purple-500/50"
+                    >
+                      {[
+                        { id: "DAY", label: "⚡ День (0DTE)" },
+                        { id: "WEEK", label: "📅 Неделя" },
+                        { id: "MONTH", label: "🗓️ Месяц" },
+                        { id: "ALL", label: "🌐 Все серии" }
+                      ].map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleSelectGexHorizon(item.id as any);
+                            setIsGexHorizonDropdownOpen(false);
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectGexHorizon(item.id as any);
+                            setIsGexHorizonDropdownOpen(false);
+                          }}
+                          className={`px-2 py-1 rounded text-[10px] font-bold text-left transition flex items-center justify-between cursor-pointer ${
+                            gexHorizon === item.id
+                              ? "bg-purple-600 text-white font-extrabold"
+                              : "text-gray-300 hover:bg-gray-800"
+                          }`}
+                        >
+                          <span>{item.label}</span>
+                          {gexHorizon === item.id && <span className="text-white text-[10px] font-black">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <button
                   onClick={() => setIsIndicatorsModalOpen(true)}
                   className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 cursor-pointer"
@@ -4913,7 +5204,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
             {/* Chart Sub-Bar: Timeframes, Types, Overlays (Visible on desktop >= md) */}
             <div
-              className="hidden md:flex border-b px-2 sm:px-3 py-1 items-center justify-between gap-1.5 shrink-0 transition-colors duration-200"
+              className="hidden md:flex border-b px-2 sm:px-3 py-1 items-center justify-between gap-1.5 shrink-0 transition-colors duration-200 relative z-40 overflow-visible"
               style={{ backgroundColor: curPalette.surfaceAlt, borderColor: curPalette.border }}
             >
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -4950,6 +5241,60 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
               {/* Indicators & HUD Controls */}
               <div className="flex items-center gap-1.5 flex-wrap">
+                {/* GEX Expiration Horizon Dropdown Tab */}
+                <div className="relative shrink-0 z-50" ref={desktopGexHorizonDropdownRef}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsGexHorizonDropdownOpen(!isGexHorizonDropdownOpen);
+                    }}
+                    className="px-2 py-1 rounded-lg text-xs font-bold bg-purple-500/20 text-purple-300 hover:text-white border border-purple-500/40 hover:bg-purple-500/30 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shadow-sm"
+                    title="Горизонт экспирации опционов GEX (День, Неделя, Месяц, Все)"
+                  >
+                    <Calendar className="h-3.5 w-3.5 text-purple-400" />
+                    <span>GEX: {gexHorizon === "DAY" ? "День" : gexHorizon === "WEEK" ? "Неделя" : gexHorizon === "MONTH" ? "Месяц" : "Все"}</span>
+                    <ChevronDown className="h-3 w-3 text-purple-400" />
+                  </button>
+                  {isGexHorizonDropdownOpen && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute top-full right-0 mt-1 z-50 bg-[#0b0e17] border border-purple-500/80 rounded-xl p-1 shadow-2xl flex flex-col gap-0.5 min-w-[155px] font-mono ring-1 ring-purple-500/50"
+                    >
+                      {[
+                        { id: "DAY", label: "⚡ День (0DTE)" },
+                        { id: "WEEK", label: "📅 Неделя (Свинг)" },
+                        { id: "MONTH", label: "🗓️ Месяц (Фонды)" },
+                        { id: "ALL", label: "🌐 Все экспирации" }
+                      ].map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleSelectGexHorizon(item.id as any);
+                            setIsGexHorizonDropdownOpen(false);
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectGexHorizon(item.id as any);
+                            setIsGexHorizonDropdownOpen(false);
+                          }}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold text-left transition flex items-center justify-between cursor-pointer ${
+                            gexHorizon === item.id
+                              ? "bg-purple-600 text-white font-extrabold"
+                              : "text-gray-300 hover:bg-gray-800"
+                          }`}
+                        >
+                          <span>{item.label}</span>
+                          {gexHorizon === item.id && <span className="text-white text-xs font-black">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 {/* Single Centralized Indicators Popup Modal Button */}
                 <button
                   onClick={() => setIsIndicatorsModalOpen(true)}
@@ -5037,6 +5382,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   marketStatus={marketStatus}
                   barCountdownFormatted={barCountdown.formatted}
                   candles={candles}
+                  showTables={showTables}
+                  isHudMinimized={isHudMinimized}
+                  onToggleHudMinimize={() => setIsHudMinimized(false)}
+                  indicatorOutput={indicatorOutput}
                 />
               </div>
 
@@ -5056,46 +5405,52 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-cyan-400 transition-all" />
                   </div>
 
-                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
-                    <span className="font-bold text-gray-300">MACD ({macdFast}, {macdSlow}, {macdSigLen})</span>
-                    <span className="text-[#facc15] font-bold">DIF</span>
-                    <span className="text-[#ec4899] font-bold">DEA</span>
-                    <span className="text-gray-400">HIST</span>
-                  </div>
+                  {/* Binance-style compact top header with real-time values */}
+                  <div className="absolute top-1 left-2.5 right-2 z-10 flex items-center justify-between select-none pointer-events-none">
+                    <div className="flex items-center gap-1.5 sm:gap-2.5 text-[8.5px] sm:text-[10px] font-mono tracking-tight overflow-x-auto scrollbar-none whitespace-nowrap bg-black/40 backdrop-blur-xs px-1.5 py-0.5 rounded border border-white/5">
+                      <span className="font-semibold text-gray-300">MACD({macdFast},{macdSlow},{macdSigLen})</span>
+                      <span className="text-[#facc15] font-medium">DIF: <span className="font-mono">{liveIndicatorValues.macd?.dif ?? "0.00"}</span></span>
+                      <span className="text-[#ec4899] font-medium">DEA: <span className="font-mono">{liveIndicatorValues.macd?.dea ?? "0.00"}</span></span>
+                      <span className={`${(liveIndicatorValues.macd?.hist ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"} font-medium`}>
+                        MACD: <span className="font-mono">{liveIndicatorValues.macd?.hist ?? "0.00"}</span>
+                      </span>
+                    </div>
 
-                  {/* Height Adjustment Buttons & Close */}
-                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
-                    <button
-                      type="button"
-                      onClick={() => setMacdPaneHeight(prev => Math.max(55, prev - 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Уменьшить высоту панели (-20px)"
-                    >
-                      -
-                    </button>
-                    <span
-                      onClick={() => setMacdPaneHeight(110)}
-                      className="text-gray-400 hover:text-cyan-300 cursor-pointer px-1 text-[9px]"
-                      title="Кликните для сброса высоты (110px)"
-                    >
-                      {macdPaneHeight}px
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setMacdPaneHeight(prev => Math.min(350, prev + 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Увеличить высоту панели (+20px)"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowMacdPane(false)}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
-                      title="Скрыть панель MACD"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    <div className="flex items-center gap-1 pointer-events-auto shrink-0 ml-1">
+                      <div className="hidden sm:flex items-center gap-0.5 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800/80 text-[8.5px] font-mono">
+                        <button
+                          type="button"
+                          onClick={() => setMacdPaneHeight(prev => Math.max(55, prev - 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Уменьшить высоту"
+                        >
+                          -
+                        </button>
+                        <span
+                          onClick={() => setMacdPaneHeight(110)}
+                          className="text-gray-400 hover:text-cyan-300 cursor-pointer px-1 text-[8.5px]"
+                          title="Сбросить высоту (110px)"
+                        >
+                          {macdPaneHeight}px
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setMacdPaneHeight(prev => Math.min(350, prev + 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Увеличить высоту"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowMacdPane(false)}
+                        className="w-4 h-4 flex items-center justify-center rounded bg-gray-950/80 hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 border border-gray-800/80 transition-colors cursor-pointer"
+                        title="Скрыть панель MACD"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div ref={macdContainerRef} className="w-full h-full" />
@@ -5118,48 +5473,49 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-amber-400 transition-all" />
                   </div>
 
-                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
-                    <span className="font-bold text-gray-300">RSI</span>
-                    <span className="text-[#38bdf8] font-bold">RSI(6)</span>
-                    <span className="text-[#f59e0b] font-bold">RSI(14)</span>
-                    <span className="text-gray-500 font-mono text-[9px] bg-gray-900/80 px-1 rounded border border-gray-800">
-                      70/30 (OB/OS)
-                    </span>
-                  </div>
+                  {/* Binance-style compact top header with real-time values */}
+                  <div className="absolute top-1 left-2.5 right-2 z-10 flex items-center justify-between select-none pointer-events-none">
+                    <div className="flex items-center gap-1.5 sm:gap-2.5 text-[8.5px] sm:text-[10px] font-mono tracking-tight overflow-x-auto scrollbar-none whitespace-nowrap bg-black/40 backdrop-blur-xs px-1.5 py-0.5 rounded border border-white/5">
+                      <span className="font-semibold text-gray-300">RSI</span>
+                      <span className="text-[#38bdf8] font-medium">RSI(6): <span className="font-mono">{liveIndicatorValues.rsi?.rsi6 ?? "0.00"}</span></span>
+                      <span className="text-[#f59e0b] font-medium">RSI(14): <span className="font-mono">{liveIndicatorValues.rsi?.rsi14 ?? "0.00"}</span></span>
+                    </div>
 
-                  {/* Height Adjustment Buttons & Close */}
-                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
-                    <button
-                      type="button"
-                      onClick={() => setRsiPaneHeight(prev => Math.max(55, prev - 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Уменьшить высоту панели (-20px)"
-                    >
-                      -
-                    </button>
-                    <span
-                      onClick={() => setRsiPaneHeight(95)}
-                      className="text-gray-400 hover:text-amber-300 cursor-pointer px-1 text-[9px]"
-                      title="Кликните для сброса высоты (95px)"
-                    >
-                      {rsiPaneHeight}px
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setRsiPaneHeight(prev => Math.min(350, prev + 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Увеличить высоту панели (+20px)"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowRsiPane(false)}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
-                      title="Скрыть панель RSI"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    <div className="flex items-center gap-1 pointer-events-auto shrink-0 ml-1">
+                      <div className="hidden sm:flex items-center gap-0.5 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800/80 text-[8.5px] font-mono">
+                        <button
+                          type="button"
+                          onClick={() => setRsiPaneHeight(prev => Math.max(55, prev - 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Уменьшить высоту"
+                        >
+                          -
+                        </button>
+                        <span
+                          onClick={() => setRsiPaneHeight(95)}
+                          className="text-gray-400 hover:text-amber-300 cursor-pointer px-1 text-[8.5px]"
+                          title="Сбросить высоту (95px)"
+                        >
+                          {rsiPaneHeight}px
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setRsiPaneHeight(prev => Math.min(350, prev + 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Увеличить высоту"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowRsiPane(false)}
+                        className="w-4 h-4 flex items-center justify-center rounded bg-gray-950/80 hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 border border-gray-800/80 transition-colors cursor-pointer"
+                        title="Скрыть панель RSI"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div ref={rsiContainerRef} className="w-full h-full" />
@@ -5182,48 +5538,49 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     <div className="w-16 h-1 rounded-full bg-gray-600/60 hover:bg-rose-400 transition-all" />
                   </div>
 
-                  <div className="absolute top-1.5 left-3 z-10 text-[10px] font-mono text-gray-400 flex items-center gap-2 select-none">
-                    <span className="font-bold text-gray-300">STOCH (14, 3, 3)</span>
-                    <span className="text-[#06b6d4] font-bold">%K</span>
-                    <span className="text-[#f43f5e] font-bold">%D</span>
-                    <span className="text-gray-500 font-mono text-[9px] bg-gray-900/80 px-1 rounded border border-gray-800">
-                      80/20 (OB/OS)
-                    </span>
-                  </div>
+                  {/* Binance-style compact top header with real-time values */}
+                  <div className="absolute top-1 left-2.5 right-2 z-10 flex items-center justify-between select-none pointer-events-none">
+                    <div className="flex items-center gap-1.5 sm:gap-2.5 text-[8.5px] sm:text-[10px] font-mono tracking-tight overflow-x-auto scrollbar-none whitespace-nowrap bg-black/40 backdrop-blur-xs px-1.5 py-0.5 rounded border border-white/5">
+                      <span className="font-semibold text-gray-300">STOCH(14,3,3)</span>
+                      <span className="text-[#06b6d4] font-medium">%K: <span className="font-mono">{liveIndicatorValues.stoch?.k ?? "0.00"}</span></span>
+                      <span className="text-[#f43f5e] font-medium">%D: <span className="font-mono">{liveIndicatorValues.stoch?.d ?? "0.00"}</span></span>
+                    </div>
 
-                  {/* Height Adjustment Buttons & Close */}
-                  <div className="absolute top-1 right-2 z-10 text-[9.5px] font-mono flex items-center gap-1 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800">
-                    <button
-                      type="button"
-                      onClick={() => setStochPaneHeight(prev => Math.max(55, prev - 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Уменьшить высоту панели (-20px)"
-                    >
-                      -
-                    </button>
-                    <span
-                      onClick={() => setStochPaneHeight(95)}
-                      className="text-gray-400 hover:text-rose-300 cursor-pointer px-1 text-[9px]"
-                      title="Кликните для сброса высоты (95px)"
-                    >
-                      {stochPaneHeight}px
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setStochPaneHeight(prev => Math.min(350, prev + 20))}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-gray-800 text-gray-300 hover:text-white font-bold cursor-pointer"
-                      title="Увеличить высоту панели (+20px)"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowStochPane(false)}
-                      className="w-4 h-4 flex items-center justify-center rounded hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 cursor-pointer ml-0.5"
-                      title="Скрыть панель Стохастик"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    <div className="flex items-center gap-1 pointer-events-auto shrink-0 ml-1">
+                      <div className="hidden sm:flex items-center gap-0.5 bg-gray-950/80 px-1 py-0.5 rounded border border-gray-800/80 text-[8.5px] font-mono">
+                        <button
+                          type="button"
+                          onClick={() => setStochPaneHeight(prev => Math.max(55, prev - 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Уменьшить высоту"
+                        >
+                          -
+                        </button>
+                        <span
+                          onClick={() => setStochPaneHeight(95)}
+                          className="text-gray-400 hover:text-rose-300 cursor-pointer px-1 text-[8.5px]"
+                          title="Сбросить высоту (95px)"
+                        >
+                          {stochPaneHeight}px
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setStochPaneHeight(prev => Math.min(350, prev + 20))}
+                          className="w-3.5 h-3.5 flex items-center justify-center text-gray-400 hover:text-white cursor-pointer"
+                          title="Увеличить высоту"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowStochPane(false)}
+                        className="w-4 h-4 flex items-center justify-center rounded bg-gray-950/80 hover:bg-rose-500/20 text-gray-400 hover:text-rose-300 border border-gray-800/80 transition-colors cursor-pointer"
+                        title="Скрыть панель Стохастик"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div ref={stochContainerRef} className="w-full h-full" />
@@ -5231,33 +5588,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               )}
 
               {/* 📊 TRADINGVIEW-STYLE HUD TABLE OVERLAY (DRAGGABLE & COLLAPSIBLE FOR MOBILE) */}
-              {showTables && (
-                isHudMinimized ? (
-                  <div
-                    onClick={() => setIsHudMinimized(false)}
-                    className="absolute top-12 sm:top-10 left-1.5 sm:left-2 z-30 flex items-center gap-1.5 bg-[#0a0f1d]/95 border border-cyan-500/40 rounded-lg px-2 py-1 text-[10px] sm:text-[11px] font-mono shadow-lg backdrop-blur-md cursor-pointer hover:border-cyan-400 select-none transition-all max-w-[calc(100vw-110px)]"
-                    title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
-                  >
-                    <GripHorizontal className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
-                    <span className="font-bold text-white shrink-0">📊 HUD:</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                      indicatorOutput?.forecast.isBull
-                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                        : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                    }`}>
-                      {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 74}%)
-                    </span>
-                    <span className="text-gray-300 truncate">
-                      Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
-                    </span>
-                    <span className="text-emerald-400 hidden sm:inline shrink-0">
-                      TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
-                    </span>
-                    <span className="text-cyan-400 font-bold shrink-0 ml-1">▾</span>
-                  </div>
-                ) : (
-                  <div
-                    ref={hudCardRef}
+              {showTables && !isHudMinimized && (
+                <div
+                  ref={hudCardRef}
                     style={{
                       left: hudPos ? `${hudPos.x}px` : undefined,
                       top: hudPos ? `${hudPos.y}px` : undefined,
@@ -5414,7 +5747,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           }}
                         >
                           {indicatorOutput?.hud.recActionStr ||
-                            `⏳ Ждём вход @${indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? candles[candles.length - 1]?.close?.toFixed(1)} (${indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"})`}
+                            `⏳ Ждём вход @${indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? (candles && candles.length > 0 ? candles[candles.length - 1]?.close?.toFixed(1) : "-")} (${indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"})`}
                         </span>
                       </div>
 
@@ -5544,9 +5877,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                       </div>
                     </div>
                   </div>
-                )
-              )}
-            </div>
+                )}
+              </div>
 
             {/* 🎚️ Vertical Split Drag Resizer between Chart and AI Analyst (Desktop only) */}
             {!isAiPanelCollapsed && (
@@ -5611,7 +5943,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             </div>
           </div>
         </div>
-      )}
 
         {/* ======================================================== */}
         {/* 2. REAL-TIME GEX ANALYTICS TAB                           */}
@@ -5980,34 +6311,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   </div>
 
                   {/* Visual Chart Header Columns */}
-                  <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-[#0e121c] border border-gray-800/80 text-[11px] font-mono text-gray-400">
-                    <div className="flex items-center gap-1.5 text-rose-400 font-bold">
-                      <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block" />
+                  <div className="flex items-center justify-between px-2 sm:px-3 py-1.5 rounded-lg bg-[#0e121c] border border-gray-800/80 text-[10px] sm:text-[11px] font-mono text-gray-400">
+                    <div className="flex items-center gap-1 text-rose-400 font-bold text-[9.5px] sm:text-xs">
+                      <span className="w-2 h-2 rounded-xs bg-rose-500 inline-block shrink-0" />
                       <span>
                         {gexMetricMode === "volume"
-                          ? "◀ PUT VOLUME (Дневной объем путов)"
+                          ? "◀ PUT VOL"
                           : gexMetricMode === "oi"
-                          ? "◀ PUT OI (Открытый интерес путов)"
-                          : "◀ PUT GEX (Поддержка продавцов путов)"}
+                          ? "◀ PUT OI"
+                          : "◀ PUT GEX"}
                       </span>
                     </div>
-                    <div className="text-center font-bold text-gray-200 tracking-wider">
-                      СТРАЙК &amp; УРОВЕНЬ
+                    <div className="text-center font-bold text-gray-200 text-[10px] sm:text-xs tracking-wider shrink-0">
+                      СТРАЙК
                     </div>
-                    <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                    <div className="flex items-center gap-1 text-emerald-400 font-bold text-[9.5px] sm:text-xs">
                       <span>
                         {gexMetricMode === "volume"
-                          ? "CALL VOLUME (Дневной объем коллов) ▶"
+                          ? "CALL VOL ▶"
                           : gexMetricMode === "oi"
-                          ? "CALL OI (Открытый интерес коллов) ▶"
-                          : "CALL GEX (Сопротивление покупателей коллов) ▶"}
+                          ? "CALL OI ▶"
+                          : "CALL GEX ▶"}
                       </span>
-                      <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
+                      <span className="w-2 h-2 rounded-xs bg-emerald-500 inline-block shrink-0" />
                     </div>
                   </div>
 
                   {/* Profile Rows (Top to Bottom: Strictly Descending Strike Price) */}
-                  <div className="space-y-1 overflow-x-auto min-w-[700px] max-h-[580px] overflow-y-auto pr-1">
+                  <div className="space-y-1 w-full max-w-full max-h-[580px] overflow-y-auto pr-0.5">
                     {gexStrikesDescending.map((s) => {
                       const isCallWall = s.strike === gexReport.callWall;
                       const isPutWall = s.strike === gexReport.putWall;
@@ -6028,44 +6359,44 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <div
                           key={s.strike}
                           onClick={() => setSelectedStrikeDetail(s)}
-                          className={`flex items-center gap-2 py-1.5 px-2.5 rounded-lg font-mono text-xs transition cursor-pointer relative group ${
+                          className={`flex items-center gap-1 sm:gap-2 py-1 px-1 sm:px-2 rounded-lg font-mono text-xs transition cursor-pointer relative group ${
                             isExactSpotStrike
-                              ? "bg-amber-500/15 border-2 border-amber-400/80 shadow-md shadow-amber-500/10"
+                              ? "bg-amber-500/15 border border-amber-400/80 shadow-md shadow-amber-500/10"
                               : isCallWall
-                              ? "bg-emerald-500/20 border-2 border-emerald-400 shadow-md shadow-emerald-500/15"
+                              ? "bg-emerald-500/20 border border-emerald-400 shadow-md shadow-emerald-500/15"
                               : isPutWall
-                              ? "bg-rose-500/20 border-2 border-rose-400 shadow-md shadow-rose-500/15"
+                              ? "bg-rose-500/20 border border-rose-400 shadow-md shadow-rose-500/15"
                               : isZeroFlip
-                              ? "bg-purple-500/20 border-2 border-purple-400/80 shadow-md shadow-purple-500/15"
+                              ? "bg-purple-500/20 border border-purple-400/80 shadow-md shadow-purple-500/15"
                               : isMaxPain
-                              ? "bg-cyan-500/20 border-2 border-cyan-400/80 shadow-md shadow-cyan-500/15"
+                              ? "bg-cyan-500/20 border border-cyan-400/80 shadow-md shadow-cyan-500/15"
                               : isSleeperMagnet
-                              ? "bg-amber-500/20 border-2 border-amber-400/80 shadow-md shadow-amber-500/15"
+                              ? "bg-amber-500/20 border border-amber-400/80 shadow-md shadow-amber-500/15"
                               : "hover:bg-[#121624] border border-transparent"
                           }`}
                         >
                           {/* Left: Put Bar (Grows from Center to Left) */}
-                          <div className="flex-1 flex justify-end items-center h-6 bg-[#0a0d16] rounded-l-md overflow-hidden border-r border-gray-700 relative">
+                          <div className="flex-1 min-w-0 flex justify-end items-center h-5 sm:h-6 bg-[#0a0d16] rounded-l-md overflow-hidden border-r border-gray-700 relative">
                             <div
-                              className={`h-full transition-all flex items-center justify-start pl-1 text-[10px] font-bold text-white/90 ${
+                              className={`h-full transition-all flex items-center justify-start pl-1 text-[9px] sm:text-[10px] font-bold text-white/90 ${
                                 isPutWall
                                   ? "bg-gradient-to-l from-rose-500 via-rose-600 to-rose-700 shadow-sm shadow-rose-500/50"
                                   : "bg-gradient-to-l from-rose-600 to-rose-900"
                               }`}
                               style={{ width: `${putWidthPct}%` }}
                             >
-                              {putWidthPct > 15 && (
-                                <span className="drop-shadow-xs">
+                              {putWidthPct > 25 && (
+                                <span className="drop-shadow-xs truncate">
                                   {gexMetricMode === "volume"
-                                    ? `${(s.putVolume || 0).toLocaleString()} Vol`
+                                    ? `${(s.putVolume || 0).toLocaleString()}`
                                     : gexMetricMode === "oi"
-                                    ? `${s.putOi.toLocaleString()} OI`
-                                    : `${s.putGex} $M`}
+                                    ? `${s.putOi.toLocaleString()}`
+                                    : `${s.putGex}`}
                                 </span>
                               )}
                             </div>
-                            {putWidthPct <= 15 && (
-                              <span className="text-[10px] text-gray-500 pr-1.5 font-mono">
+                            {putWidthPct <= 25 && (
+                              <span className="text-[9px] sm:text-[10px] text-gray-500 pr-1 font-mono truncate hidden xs:inline">
                                 {gexMetricMode === "volume"
                                   ? `${(s.putVolume || 0).toLocaleString()}`
                                   : gexMetricMode === "oi"
@@ -6076,9 +6407,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           </div>
 
                           {/* Center: Strike Price Column with Badges */}
-                          <div className="w-64 flex items-center justify-between px-2.5 shrink-0 bg-[#0e121d] py-1 rounded-md border border-gray-800 shadow-inner">
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className={`font-bold text-sm ${
+                          <div className="w-20 sm:w-56 md:w-64 flex items-center justify-between px-1 sm:px-2.5 shrink-0 bg-[#0e121d] py-0.5 sm:py-1 rounded-md border border-gray-800 shadow-inner">
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className={`font-bold text-xs sm:text-sm ${
                                 isCallWall
                                   ? "text-emerald-400 font-extrabold"
                                   : isPutWall
@@ -6095,68 +6426,72 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                               }`}>
                                 {activeAsset === "MOEX_MINI" ? `${s.strike} ₽` : `$${s.strike}`}
                               </span>
-                              <span className={`text-[10px] font-mono ${distFromSpotPct > 0 ? "text-emerald-400/80" : distFromSpotPct < 0 ? "text-rose-400/80" : "text-amber-400"}`}>
+                              <span className={`text-[8.5px] sm:text-[10px] font-mono hidden sm:inline ${distFromSpotPct > 0 ? "text-emerald-400/80" : distFromSpotPct < 0 ? "text-rose-400/80" : "text-amber-400"}`}>
                                 {distFromSpotPct > 0 ? `+${distFromSpotPct.toFixed(1)}%` : `${distFromSpotPct.toFixed(1)}%`}
                               </span>
                             </div>
 
                             {/* Badges Container */}
-                            <div className="flex items-center gap-1 justify-end flex-wrap max-w-[155px]">
+                            <div className="flex items-center gap-0.5 sm:gap-1 justify-end flex-wrap max-w-[155px]">
                               {isCallWall && (
-                                <span className="text-[9px] bg-emerald-500 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Потолок рынка (Call Wall): ключевое сопротивление">
-                                  Потолок CW
+                                <span className="text-[8px] sm:text-[9px] bg-emerald-500 text-black font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs" title="Потолок рынка (Call Wall)">
+                                  <span className="sm:hidden">CW</span>
+                                  <span className="hidden sm:inline">Потолок CW</span>
                                 </span>
                               )}
                               {isPutWall && (
-                                <span className="text-[9px] bg-rose-500 text-white font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Поддержка рынка (Put Wall): ключевой пол">
-                                  Поддержка PW
+                                <span className="text-[8px] sm:text-[9px] bg-rose-500 text-white font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs" title="Поддержка рынка (Put Wall)">
+                                  <span className="sm:hidden">PW</span>
+                                  <span className="hidden sm:inline">Поддержка PW</span>
                                 </span>
                               )}
                               {isZeroFlip && (
-                                <span className="text-[9px] bg-purple-600 text-white font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs border border-purple-400/50" title="Граница Гаммы (Gamma Flip): рубеж перехода в отрицательную гамму">
-                                  ⚡ Гамма (Flip)
+                                <span className="text-[8px] sm:text-[9px] bg-purple-600 text-white font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs border border-purple-400/50" title="Граница Гаммы (Gamma Flip)">
+                                  <span className="sm:hidden">Flip</span>
+                                  <span className="hidden sm:inline">⚡ Гамма</span>
                                 </span>
                               )}
                               {isMaxPain && (
-                                <span className="text-[9px] bg-cyan-400 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Магнит экспирации (Max Pain): точка максимального сгорания премий">
-                                  🎯 Магнит
+                                <span className="text-[8px] sm:text-[9px] bg-cyan-400 text-black font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs" title="Магнит экспирации (Max Pain)">
+                                  <span className="sm:hidden">Pain</span>
+                                  <span className="hidden sm:inline">🎯 Магнит</span>
                                 </span>
                               )}
                               {isSleeperMagnet && (
-                                <span className="text-[9px] bg-amber-500 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs" title="Спящий институциональный магнит (Sleeper Magnet)">
-                                  🧲 Спящий магнит
+                                <span className="text-[8px] sm:text-[9px] bg-amber-500 text-black font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs" title="Спящий магнит">
+                                  🧲
                                 </span>
                               )}
                               {isExactSpotStrike && (
-                                <span className="text-[9px] bg-amber-400 text-black font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider shadow-xs animate-pulse" title={`Текущая биржевая цена спота: $${gexReport.spotPrice}`}>
-                                  📍 Спот ${gexReport.spotPrice.toFixed(1)}
+                                <span className="text-[8px] sm:text-[9px] bg-amber-400 text-black font-extrabold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase tracking-wider shadow-xs animate-pulse" title={`Текущая биржевая цена: $${gexReport.spotPrice}`}>
+                                  📍
                                 </span>
                               )}
                             </div>
                           </div>
 
                           {/* Right: Call Bar (Grows from Center to Right) */}
-                          <div className="flex-1 flex justify-start items-center h-6 bg-[#0a0d16] rounded-r-md overflow-hidden border-l border-gray-700 relative">
+                          <div className="flex-1 min-w-0 flex justify-start items-center h-5 sm:h-6 bg-[#0a0d16] rounded-r-md overflow-hidden border-l border-gray-700 relative">
                             <div
-                              className={`h-full transition-all flex items-center justify-end pr-1 text-[10px] font-bold text-white/90 ${
+                              className={`h-full transition-all flex items-center justify-end pr-1 text-[9px] sm:text-[10px] font-bold text-white/90 ${
                                 isCallWall
                                   ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-sm shadow-emerald-500/50"
                                   : "bg-gradient-to-r from-emerald-600 to-emerald-900"
                               }`}
                               style={{ width: `${callWidthPct}%` }}
                             >
-                              {callWidthPct > 15 && (
-                                <span className="drop-shadow-xs">
+                              {callWidthPct > 25 && (
+                                <span className="drop-shadow-xs truncate">
                                   {gexMetricMode === "volume"
-                                    ? `${(s.callVolume || 0).toLocaleString()} Vol`
+                                    ? `${(s.callVolume || 0).toLocaleString()}`
                                     : gexMetricMode === "oi"
-                                    ? `${s.callOi.toLocaleString()} OI`
-                                    : `+${s.callGex} $M`}
+                                    ? `${s.callOi.toLocaleString()}`
+                                    : `+${s.callGex}`}
                                 </span>
                               )}
                             </div>
-                            {callWidthPct <= 15 && (
-                              <span className="text-[10px] text-gray-500 pl-1.5 font-mono">
+                            {callWidthPct <= 25 && (
+                              <span className="text-[9px] sm:text-[10px] text-gray-500 pl-1 font-mono truncate hidden xs:inline">
                                 {gexMetricMode === "volume"
                                   ? `${(s.callVolume || 0).toLocaleString()}`
                                   : gexMetricMode === "oi"
@@ -8096,7 +8431,57 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   </div>
                 </div>
 
-                {/* 5. Sound Alerts */}
+                {/* 5. Chart Labels Font Size (Especially for Mobile) */}
+                <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: curPalette.border }}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-[11px] font-bold text-gray-300">
+                        Размер надписей на графике:
+                      </label>
+                      <p className="text-[10px] text-gray-500">
+                        SL, TP, зоны OTE/OB, уровни гаммы (для мобильных рекомендуется 7px или 8px)
+                      </p>
+                    </div>
+                    <span className="font-mono text-cyan-300 font-bold">{chartLabelFontSize}px</span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {[7, 8, 9, 10, 11, 12].map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => handleUpdateChartFontSize(sz)}
+                        className={`py-1.5 rounded-lg border font-mono text-xs font-bold transition cursor-pointer ${
+                          chartLabelFontSize === sz
+                            ? "bg-cyan-500/20 border-cyan-400 text-white"
+                            : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
+                        }`}
+                      >
+                        {sz}px
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 6. Chart Badge Borders */}
+                <div className="flex items-center justify-between p-2 rounded-xl bg-gray-900/50 border border-gray-800 pt-2">
+                  <div>
+                    <div className="font-bold text-white text-xs">Рамки вокруг надписей на графике</div>
+                    <div className="text-[10px] text-gray-400">На мобильных устройствах отключены по умолчанию для компактности</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleChartBadgeBorders(!showChartBadgeBorders)}
+                    className={`px-3 py-1 rounded-lg font-mono font-bold text-xs transition cursor-pointer ${
+                      showChartBadgeBorders
+                        ? "bg-cyan-500/20 border border-cyan-400 text-cyan-300"
+                        : "bg-gray-800 text-gray-400"
+                    }`}
+                  >
+                    {showChartBadgeBorders ? "ВКЛ" : "ВЫКЛ"}
+                  </button>
+                </div>
+
+                {/* 7. Sound Alerts */}
                 <div className="flex items-center justify-between p-2 rounded-xl bg-gray-900/50 border border-gray-800 pt-2">
                   <div>
                     <div className="font-bold text-white text-xs">Звуковые алерты уровней</div>

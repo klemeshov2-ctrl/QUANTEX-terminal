@@ -112,6 +112,8 @@ export interface TradingViewPrimitiveData {
   lines?: BoundedPriceLine[];
   gexProfile?: GexProfileData | null;
   currentPriceCountdown?: CurrentPriceCountdown | null;
+  chartFontSize?: number;
+  showBadgeBorders?: boolean;
 }
 
 const getDpr = (): number =>
@@ -130,7 +132,8 @@ const snapHalf = (v: number): number => {
 };
 
 /**
- * Helper to draw a sleek, rounded, razor-sharp badge for chart labels
+ * Helper to draw a sleek, rounded, razor-sharp badge for chart labels.
+ * On mobile devices, borders are stripped for maximum compactness and clean aesthetics.
  */
 function drawBadge(
   ctx: CanvasRenderingContext2D,
@@ -142,17 +145,28 @@ function drawBadge(
   textColor: string,
   mediaW: number,
   align: "left" | "right" | "center" = "left",
-  fontSize: number = 10
+  fontSize: number = 10,
+  opts?: { customFontSize?: number; showBorder?: boolean }
 ) {
   ctx.save();
   try {
-    const isMobile = mediaW < 480;
-    const effectiveFontSize = isMobile ? 9 : Math.min(10, fontSize);
+    const isMobile = mediaW < 640;
+    
+    // Dynamic configurable chart font size with mobile ultra-compact default
+    let baseFontSize = opts?.customFontSize || fontSize;
+    try {
+      const saved = typeof window !== "undefined" ? Number(localStorage.getItem("quantex_chart_font_size")) : 0;
+      if (saved && saved >= 6 && saved <= 16) {
+        baseFontSize = saved;
+      }
+    } catch {}
+
+    const effectiveFontSize = isMobile ? Math.min(baseFontSize, 8) : baseFontSize;
     ctx.font = `600 ${effectiveFontSize}px "JetBrains Mono", ui-monospace, SFMono-Regular, -apple-system, BlinkMacSystemFont, sans-serif`;
     const metrics = ctx.measureText(text);
     const textW = Math.ceil(metrics.width);
-    const padX = isMobile ? 4 : 5;
-    const padY = isMobile ? 2 : 2.5;
+    const padX = isMobile ? 3 : 5;
+    const padY = isMobile ? 1.5 : 2.5;
     const badgeW = Math.round(textW + padX * 2);
     const badgeH = Math.round(effectiveFontSize + padY * 2);
 
@@ -174,21 +188,31 @@ function drawBadge(
     const rx = snapHalf(startX);
     const ry = snapHalf(y - badgeH / 2);
 
-    // Crisp rounded rectangle background
+    // Crisp rounded rectangle background (clean dark pill on mobile without heavy outlines)
     ctx.setLineDash([]);
-    ctx.fillStyle = bgColor === "rgba(15, 23, 42, 0.92)" ? "rgba(8, 12, 21, 0.94)" : bgColor;
+    ctx.fillStyle = isMobile
+      ? "rgba(8, 12, 21, 0.88)"
+      : (bgColor === "rgba(15, 23, 42, 0.92)" ? "rgba(8, 12, 21, 0.94)" : bgColor);
     ctx.beginPath();
     if (typeof ctx.roundRect === "function") {
-      ctx.roundRect(rx, ry, badgeW, badgeH, 3);
+      ctx.roundRect(rx, ry, badgeW, badgeH, 2.5);
     } else {
       ctx.rect(rx, ry, badgeW, badgeH);
     }
     ctx.fill();
 
-    // Stable border aligned to physical device grid
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1.15;
-    ctx.stroke();
+    // 🚀 Mobile optimization: In mobile version, remove all frames from labels so it's super compact
+    let allowBorders = false;
+    try {
+      allowBorders = typeof window !== "undefined" && localStorage.getItem("quantex_chart_badge_borders") === "true";
+    } catch {}
+
+    const canDrawBorder = opts?.showBorder !== undefined ? opts.showBorder : (!isMobile || allowBorders);
+    if (canDrawBorder && !isMobile) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
 
     // Sharp text aligned to device pixel grid
     ctx.fillStyle = textColor;

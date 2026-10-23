@@ -3143,12 +3143,69 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 
+// Sanitization & normalization utilities for Gemini keys and models
+export function sanitizeApiKey(rawKey?: string | null): string {
+  if (!rawKey) return "";
+  return rawKey.trim().replace(/^["']|["']$/g, "").trim();
+}
+
+export function normalizeGeminiModel(model?: string): string {
+  if (!model) return "gemini-3.8-flash";
+  const m = model.trim();
+  if (
+    m === "gemini-2.5-flash" ||
+    m === "gemini-1.5-flash" ||
+    m === "gemini-2.0-flash" ||
+    m === "gemini-pro" ||
+    m === "gemini-2.0-flash-thinking"
+  ) {
+    return "gemini-3.8-flash";
+  }
+  if (m === "gemini-1.5-pro" || m === "gemini-2.0-pro") {
+    return "gemini-4-argon";
+  }
+  return m;
+}
+
+// Universal factory for GoogleGenAI with support for both legacy AIza... keys
+// and new Google Auth keys with 'AQ.' prefix (which require Bearer headers to avoid 403 / "unregistered callers")
+export function createGeminiClient(key?: string): GoogleGenAI | null {
+  const apiKey = sanitizeApiKey(key || process.env.GEMINI_API_KEY);
+  if (!apiKey || apiKey.length < 5) return null;
+
+  const headers: Record<string, string> = {
+    "User-Agent": "aistudio-build",
+    "x-goog-api-key": apiKey,
+  };
+
+  // Google updated API key formats with prefix 'AQ.' (Google Cloud Auth keys).
+  // If passed only via query param or without Authorization header, Google API gateway rejects with:
+  // "403 PERMISSION_DENIED: Method doesn't allow unregistered callers".
+  // Adding Authorization: Bearer <key> alongside x-goog-api-key ensures reliable authentication.
+  if (apiKey.startsWith("AQ") || apiKey.startsWith("ya29.") || !apiKey.startsWith("AIza")) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  return new GoogleGenAI({
+    apiKey: apiKey,
+    httpOptions: {
+      headers,
+    },
+  });
+}
+
 // Lazy-initialize Gemini client to prevent crashing on startup if the API key is missing
 let aiClient: GoogleGenAI | null = null;
+let lastApiKeyUsed = "";
 let geminiQuotaOrDunningBlockedUntil = 0;
 
+export function resetGeminiBlock() {
+  geminiQuotaOrDunningBlockedUntil = 0;
+}
+
 export function isGeminiApiAvailable(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5) && Date.now() >= geminiQuotaOrDunningBlockedUntil;
+  const key = sanitizeApiKey(process.env.GEMINI_API_KEY);
+  return Boolean(key && key.length > 5) && Date.now() >= geminiQuotaOrDunningBlockedUntil;
 }
 
 export function handleGeminiError(context: string, err: any) {
@@ -3158,30 +3215,24 @@ export function handleGeminiError(context: string, err: any) {
 
   if (isDunningOr403 || isQuotaOr429) {
     // Gracefully engage autonomous institutional quant engine and silence 403 error spam
-    geminiQuotaOrDunningBlockedUntil = Date.now() + 120000;
+    geminiQuotaOrDunningBlockedUntil = Date.now() + 60000;
     addServerLog("INFO", `Автономный квант-модуль QUANTEX активен (${context}: внешний Gemini API временно ограничен квотой/проектом)`);
   } else {
     addServerLog("WARN", `Уведомление Gemini (${context}): ${errMsg.slice(0, 120)}`);
   }
 }
 
-function getGeminiClient() {
-  if (!isGeminiApiAvailable()) {
+function getGeminiClient(overrideKey?: string): GoogleGenAI | null {
+  const targetKey = sanitizeApiKey(overrideKey || process.env.GEMINI_API_KEY);
+  if (!targetKey || targetKey.length < 5) {
     return null;
   }
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return null;
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
+  if (!overrideKey && !isGeminiApiAvailable()) {
+    return null;
+  }
+  if (!aiClient || lastApiKeyUsed !== targetKey) {
+    aiClient = createGeminiClient(targetKey);
+    lastApiKeyUsed = targetKey;
   }
   return aiClient;
 }
@@ -6018,7 +6069,7 @@ let unifiedStationSettings = {
     qwenModel: "qwen-plus",
     qwenEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
     geminiApiKey: process.env.GEMINI_API_KEY || "",
-    geminiModel: "gemini-2.5-flash",
+    geminiModel: "gemini-3.8-flash",
     temperature: 0.3
   },
   serverSecurity: {
@@ -7053,29 +7104,48 @@ app.post("/api/ai-provider/test", async (req, res) => {
     }
 
     if (provider === "gemini") {
-      const gKey = (apiKey && apiKey.trim().length > 5) ? apiKey.trim() : process.env.GEMINI_API_KEY;
-      if (!gKey) {
-        return res.status(400).json({ success: false, error: "Введите API ключ Gemini (AIza...)" });
+      const rawKey = (apiKey && apiKey.trim().length > 5) ? apiKey : process.env.GEMINI_API_KEY;
+      const gKey = sanitizeApiKey(rawKey);
+      if (!gKey || gKey.length < 5) {
+        return res.status(400).json({ success: false, error: "Введите API ключ Gemini (AIza... или новый формат AQ...)" });
       }
       try {
-        const { GoogleGenAI } = await import("@google/genai");
-        const genClient = new GoogleGenAI({ apiKey: gKey });
-        const gModel = model || "gemini-2.5-flash";
-        const gRes = await genClient.models.generateContent({
+        resetGeminiBlock();
+        const genClient = createGeminiClient(gKey);
+        if (!genClient) {
+          return res.status(400).json({ success: false, error: "Не удалось инициализировать клиент Gemini. Проверьте формат ключа." });
+        }
+        const gModel = normalizeGeminiModel(model || "gemini-3.8-flash");
+        await genClient.models.generateContent({
           model: gModel,
           contents: "Ответь одним словом: OK"
         });
         const latencyMs = Date.now() - startTime;
+        const keyType = gKey.startsWith("AQ") ? "Auth Key (AQ.*)" : "Standard Key (AIza*)";
         return res.json({
           success: true,
-          message: `✅ Google Gemini API подключен успешно! Модель: ${gModel} (пинг: ${latencyMs} мс)`,
+          message: `✅ Google Gemini API (${keyType}) подключен успешно! Модель: ${gModel} (пинг: ${latencyMs} мс)`,
           model: gModel,
           latencyMs
         });
       } catch (err: any) {
+        const rawErr = String(err?.message || err || "");
+        let userFacingError = rawErr;
+        try {
+          const parsed = JSON.parse(rawErr);
+          if (parsed?.error?.message) {
+            userFacingError = parsed.error.message;
+          }
+        } catch {}
+
+        if (rawErr.includes("PERMISSION_DENIED") || rawErr.includes("unregistered callers") || rawErr.includes("403")) {
+          userFacingError = `Ошибка авторизации 403 (PERMISSION_DENIED / unregistered callers): Google отклонил запрос. Проверьте, что ключ (${gKey.slice(0, 6)}...) активен в Google AI Studio / Cloud Console и API включен.`;
+        } else if (rawErr.includes("API_KEY_SERVICE_BLOCKED") || rawErr.includes("UNAUTHENTICATED") || rawErr.includes("401")) {
+          userFacingError = `Ошибка ключа (401 / UNAUTHENTICATED): Google отклонил указанный ключ. Убедитесь, что скопирован полный и валидный ключ из Google AI Studio (начинающийся с AQ... или AIza...).`;
+        }
         return res.status(400).json({
           success: false,
-          error: `Ошибка Google Gemini API: ${err.message || "Неверный ключ или лимит исчерпан"}`
+          error: userFacingError
         });
       }
     }
@@ -8180,18 +8250,16 @@ ${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact}]`).join
 
     // 3. Gemini Provider execution
     if (activeProvider === "gemini") {
-      let customGeminiClient = client;
-      if (aiProviderConfig?.geminiApiKey && aiProviderConfig.geminiApiKey.trim().length > 5) {
-        try {
-          const { GoogleGenAI } = await import("@google/genai");
-          customGeminiClient = new GoogleGenAI({ apiKey: aiProviderConfig.geminiApiKey.trim() });
-        } catch {}
-      }
+      const gKey = aiProviderConfig?.geminiApiKey && aiProviderConfig.geminiApiKey.trim().length > 5
+        ? aiProviderConfig.geminiApiKey
+        : undefined;
+      const customGeminiClient = gKey ? createGeminiClient(gKey) : client;
 
       if (customGeminiClient) {
         try {
+          const gModel = normalizeGeminiModel(aiProviderConfig?.geminiModel || "gemini-3.8-flash");
           const response = await customGeminiClient.models.generateContent({
-            model: aiProviderConfig?.geminiModel || "gemini-3.8-flash",
+            model: gModel,
             contents: prompt,
             config: {
               systemInstruction,
