@@ -201,9 +201,12 @@ function calculateEmaSeries(candles: { close: number; time: any }[], period: num
   return result;
 }
 
-// Relative Strength Index (RSI) for period 6 and 14
+// Relative Strength Index (RSI) for period 6 and 14 (aligned 100% with candles length for multi-pane sync)
 function calculateRSI(candles: { close: number; time: any }[], period: number): { time: any; value: number }[] {
-  if (!candles || candles.length <= period) return [];
+  if (!candles || candles.length === 0) return [];
+  if (candles.length <= period) {
+    return candles.map(c => ({ time: c.time, value: 50 }));
+  }
   const result: { time: any; value: number }[] = [];
   let gains = 0;
   let losses = 0;
@@ -215,8 +218,13 @@ function calculateRSI(candles: { close: number; time: any }[], period: number): 
   let avgGain = gains / period;
   let avgLoss = losses / period;
   let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  let rsi = 100 - (100 / (1 + rs));
-  result.push({ time: candles[period].time, value: Math.round(rsi * 10) / 10 });
+  const firstRsi = Math.round((100 - (100 / (1 + rs))) * 10) / 10;
+
+  // Pad the first period bars so RSI series has exact same length and time coordinates as candles
+  for (let i = 0; i < period; i++) {
+    result.push({ time: candles[i].time, value: firstRsi });
+  }
+  result.push({ time: candles[period].time, value: firstRsi });
 
   for (let i = period + 1; i < candles.length; i++) {
     const diff = candles[i].close - candles[i - 1].close;
@@ -225,18 +233,22 @@ function calculateRSI(candles: { close: number; time: any }[], period: number): 
     avgGain = (avgGain * (period - 1) + gain) / period;
     avgLoss = (avgLoss * (period - 1) + loss) / period;
     rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    rsi = 100 - (100 / (1 + rs));
+    const rsi = 100 - (100 / (1 + rs));
     result.push({ time: candles[i].time, value: Math.round(rsi * 10) / 10 });
   }
   return result;
 }
 
-// Stochastic Oscillator (%K, %D)
+// Stochastic Oscillator (%K, %D) (aligned 100% with candles length for multi-pane sync)
 function calculateStochastic(candles: { high: number; low: number; close: number; time: any }[], periodK = 14, smoothD = 3): {
   kData: { time: any; value: number }[];
   dData: { time: any; value: number }[];
 } {
-  if (!candles || candles.length < periodK) return { kData: [], dData: [] };
+  if (!candles || candles.length === 0) return { kData: [], dData: [] };
+  if (candles.length < periodK) {
+    const dummy = candles.map(c => ({ time: c.time, value: 50 }));
+    return { kData: dummy, dData: dummy };
+  }
   const rawK: { time: any; k: number }[] = [];
   for (let i = periodK - 1; i < candles.length; i++) {
     let hh = -Infinity;
@@ -249,15 +261,35 @@ function calculateStochastic(candles: { high: number; low: number; close: number
     const k = range === 0 ? 50 : ((candles[i].close - ll) / range) * 100;
     rawK.push({ time: candles[i].time, k });
   }
-  const kData = rawK.map(item => ({ time: item.time, value: Math.round(item.k * 10) / 10 }));
-  const dData: { time: any; value: number }[] = [];
+
+  const firstK = rawK.length > 0 ? Math.round(rawK[0].k * 10) / 10 : 50;
+  const kData: { time: any; value: number }[] = [];
+  for (let i = 0; i < periodK - 1; i++) {
+    kData.push({ time: candles[i].time, value: firstK });
+  }
+  for (let i = 0; i < rawK.length; i++) {
+    kData.push({ time: rawK[i].time, value: Math.round(rawK[i].k * 10) / 10 });
+  }
+
+  const rawD: { time: any; value: number }[] = [];
   for (let i = smoothD - 1; i < rawK.length; i++) {
     let sum = 0;
     for (let j = i - smoothD + 1; j <= i; j++) {
       sum += rawK[j].k;
     }
-    dData.push({ time: rawK[i].time, value: Math.round((sum / smoothD) * 10) / 10 });
+    rawD.push({ time: rawK[i].time, value: Math.round((sum / smoothD) * 10) / 10 });
   }
+
+  const firstD = rawD.length > 0 ? rawD[0].value : firstK;
+  const dData: { time: any; value: number }[] = [];
+  const padDCount = (periodK - 1) + (smoothD - 1);
+  for (let i = 0; i < padDCount && i < candles.length; i++) {
+    dData.push({ time: candles[i].time, value: firstD });
+  }
+  for (let i = 0; i < rawD.length; i++) {
+    dData.push({ time: rawD[i].time, value: rawD[i].value });
+  }
+
   return { kData, dData };
 }
 
@@ -578,12 +610,12 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
           style={{
             top: `${Math.round(priceCoordY + 13)}px`,
             right: "2px",
-            width: marketStatus.isOpen ? "60px" : "80px"
+            width: typeof window !== "undefined" && window.innerWidth < 768 ? "46px" : (marketStatus.isOpen ? "60px" : "80px")
           }}
           title={marketStatus.isOpen ? `Отсчёт времени закрытия бара ${activeTf}: ${barCountdownFormatted}` : marketStatus.statusText}
         >
           {marketStatus.isOpen ? (
-            <div className="bg-[#090d16] border border-cyan-500/80 shadow-lg px-1 py-0.5 rounded text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-1 w-full text-center">
+            <div className="bg-[#090d16] border border-cyan-500/80 shadow-lg px-0.5 sm:px-1 py-0.5 rounded text-[8.5px] sm:text-[10px] font-mono font-bold text-cyan-300 flex items-center justify-center gap-0.5 sm:gap-1 w-full text-center">
               <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
               <span>{barCountdownFormatted}</span>
             </div>
@@ -2224,7 +2256,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           background: { type: ColorType.Solid, color: curThemePal.chartBg },
           textColor: "#cbd5e1",
           fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 11 : 12
+          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 9 : 12
         },
         grid: {
           vertLines: { color: "rgba(30, 41, 59, 0.45)" },
@@ -2268,7 +2300,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           entireTextOnly: false,
           ticksVisible: true,
           alignLabels: true,
-          autoScale: true
+          autoScale: true,
+          minimumWidth: typeof window !== "undefined" && window.innerWidth < 768 ? 50 : 68
         },
         timeScale: {
           borderColor: "#1e293b",
@@ -2594,7 +2627,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         height,
         layout: {
           background: { type: ColorType.Solid, color: curTheme.chartBg },
-          textColor: "#64748b"
+          textColor: "#64748b",
+          fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 9 : 11
         },
         grid: {
           vertLines: { color: curTheme.chartGrid },
@@ -2605,6 +2640,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
+          minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
             const d = new Date(time * 1000);
             return d.toLocaleTimeString("ru-RU", {
@@ -2632,7 +2670,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         rightPriceScale: {
           borderColor: "#1e293b",
           scaleMargins: { top: 0.1, bottom: 0.1 },
-          autoScale: true
+          autoScale: true,
+          minimumWidth: typeof window !== "undefined" && window.innerWidth < 768 ? 50 : 68
         },
         handleScroll: {
           mouseWheel: true,
@@ -2651,10 +2690,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       return;
     }
 
-    const histSeries = macdChart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
+    const histSeries = macdChart.addSeries(CandlestickSeries, {
+      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
       priceLineVisible: false,
-      lastValueVisible: false
+      lastValueVisible: false,
+      upColor: "transparent",
+      downColor: "transparent",
+      borderVisible: true,
+      wickVisible: false,
+      borderUpColor: "#0ecb81",
+      borderDownColor: "#f6465d"
     });
     const fastSeries = macdChart.addSeries(LineSeries, {
       color: "#facc15",
@@ -2737,7 +2782,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         height,
         layout: {
           background: { type: ColorType.Solid, color: curTheme.chartBg },
-          textColor: "#64748b"
+          textColor: "#64748b",
+          fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 9 : 11
         },
         grid: {
           vertLines: { color: curTheme.chartGrid },
@@ -2748,6 +2795,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
+          minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
             const d = new Date(time * 1000);
             return d.toLocaleTimeString("ru-RU", {
@@ -2775,7 +2825,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         rightPriceScale: {
           borderColor: "#1e293b",
           scaleMargins: { top: 0.1, bottom: 0.1 },
-          autoScale: true
+          autoScale: true,
+          minimumWidth: typeof window !== "undefined" && window.innerWidth < 768 ? 50 : 68
         },
         handleScroll: {
           mouseWheel: true,
@@ -2872,7 +2923,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         height,
         layout: {
           background: { type: ColorType.Solid, color: curTheme.chartBg },
-          textColor: "#64748b"
+          textColor: "#64748b",
+          fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: typeof window !== "undefined" && window.innerWidth < 768 ? 9 : 11
         },
         grid: {
           vertLines: { color: curTheme.chartGrid },
@@ -2883,6 +2936,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
+          minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
             const d = new Date(time * 1000);
             return d.toLocaleTimeString("ru-RU", {
@@ -2910,7 +2966,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         rightPriceScale: {
           borderColor: "#1e293b",
           scaleMargins: { top: 0.1, bottom: 0.1 },
-          autoScale: true
+          autoScale: true,
+          minimumWidth: typeof window !== "undefined" && window.innerWidth < 768 ? 50 : 68
         },
         handleScroll: {
           mouseWheel: true,
@@ -3301,27 +3358,42 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const difValues = cleanCandles.map((_, i) => emaFast[i] - emaSlow[i]);
         const deaValues = calculateEMA(cleanCandles.map((_, i) => ({ close: difValues[i] })), macdSigLen);
 
+        const formatMacdHollowCandle = (time: number, hist: number, prevHist: number) => {
+          const roundedHist = Math.round(hist * 100) / 100;
+          let borderColor: string;
+          if (roundedHist >= 0) {
+            borderColor = roundedHist >= prevHist ? "#0ecb81" : "rgba(14, 203, 129, 0.45)";
+          } else {
+            borderColor = roundedHist <= prevHist ? "#f6465d" : "rgba(246, 70, 93, 0.45)";
+          }
+          const openVal = 0;
+          const closeVal = roundedHist === 0 ? 0.001 : roundedHist;
+          return {
+            time,
+            open: openVal,
+            high: Math.max(openVal, closeVal),
+            low: Math.min(openVal, closeVal),
+            close: closeVal,
+            color: "transparent",
+            borderColor,
+            wickColor: "transparent"
+          };
+        };
+
         if (isFullReload) {
-          macdHistSeriesRef.current.setData(
-            cleanCandles.map((c, i) => {
-              const hist = difValues[i] - deaValues[i];
-              return {
-                time: c.time,
-                value: Math.round(hist * 100) / 100,
-                color: hist >= 0 ? "#0ecb81" : "#f6465d"
-              };
-            })
-          );
+          const hollowBars = cleanCandles.map((c, i) => {
+            const hist = difValues[i] - deaValues[i];
+            const prevHist = i > 0 ? (difValues[i - 1] - deaValues[i - 1]) : hist;
+            return formatMacdHollowCandle(c.time, hist, prevHist);
+          });
+          macdHistSeriesRef.current.setData(hollowBars);
           macdFastSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(difValues[i] * 100) / 100 })));
           macdSlowSeriesRef.current?.setData(cleanCandles.map((c, i) => ({ time: c.time, value: Math.round(deaValues[i] * 100) / 100 })));
         } else {
           for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
             const hist = difValues[idx] - deaValues[idx];
-            macdHistSeriesRef.current.update({
-              time: cleanCandles[idx].time,
-              value: Math.round(hist * 100) / 100,
-              color: hist >= 0 ? "#0ecb81" : "#f6465d"
-            });
+            const prevHist = idx > 0 ? (difValues[idx - 1] - deaValues[idx - 1]) : hist;
+            macdHistSeriesRef.current.update(formatMacdHollowCandle(cleanCandles[idx].time, hist, prevHist));
             macdFastSeriesRef.current?.update({ time: cleanCandles[idx].time, value: Math.round(difValues[idx] * 100) / 100 });
             macdSlowSeriesRef.current?.update({ time: cleanCandles[idx].time, value: Math.round(deaValues[idx] * 100) / 100 });
           }
@@ -3348,12 +3420,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           rsi6SeriesRef.current.setData(rsi6Data);
           rsi14SeriesRef.current.setData(rsi14Data);
         } else {
-          const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
-          for (const pt of rsi6Data) {
-            if (pt.time >= minTime) rsi6SeriesRef.current.update(pt);
-          }
-          for (const pt of rsi14Data) {
-            if (pt.time >= minTime) rsi14SeriesRef.current.update(pt);
+          for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
+            if (rsi6Data[idx]) rsi6SeriesRef.current.update(rsi6Data[idx]);
+            if (rsi14Data[idx]) rsi14SeriesRef.current.update(rsi14Data[idx]);
           }
         }
         if (rsi6Data.length > 0 && rsi14Data.length > 0) {
@@ -3375,12 +3444,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           stochKSeriesRef.current.setData(kData);
           stochDSeriesRef.current.setData(dData);
         } else {
-          const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
-          for (const pt of kData) {
-            if (pt.time >= minTime) stochKSeriesRef.current.update(pt);
-          }
-          for (const pt of dData) {
-            if (pt.time >= minTime) stochDSeriesRef.current.update(pt);
+          for (let idx = startUpdIdx; idx < cleanCandles.length; idx++) {
+            if (kData[idx]) stochKSeriesRef.current.update(kData[idx]);
+            if (dData[idx]) stochDSeriesRef.current.update(dData[idx]);
           }
         }
         if (kData.length > 0 && dData.length > 0) {
@@ -3529,7 +3595,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         bottomPrice: minCandle.low,
         label: "+OB",
         fillColor: "rgba(8, 153, 129, 0.12)",
-        borderColor: "rgba(8, 153, 129, 0.60)",
+        borderColor: "rgba(8, 153, 129, 0.45)",
         borderStyle: "dashed"
       });
 
@@ -3545,7 +3611,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         bottomPrice: maxCandle.low,
         label: "-OB",
         fillColor: "rgba(242, 54, 69, 0.12)",
-        borderColor: "rgba(242, 54, 69, 0.60)",
+        borderColor: "rgba(242, 54, 69, 0.45)",
         borderStyle: "dashed"
       });
     }
@@ -3567,7 +3633,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             bottomPrice: c1.high,
             label: "+FVG",
             fillColor: "rgba(14, 165, 233, 0.10)",
-            borderColor: "rgba(14, 165, 233, 0.45)",
+            borderColor: "rgba(14, 165, 233, 0.35)",
             borderStyle: "dotted"
           });
           break;
@@ -3583,7 +3649,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             bottomPrice: c3.high,
             label: "-FVG",
             fillColor: "rgba(242, 54, 69, 0.10)",
-            borderColor: "rgba(242, 54, 69, 0.45)",
+            borderColor: "rgba(242, 54, 69, 0.35)",
             borderStyle: "dotted"
           });
           break;
@@ -3621,7 +3687,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         bottomPrice: Math.min(oteTop, oteBot),
         label: `OTE (${Math.min(oteTop, oteBot).toFixed(1)}–${Math.max(oteTop, oteBot).toFixed(1)})`,
         fillColor: "rgba(234, 179, 8, 0.08)",
-        borderColor: "rgba(234, 179, 8, 0.35)",
+        borderColor: "rgba(234, 179, 8, 0.30)",
         borderStyle: "dashed"
       });
 
@@ -3662,8 +3728,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         topPrice: phLt + srHalfH,
         bottomPrice: phLt - srHalfH,
         label: `Liq LT [${phLt > 1000 ? (phLt / 1000).toFixed(1) + "K" : phLt.toFixed(0)}] Сопр.`,
-        fillColor: "rgba(242, 54, 69, 0.12)",
-        borderColor: "rgba(242, 54, 69, 0.65)",
+        fillColor: "rgba(242, 54, 69, 0.10)",
+        borderColor: "rgba(242, 54, 69, 0.45)",
         borderStyle: "solid"
       });
 
@@ -3678,8 +3744,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         topPrice: plLt + srHalfH,
         bottomPrice: plLt - srHalfH,
         label: `Liq LT [${plLt > 1000 ? (plLt / 1000).toFixed(1) + "K" : plLt.toFixed(0)}] Подд.`,
-        fillColor: "rgba(8, 153, 129, 0.12)",
-        borderColor: "rgba(8, 153, 129, 0.65)",
+        fillColor: "rgba(8, 153, 129, 0.10)",
+        borderColor: "rgba(8, 153, 129, 0.45)",
         borderStyle: "solid"
       });
 
@@ -3700,7 +3766,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           bottomPrice: phIt - srHalfH,
           label: `Liq IT [${phIt > 1000 ? (phIt / 1000).toFixed(1) + "K" : phIt.toFixed(0)}]`,
           fillColor: "rgba(242, 54, 69, 0.08)",
-          borderColor: "rgba(242, 54, 69, 0.45)",
+          borderColor: "rgba(242, 54, 69, 0.35)",
           borderStyle: "dashed"
         });
       }
@@ -3717,7 +3783,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           bottomPrice: plIt - srHalfH,
           label: `Liq IT [${plIt > 1000 ? (plIt / 1000).toFixed(1) + "K" : plIt.toFixed(0)}]`,
           fillColor: "rgba(8, 153, 129, 0.08)",
-          borderColor: "rgba(8, 153, 129, 0.45)",
+          borderColor: "rgba(8, 153, 129, 0.35)",
           borderStyle: "dashed"
         });
       }
@@ -3874,7 +3940,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: "#ef4444",
         lineWidth: 1,
         lineStyle: "dashed",
-        label: fc?.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}${trailingNote}`
+        label: fc?.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}${trailingNote}`,
+        labelBg: "rgba(30, 9, 13, 0.98)",
+        labelBorderColor: "#f87171",
+        labelTextColor: "#fecdd3"
       });
 
       // Вход (Amber dotted or solid green if hit)
@@ -3888,7 +3957,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
         lineWidth: 1,
         lineStyle: fc?.leg1Hit ? "solid" : "dotted",
-        label: fc?.leg1Hit ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓` : `ВХОД: ${computedEntry.toFixed(dec)}`
+        label: fc?.leg1Hit ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓` : `ВХОД: ${computedEntry.toFixed(dec)}`,
+        labelBg: "rgba(24, 18, 6, 0.98)",
+        labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
+        labelTextColor: "#fef3c7"
       });
 
       // TP1 (Green line)
@@ -3902,7 +3974,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: fc?.leg2Hit ? "#059669" : "#10b981",
         lineWidth: 1,
         lineStyle: fc?.leg2Hit ? "solid" : "dotted",
-        label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`
+        label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`,
+        labelBg: "rgba(6, 24, 16, 0.98)",
+        labelBorderColor: "#34d399",
+        labelTextColor: "#d1fae5"
       });
 
       // TP2 (Blue line)
@@ -3917,7 +3992,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
           lineWidth: 1,
           lineStyle: fc?.leg3Hit ? "solid" : "dotted",
-          label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`
+          label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`,
+          labelBg: "rgba(6, 18, 28, 0.98)",
+          labelBorderColor: "#38bdf8",
+          labelTextColor: "#e0f2fe"
         });
       }
     }
@@ -3948,7 +4026,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#10b981",
           lineWidth: 1,
           lineStyle: "solid",
-          label: `🏰 Потолок CW: ${effectiveGex.callWall}`
+          label: `🏰 Потолок CW: ${effectiveGex.callWall}`,
+          labelBg: "rgba(6, 24, 16, 0.98)",
+          labelBorderColor: "#34d399",
+          labelTextColor: "#d1fae5"
         });
 
         boundedLines.push({
@@ -3961,7 +4042,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#ef4444",
           lineWidth: 1,
           lineStyle: "solid",
-          label: `🛡️ Поддержка PW: ${effectiveGex.putWall}`
+          label: `🛡️ Поддержка PW: ${effectiveGex.putWall}`,
+          labelBg: "rgba(30, 9, 13, 0.98)",
+          labelBorderColor: "#f87171",
+          labelTextColor: "#fecdd3"
         });
       }
 
@@ -3976,7 +4060,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#a855f7",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: `⚡ Граница Гаммы: ${effectiveGex.gammaFlip}`
+          label: `⚡ Граница Гаммы: ${effectiveGex.gammaFlip}`,
+          labelBg: "rgba(22, 10, 36, 0.98)",
+          labelBorderColor: "#c084fc",
+          labelTextColor: "#f3e8ff"
         });
       }
 
@@ -3991,7 +4078,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#06b6d4",
           lineWidth: 1,
           lineStyle: "dotted",
-          label: `🎯 Магнит дня: ${effectiveGex.maxPain}`
+          label: `🎯 Магнит дня: ${effectiveGex.maxPain}`,
+          labelBg: "rgba(8, 22, 28, 0.98)",
+          labelBorderColor: "#22d3ee",
+          labelTextColor: "#cffafe"
         });
       }
 
@@ -5655,17 +5745,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                             <RotateCcw className="h-3 w-3" />
                           </button>
                         )}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setIsHudMinimized(true);
-                          }}
-                          className="text-cyan-400 hover:text-white bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer ml-0.5 font-bold flex items-center gap-0.5"
-                          title="Свернуть таблицу в компактную строку (освободить график)"
-                        >
-                          <Minus className="h-3 w-3" />
-                          <span className="text-[9px] sm:hidden">Свернуть</span>
-                        </button>
                         {/* Zoom / Scale HUD Table */}
                         <div className="flex items-center gap-0.5 bg-gray-900 border border-gray-700/80 rounded px-1 py-0.5 text-[9px] font-mono ml-0.5">
                           <button
@@ -5713,15 +5792,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         >
                           <Settings className="h-3 w-3" />
                         </button>
+                        {/* Minimize / Collapse Button (in place of old close button) */}
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setShowTables(false);
+                            setIsHudMinimized(true);
                           }}
-                          className="text-gray-400 hover:text-red-400 p-0.5 rounded cursor-pointer"
-                          title="Скрыть панель"
+                          className="text-cyan-400 hover:text-white hover:bg-cyan-500/20 p-1 rounded cursor-pointer ml-0.5 transition"
+                          title="Свернуть таблицу HUD (освободить график)"
                         >
-                          <X className="h-3 w-3" />
+                          <Minus className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>

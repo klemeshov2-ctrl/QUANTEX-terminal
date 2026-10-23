@@ -188,11 +188,9 @@ function drawBadge(
     const rx = snapHalf(startX);
     const ry = snapHalf(y - badgeH / 2);
 
-    // Crisp rounded rectangle background (clean dark pill on mobile without heavy outlines)
+    // Crisp rounded rectangle background (clean dark solid pill so lines and candles underneath NEVER bleed through)
     ctx.setLineDash([]);
-    ctx.fillStyle = isMobile
-      ? "rgba(8, 12, 21, 0.88)"
-      : (bgColor === "rgba(15, 23, 42, 0.92)" ? "rgba(8, 12, 21, 0.94)" : bgColor);
+    ctx.fillStyle = bgColor ? bgColor : "rgba(8, 12, 21, 0.96)";
     ctx.beginPath();
     if (typeof ctx.roundRect === "function") {
       ctx.roundRect(rx, ry, badgeW, badgeH, 2.5);
@@ -201,16 +199,17 @@ function drawBadge(
     }
     ctx.fill();
 
-    // 🚀 Mobile optimization: In mobile version, remove all frames from labels so it's super compact
+    // Border: On mobile version, omit borders from badges (Take Profit, Stop Loss, Entry, Flip, etc.)
+    // so labels render as clean, borderless solid pills as requested. Allow only if explicitly enabled in user settings.
     let allowBorders = false;
     try {
       allowBorders = typeof window !== "undefined" && localStorage.getItem("quantex_chart_badge_borders") === "true";
     } catch {}
 
-    const canDrawBorder = opts?.showBorder !== undefined ? opts.showBorder : (!isMobile || allowBorders);
-    if (canDrawBorder && !isMobile) {
+    const canDrawBorder = !isMobile ? (opts?.showBorder !== undefined ? opts.showBorder : true) : allowBorders;
+    if (canDrawBorder) {
       ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = isMobile ? 0.8 : 1;
       ctx.stroke();
     }
 
@@ -314,13 +313,14 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
             ctx.fillStyle = zone.fillColor;
             ctx.fillRect(left, top, width, height);
 
-            // Stable anti-flicker border
+            // Thin and crisp borders on mobile for OB, FVG, OTE, LIQ, and S&R zones
+            const isMobile = mediaW < 640;
             ctx.strokeStyle = zone.borderColor;
-            ctx.lineWidth = 1.15;
+            ctx.lineWidth = isMobile ? 0.7 : 1.0;
             if (zone.borderStyle === "dashed") {
-              ctx.setLineDash([6, 4]);
+              ctx.setLineDash(isMobile ? [4, 3] : [6, 4]);
             } else if (zone.borderStyle === "dotted") {
-              ctx.setLineDash([4, 3]);
+              ctx.setLineDash(isMobile ? [2, 2] : [4, 3]);
             } else {
               ctx.setLineDash([]);
             }
@@ -827,7 +827,17 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           const seenLabels = new Set<string>();
           const placedBadges: Array<{ x: number; y: number }> = [];
           const minVertGap = isMobile ? 16 : 18;
+          const badgesToRender: Array<{
+            label: string;
+            x: number;
+            y: number;
+            bg: string;
+            border: string;
+            textColor: string;
+            showBorder: boolean;
+          }> = [];
 
+          // PASS 1: Calculate coordinates and draw all horizontal level lines first
           for (const pl of data.lines) {
             if (pl.label && seenLabels.has(pl.label)) continue;
             if (pl.label) seenLabels.add(pl.label);
@@ -870,9 +880,9 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             const left = snapPx(Math.min(x1, x2));
             const right = snapPx(Math.max(x1, x2));
 
-            // Stable anti-flicker horizontal level lines (1.25px prevents fractional-DPR dropout)
+            // Stable anti-flicker horizontal level lines
             ctx.strokeStyle = pl.color;
-            ctx.lineWidth = 1.25;
+            ctx.lineWidth = isMobile ? 1.0 : 1.25;
             if (pl.lineStyle === "dashed") {
               ctx.setLineDash([6, 4]);
             } else if (pl.lineStyle === "dotted") {
@@ -886,7 +896,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Right End Badge with vertical collision avoidance
+            // Prepare badge for Pass 2 (drawn strictly on top of all lines)
             if (pl.label) {
               let badgeY = snapPx(rawY as number);
               const badgeX = snapPx(right + 4);
@@ -899,19 +909,53 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               }
               placedBadges.push({ x: badgeX, y: badgeY });
 
-              drawBadge(
-                ctx,
-                pl.label,
-                badgeX,
-                badgeY,
-                pl.labelBg || "rgba(8, 12, 21, 0.94)",
-                pl.labelBorderColor || pl.color,
-                pl.labelTextColor || "#ffffff",
-                mediaW,
-                "left",
-                9.5
-              );
+              // High-contrast solid pill styling: Граница Гаммы (Flip) and SL have solid dark background with crisp borders
+              const isFlip = pl.id === "flip_line" || pl.label.includes("Граница Гаммы");
+              const isSl = pl.id === "sl_line" || pl.label.includes("SL");
+
+              const labelBg = pl.labelBg || (isFlip
+                ? "rgba(18, 9, 31, 0.98)"
+                : isSl
+                ? "rgba(30, 9, 13, 0.98)"
+                : "rgba(8, 12, 21, 0.96)");
+              const labelBorder = pl.labelBorderColor || (isFlip
+                ? "#c084fc"
+                : isSl
+                ? "#f87171"
+                : pl.color);
+              const labelText = pl.labelTextColor || (isFlip
+                ? "#f3e8ff"
+                : isSl
+                ? "#fecdd3"
+                : "#ffffff");
+
+              badgesToRender.push({
+                label: pl.label,
+                x: badgeX,
+                y: badgeY,
+                bg: labelBg,
+                border: labelBorder,
+                textColor: labelText,
+                showBorder: true
+              });
             }
+          }
+
+          // PASS 2: Render all badges ON TOP of all lines so no line ever cuts through badge text!
+          for (const b of badgesToRender) {
+            drawBadge(
+              ctx,
+              b.label,
+              b.x,
+              b.y,
+              b.bg,
+              b.border,
+              b.textColor,
+              mediaW,
+              "left",
+              9.5,
+              { showBorder: b.showBorder }
+            );
           }
         }
       } finally {
