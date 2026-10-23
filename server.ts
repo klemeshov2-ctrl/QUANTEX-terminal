@@ -3150,7 +3150,7 @@ export function sanitizeApiKey(rawKey?: string | null): string {
 }
 
 export function normalizeGeminiModel(model?: string): string {
-  if (!model) return "gemini-3.8-flash";
+  if (!model) return "gemini-3.5-flash";
   const m = model.trim();
   if (
     m === "gemini-2.5-flash" ||
@@ -3159,30 +3159,27 @@ export function normalizeGeminiModel(model?: string): string {
     m === "gemini-pro" ||
     m === "gemini-2.0-flash-thinking"
   ) {
-    return "gemini-3.8-flash";
+    return "gemini-3.5-flash";
   }
-  if (m === "gemini-1.5-pro" || m === "gemini-2.0-pro") {
-    return "gemini-4-argon";
+  if (m === "gemini-1.5-pro" || m === "gemini-2.0-pro" || m === "gemini-2.5-pro") {
+    return "gemini-3.1-pro-preview";
   }
   return m;
 }
 
 // Universal factory for GoogleGenAI with support for both legacy AIza... keys
-// and new Google Auth keys with 'AQ.' prefix (which require Bearer headers to avoid 403 / "unregistered callers")
+// and new Google AI Studio Auth keys with 'AQ.' prefix
 export function createGeminiClient(key?: string): GoogleGenAI | null {
   const apiKey = sanitizeApiKey(key || process.env.GEMINI_API_KEY);
   if (!apiKey || apiKey.length < 5) return null;
 
   const headers: Record<string, string> = {
     "User-Agent": "aistudio-build",
-    "x-goog-api-key": apiKey,
   };
 
-  // Google updated API key formats with prefix 'AQ.' (Google Cloud Auth keys).
-  // If passed only via query param or without Authorization header, Google API gateway rejects with:
-  // "403 PERMISSION_DENIED: Method doesn't allow unregistered callers".
-  // Adding Authorization: Bearer <key> alongside x-goog-api-key ensures reliable authentication.
-  if (apiKey.startsWith("AQ") || apiKey.startsWith("ya29.") || !apiKey.startsWith("AIza")) {
+  // Only OAuth2 access tokens (starting with ya29.) use Authorization: Bearer.
+  // Both legacy AIza... keys and new Google AI Studio AQ... keys are API keys!
+  if (apiKey.startsWith("ya29.")) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
@@ -6049,6 +6046,8 @@ interface StationUserAccount {
 }
 
 let unifiedStationSettings = {
+  userPreferences: {} as Record<string, any>,
+  userPreferencesByUser: {} as Record<string, Record<string, any>>,
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || "",
     chatId: process.env.TELEGRAM_CHAT_ID || "",
@@ -6121,6 +6120,12 @@ function loadUnifiedSettings() {
       unifiedStationSettings = {
         ...unifiedStationSettings,
         ...parsed,
+        userPreferences: (typeof parsed.userPreferences === "object" && parsed.userPreferences !== null)
+          ? parsed.userPreferences
+          : (unifiedStationSettings.userPreferences || {}),
+        userPreferencesByUser: (typeof parsed.userPreferencesByUser === "object" && parsed.userPreferencesByUser !== null)
+          ? parsed.userPreferencesByUser
+          : {},
         telegram: { ...unifiedStationSettings.telegram, ...(parsed.telegram || {}) },
         ai: { ...unifiedStationSettings.ai, ...(parsed.ai || {}) },
         serverSecurity: { ...unifiedStationSettings.serverSecurity, ...(parsed.serverSecurity || {}) },
@@ -6206,12 +6211,64 @@ app.post("/api/settings/unified", (req, res) => {
         ...incoming.serverPreferences
       };
     }
+    if (incoming.userPreferences && typeof incoming.userPreferences === "object") {
+      unifiedStationSettings.userPreferences = {
+        ...(unifiedStationSettings.userPreferences || {}),
+        ...incoming.userPreferences
+      };
+    }
 
     persistUnifiedSettings();
     addServerLog("INFO", "Единые настройки станции успешно сохранены");
     res.json({ success: true, settings: unifiedStationSettings });
   } catch (err: any) {
     addServerLog("ERROR", `Ошибка сохранения настроек: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2b. User Station Preferences (Indicators, font sizes, scales, active tabs, assets, charts, etc.)
+app.get("/api/settings/user-preferences", (req, res) => {
+  const username = String(req.query.username || "").trim().toLowerCase();
+  let userPrefs = unifiedStationSettings.userPreferences || {};
+  if (username && unifiedStationSettings.userPreferencesByUser && unifiedStationSettings.userPreferencesByUser[username]) {
+    userPrefs = unifiedStationSettings.userPreferencesByUser[username];
+  }
+  res.json({
+    success: true,
+    username: username || "default",
+    preferences: userPrefs
+  });
+});
+
+app.post("/api/settings/user-preferences", (req, res) => {
+  try {
+    const username = String(req.body?.username || req.query?.username || "").trim().toLowerCase();
+    const prefs = req.body?.preferences || req.body || {};
+    if (typeof prefs === "object" && prefs !== null) {
+      if (!unifiedStationSettings.userPreferencesByUser) {
+        unifiedStationSettings.userPreferencesByUser = {};
+      }
+      if (username) {
+        unifiedStationSettings.userPreferencesByUser[username] = {
+          ...(unifiedStationSettings.userPreferencesByUser[username] || {}),
+          ...prefs
+        };
+      }
+      unifiedStationSettings.userPreferences = {
+        ...(unifiedStationSettings.userPreferences || {}),
+        ...prefs
+      };
+      persistUnifiedSettings();
+      res.json({
+        success: true,
+        username: username || "default",
+        preferences: username ? unifiedStationSettings.userPreferencesByUser[username] : unifiedStationSettings.userPreferences
+      });
+    } else {
+      res.status(400).json({ success: false, error: "Invalid preferences format" });
+    }
+  } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -7104,10 +7161,14 @@ app.post("/api/ai-provider/test", async (req, res) => {
     }
 
     if (provider === "gemini") {
-      const rawKey = (apiKey && apiKey.trim().length > 5) ? apiKey : process.env.GEMINI_API_KEY;
+      const explicitKey = typeof apiKey === "string" ? apiKey.trim() : "";
+      if (!explicitKey && (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY.length < 5)) {
+        return res.status(400).json({ success: false, error: "Введите API ключ Gemini (начинающийся с AQ... или AIza...)" });
+      }
+      const rawKey = explicitKey || process.env.GEMINI_API_KEY;
       const gKey = sanitizeApiKey(rawKey);
       if (!gKey || gKey.length < 5) {
-        return res.status(400).json({ success: false, error: "Введите API ключ Gemini (AIza... или новый формат AQ...)" });
+        return res.status(400).json({ success: false, error: "Введите API ключ Gemini (начинающийся с AQ... или AIza...)" });
       }
       try {
         resetGeminiBlock();
@@ -7115,16 +7176,37 @@ app.post("/api/ai-provider/test", async (req, res) => {
         if (!genClient) {
           return res.status(400).json({ success: false, error: "Не удалось инициализировать клиент Gemini. Проверьте формат ключа." });
         }
-        const gModel = normalizeGeminiModel(model || "gemini-3.8-flash");
-        await genClient.models.generateContent({
-          model: gModel,
-          contents: "Ответь одним словом: OK"
-        });
+        let gModel = normalizeGeminiModel(model || "gemini-3.5-flash");
+        let resp: any = null;
+        try {
+          resp = await genClient.models.generateContent({
+            model: gModel,
+            contents: "Ответь одним словом: OK"
+          });
+        } catch (firstErr: any) {
+          const firstErrMsg = String(firstErr?.message || "");
+          const isHighDemandOrNotFound =
+            firstErrMsg.includes("high demand") ||
+            firstErrMsg.includes("503") ||
+            firstErrMsg.includes("NOT_FOUND") ||
+            firstErrMsg.includes("404");
+          if (isHighDemandOrNotFound) {
+            const fallbackModel = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
+            resp = await genClient.models.generateContent({
+              model: fallbackModel,
+              contents: "Ответь одним словом: OK"
+            });
+            gModel = fallbackModel;
+          } else {
+            throw firstErr;
+          }
+        }
+
         const latencyMs = Date.now() - startTime;
-        const keyType = gKey.startsWith("AQ") ? "Auth Key (AQ.*)" : "Standard Key (AIza*)";
+        const keyType = gKey.startsWith("AQ") ? "Google AI Studio (AQ.*)" : "Google Cloud Key (AIza*)";
         return res.json({
           success: true,
-          message: `✅ Google Gemini API (${keyType}) подключен успешно! Модель: ${gModel} (пинг: ${latencyMs} мс)`,
+          message: `✅ Google Gemini API (${keyType}) подключен успешно! Модель: ${gModel} (ответ: "${(resp?.text || "OK").trim()}", пинг: ${latencyMs} мс)`,
           model: gModel,
           latencyMs
         });
@@ -8257,19 +8339,39 @@ ${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact}]`).join
 
       if (customGeminiClient) {
         try {
-          const gModel = normalizeGeminiModel(aiProviderConfig?.geminiModel || "gemini-3.8-flash");
-          const response = await customGeminiClient.models.generateContent({
-            model: gModel,
-            contents: prompt,
-            config: {
-              systemInstruction,
-              temperature: 0.25,
+          let gModel = normalizeGeminiModel(aiProviderConfig?.geminiModel || "gemini-3.5-flash");
+          let response: any = null;
+          try {
+            response = await customGeminiClient.models.generateContent({
+              model: gModel,
+              contents: prompt,
+              config: {
+                systemInstruction,
+                temperature: 0.25,
+              }
+            });
+          } catch (modelErr: any) {
+            const mErr = String(modelErr?.message || "");
+            if (mErr.includes("high demand") || mErr.includes("503") || mErr.includes("404") || mErr.includes("NOT_FOUND")) {
+              const fallbackM = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
+              response = await customGeminiClient.models.generateContent({
+                model: fallbackM,
+                contents: prompt,
+                config: {
+                  systemInstruction,
+                  temperature: 0.25,
+                }
+              });
+              gModel = fallbackM;
+            } else {
+              throw modelErr;
             }
-          });
+          }
+
           if (response && response.text) {
             return res.json({
               plan: response.text,
-              provider: `Gemini (${aiProviderConfig?.geminiModel || "gemini-3.8-flash"})`,
+              provider: `Gemini (${gModel})`,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });

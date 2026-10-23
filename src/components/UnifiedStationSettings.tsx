@@ -300,6 +300,12 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
   // AI test state
   const [aiTestStatus, setAiTestStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [isTestingAi, setIsTestingAi] = useState<boolean>(false);
+  const [geminiTestStatus, setGeminiTestStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
+  const [deepSeekTestStatus, setDeepSeekTestStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [isTestingDeepSeek, setIsTestingDeepSeek] = useState<boolean>(false);
+  const [qwenTestStatus, setQwenTestStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [isTestingQwen, setIsTestingQwen] = useState<boolean>(false);
 
   // User creation form
   const [newUsername, setNewUsername] = useState<string>("");
@@ -422,12 +428,28 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
     }
   };
 
-  // 2. AI API Test
-  const handleTestAi = async () => {
-    setIsTestingAi(true);
-    setAiTestStatus(null);
+  // 2. AI API Test (Specific provider or active provider)
+  const testSpecificProvider = async (provider: "deepseek" | "qwen" | "gemini" | "autonomous") => {
+    if (provider === "autonomous") {
+      setAiTestStatus({
+        ok: true,
+        msg: "✅ Встроенный квант-модуль QUANTEX активен и готов к работе без внешних ключей!"
+      });
+      return;
+    }
+
+    if (provider === "gemini") {
+      setIsTestingGemini(true);
+      setGeminiTestStatus(null);
+    } else if (provider === "deepseek") {
+      setIsTestingDeepSeek(true);
+      setDeepSeekTestStatus(null);
+    } else if (provider === "qwen") {
+      setIsTestingQwen(true);
+      setQwenTestStatus(null);
+    }
+
     try {
-      const provider = settings.ai.activeProvider;
       const apiKey =
         provider === "deepseek"
           ? settings.ai.deepSeekApiKey
@@ -449,19 +471,32 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
         body: JSON.stringify({ provider, apiKey, model, endpoint })
       });
       const data = await res.json();
-      if (res.ok && data.success) {
-        setAiTestStatus({
-          ok: true,
-          msg: `✅ ${data.message || "ИИ отвечает корректно!"} (пинг: ${data.latencyMs || 0} мс)`
-        });
-      } else {
-        setAiTestStatus({
-          ok: false,
-          msg: `❌ Ошибка ИИ: ${data.error || "Проверьте введенный API ключ"}`
-        });
-      }
+      const statusObj = res.ok && data.success
+        ? { ok: true, msg: `${data.message || "ИИ отвечает корректно!"}` }
+        : { ok: false, msg: `❌ Ошибка: ${data.error || "Проверьте введенный API ключ"}` };
+
+      if (provider === "gemini") setGeminiTestStatus(statusObj);
+      else if (provider === "deepseek") setDeepSeekTestStatus(statusObj);
+      else if (provider === "qwen") setQwenTestStatus(statusObj);
+
+      setAiTestStatus(statusObj);
     } catch (e: any) {
-      setAiTestStatus({ ok: false, msg: `❌ Ошибка сети: ${e.message}` });
+      const errObj = { ok: false, msg: `❌ Ошибка сети: ${e.message}` };
+      if (provider === "gemini") setGeminiTestStatus(errObj);
+      else if (provider === "deepseek") setDeepSeekTestStatus(errObj);
+      else if (provider === "qwen") setQwenTestStatus(errObj);
+      setAiTestStatus(errObj);
+    } finally {
+      if (provider === "gemini") setIsTestingGemini(false);
+      else if (provider === "deepseek") setIsTestingDeepSeek(false);
+      else if (provider === "qwen") setIsTestingQwen(false);
+    }
+  };
+
+  const handleTestAi = async () => {
+    setIsTestingAi(true);
+    try {
+      await testSpecificProvider(settings.ai.activeProvider);
     } finally {
       setIsTestingAi(false);
     }
@@ -1019,19 +1054,37 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
 
               {/* DeepSeek API Key Block */}
               <div className="p-3.5 rounded-xl bg-[#101424] border border-gray-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-xs text-cyan-300 flex items-center gap-1.5">
-                    <span>🤖 DeepSeek API (api.deepseek.com)</span>
-                  </span>
-                  <a
-                    href="https://platform.deepseek.com/api_keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1 font-mono"
-                  >
-                    <span>Получить ключ DeepSeek</span>
-                    <ExternalLink className="h-2.5 w-2.5" />
-                  </a>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-cyan-300 flex items-center gap-1.5">
+                      <span>🤖 DeepSeek API (api.deepseek.com)</span>
+                    </span>
+                    {settings.ai.activeProvider === "deepseek" && (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-mono">
+                        Активный провайдер
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => testSpecificProvider("deepseek")}
+                      disabled={isTestingDeepSeek}
+                      className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px] transition cursor-pointer flex items-center gap-1"
+                    >
+                      <Bot className={`h-3 w-3 ${isTestingDeepSeek ? "animate-spin" : ""}`} />
+                      <span>{isTestingDeepSeek ? "Проверка..." : "Проверить DeepSeek"}</span>
+                    </button>
+                    <a
+                      href="https://platform.deepseek.com/api_keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1 font-mono"
+                    >
+                      <span>Ключи</span>
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1068,23 +1121,53 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                     </select>
                   </div>
                 </div>
+
+                {deepSeekTestStatus && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs font-mono ${
+                      deepSeekTestStatus.ok
+                        ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                        : "bg-rose-950/40 border-rose-500/40 text-rose-300"
+                    }`}
+                  >
+                    {deepSeekTestStatus.msg}
+                  </div>
+                )}
               </div>
 
               {/* Qwen / DashScope API Key Block */}
               <div className="p-3.5 rounded-xl bg-[#101424] border border-gray-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-xs text-indigo-300">
-                    🌐 Qwen / DashScope (Aliyun Cloud)
-                  </span>
-                  <a
-                    href="https://dashscope.console.aliyun.com/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1 font-mono"
-                  >
-                    <span>Консоль DashScope</span>
-                    <ExternalLink className="h-2.5 w-2.5" />
-                  </a>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-indigo-300">
+                      🌐 Qwen / DashScope (Aliyun Cloud)
+                    </span>
+                    {settings.ai.activeProvider === "qwen" && (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
+                        Активный провайдер
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => testSpecificProvider("qwen")}
+                      disabled={isTestingQwen}
+                      className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] transition cursor-pointer flex items-center gap-1"
+                    >
+                      <Bot className={`h-3 w-3 ${isTestingQwen ? "animate-spin" : ""}`} />
+                      <span>{isTestingQwen ? "Проверка..." : "Проверить Qwen"}</span>
+                    </button>
+                    <a
+                      href="https://dashscope.console.aliyun.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-indigo-400 hover:underline flex items-center gap-1 font-mono"
+                    >
+                      <span>Консоль</span>
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1123,38 +1206,82 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                     </select>
                   </div>
                 </div>
+
+                {qwenTestStatus && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs font-mono ${
+                      qwenTestStatus.ok
+                        ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                        : "bg-rose-950/40 border-rose-500/40 text-rose-300"
+                    }`}
+                  >
+                    {qwenTestStatus.msg}
+                  </div>
+                )}
               </div>
 
               {/* Gemini API Key Block */}
               <div className="p-3.5 rounded-xl bg-[#101424] border border-gray-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-xs text-emerald-300">
-                    ✨ Google Gemini API
-                  </span>
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-emerald-400 hover:underline flex items-center gap-1 font-mono"
-                  >
-                    <span>Google AI Studio Key</span>
-                    <ExternalLink className="h-2.5 w-2.5" />
-                  </a>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-emerald-300 flex items-center gap-1.5">
+                      <span>✨ Google Gemini API</span>
+                    </span>
+                    {settings.ai.activeProvider === "gemini" && (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
+                        Активный провайдер
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => testSpecificProvider("gemini")}
+                      disabled={isTestingGemini}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition cursor-pointer flex items-center gap-1 shadow"
+                    >
+                      <Bot className={`h-3 w-3 ${isTestingGemini ? "animate-spin" : ""}`} />
+                      <span>{isTestingGemini ? "Проверка..." : "Проверить Gemini"}</span>
+                    </button>
+                    <a
+                      href="https://aistudio.google.com/app/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-emerald-400 hover:underline flex items-center gap-1 font-mono"
+                    >
+                      <span>AI Studio Key</span>
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-gray-400 block mb-1">API Key (AQ... или AIza...):</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] text-gray-400 block">API Key (AQ... или AIza...):</label>
+                      {settings.ai.geminiApiKey?.startsWith("AQ.") && (
+                        <span className="text-[10px] text-emerald-400 font-mono">Google AI Studio (AQ.*)</span>
+                      )}
+                      {settings.ai.geminiApiKey?.startsWith("AIza") && (
+                        <span className="text-[10px] text-cyan-400 font-mono">Google Cloud (AIza*)</span>
+                      )}
+                    </div>
                     <input
                       type={showTokens ? "text" : "password"}
                       value={settings.ai.geminiApiKey}
-                      onChange={e =>
+                      onChange={e => {
+                        const val = e.target.value;
                         setSettings(prev => ({
                           ...prev,
-                          ai: { ...prev.ai, geminiApiKey: e.target.value }
-                        }))
-                      }
-                      placeholder="AQ... или AIzaSy..."
+                          ai: {
+                            ...prev.ai,
+                            geminiApiKey: val,
+                            // If user pastes a Gemini key and no deepseek key exists, auto-select Gemini
+                            activeProvider: (!prev.ai.deepSeekApiKey && val.length > 10) ? "gemini" : prev.ai.activeProvider
+                          }
+                        }));
+                      }}
+                      placeholder="AQ.Ab8RN6... или AIzaSy..."
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-emerald-500"
                     />
                   </div>
@@ -1171,12 +1298,43 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                       }
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
                     >
-                      <option value="gemini-3.8-flash">gemini-3.8-flash (Рекомендуемая)</option>
-                      <option value="gemini-4-argon">gemini-4-argon (Элитный анализ)</option>
-                      <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Быстрая)</option>
+                      <option value="gemini-3.5-flash">gemini-3.5-flash (Рекомендуемая, сверхбыстрая)</option>
+                      <option value="gemini-3.8-flash">gemini-3.8-flash (Продвинутая аналитика)</option>
+                      <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Флагман Pro)</option>
+                      <option value="gemini-4-argon">gemini-4-argon (Элитный квант)</option>
                     </select>
                   </div>
                 </div>
+
+                {settings.ai.geminiApiKey?.length > 5 && settings.ai.activeProvider !== "gemini" && (
+                  <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-xs text-emerald-300">
+                    <span>Ключ Gemini введен. Переключить станцию на Gemini как основной ИИ?</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettings(prev => ({
+                          ...prev,
+                          ai: { ...prev.ai, activeProvider: "gemini" }
+                        }))
+                      }
+                      className="px-2.5 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-[11px] transition cursor-pointer"
+                    >
+                      Выбрать Gemini основным
+                    </button>
+                  </div>
+                )}
+
+                {geminiTestStatus && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs font-mono ${
+                      geminiTestStatus.ok
+                        ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                        : "bg-rose-950/40 border-rose-500/40 text-rose-300"
+                    }`}
+                  >
+                    {geminiTestStatus.msg}
+                  </div>
+                )}
               </div>
             </div>
           </div>

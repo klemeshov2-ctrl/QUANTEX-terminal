@@ -639,6 +639,62 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   );
 });
 
+const STATION_PREFS_KEY = "quantex_user_preferences";
+
+const getActiveUsername = (): string => {
+  try {
+    const savedUser = typeof window !== "undefined" ? localStorage.getItem("quantex_active_user") : null;
+    if (savedUser) {
+      const parsed = JSON.parse(savedUser);
+      if (parsed?.username) return String(parsed.username).trim().toLowerCase();
+    }
+  } catch {}
+  return "admin";
+};
+
+// Load cached preferences synchronously for instant zero-flicker render
+const loadInitialPreferences = (): Record<string, any> => {
+  try {
+    if (typeof window === "undefined") return {};
+    const u = getActiveUsername();
+    const userSpecificRaw = localStorage.getItem(`${STATION_PREFS_KEY}_${u}`);
+    if (userSpecificRaw) {
+      const parsed = JSON.parse(userSpecificRaw);
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+    const globalRaw = localStorage.getItem(STATION_PREFS_KEY);
+    if (globalRaw) {
+      const parsed = JSON.parse(globalRaw);
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+  } catch {}
+  return {};
+};
+
+const initialCachedPrefs = loadInitialPreferences();
+
+function getInitialPref<T>(key: string, legacyKey: string | null, defaultValue: T): T {
+  if (initialCachedPrefs && initialCachedPrefs[key] !== undefined) {
+    return initialCachedPrefs[key] as T;
+  }
+  if (legacyKey && typeof window !== "undefined") {
+    try {
+      const legacyVal = localStorage.getItem(legacyKey);
+      if (legacyVal !== null) {
+        if (typeof defaultValue === "boolean") {
+          return (legacyVal === "true") as unknown as T;
+        }
+        if (typeof defaultValue === "number") {
+          const num = Number(legacyVal);
+          if (!isNaN(num)) return num as unknown as T;
+        }
+        return legacyVal as unknown as T;
+      }
+    } catch {}
+  }
+  return defaultValue;
+}
+
 export interface AutonomousTradingStationProps {
   currentUser?: UserAccountItem;
   onUserChange?: (user: UserAccountItem) => void;
@@ -651,10 +707,18 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   onOpenAuthModal
 }) => {
   // Navigation & Asset State
-  const [activeAsset, setActiveAsset] = useState<AssetSymbol>("XAUUSD");
-  const [activeTf, setActiveTf] = useState<Timeframe>("15m");
-  const [activeTab, setActiveTab] = useState<StationModuleTab>("chart");
-  const [chartStyle, setChartStyle] = useState<ChartStyleType>("candles");
+  const [activeAsset, setActiveAsset] = useState<AssetSymbol>(() =>
+    getInitialPref("activeAsset", "quantex_active_asset", "XAUUSD")
+  );
+  const [activeTf, setActiveTf] = useState<Timeframe>(() =>
+    getInitialPref("activeTf", "quantex_active_tf", "15m")
+  );
+  const [activeTab, setActiveTab] = useState<StationModuleTab>(() =>
+    getInitialPref("activeTab", "quantex_active_tab", "chart")
+  );
+  const [chartStyle, setChartStyle] = useState<ChartStyleType>(() =>
+    getInitialPref("chartStyle", "quantex_chart_style", "candles")
+  );
   const [isAssetDropdownOpen, setIsAssetDropdownOpen] = useState<boolean>(false);
   const [isMoreToolsOpen, setIsMoreToolsOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -742,36 +806,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   }, [stationUser, activeTab]);
 
   // Moving averages (EMA 50, EMA 100, EMA 200) - default OFF as requested
-  const [showEma50, setShowEma50] = useState<boolean>(false);
-  const [showEma100, setShowEma100] = useState<boolean>(false);
-  const [showEma200, setShowEma200] = useState<boolean>(false);
+  const [showEma50, setShowEma50] = useState<boolean>(() =>
+    getInitialPref("showEma50", "quantex_show_ema50", false)
+  );
+  const [showEma100, setShowEma100] = useState<boolean>(() =>
+    getInitialPref("showEma100", "quantex_show_ema100", false)
+  );
+  const [showEma200, setShowEma200] = useState<boolean>(() =>
+    getInitialPref("showEma200", "quantex_show_ema200", false)
+  );
 
   // Sub-pane indicators (RSI 6 & 14, Stochastic) - default OFF as requested
-  const [showRsiPane, setShowRsiPane] = useState<boolean>(false);
-  const [showStochPane, setShowStochPane] = useState<boolean>(false);
+  const [showRsiPane, setShowRsiPane] = useState<boolean>(() =>
+    getInitialPref("showRsiPane", "quantex_show_rsi_pane", false)
+  );
+  const [showStochPane, setShowStochPane] = useState<boolean>(() =>
+    getInitialPref("showStochPane", "quantex_show_stoch_pane", false)
+  );
 
   // Sub-pane adjustable heights in pixels (MACD, RSI, Stochastic)
-  const [macdPaneHeight, setMacdPaneHeight] = useState<number>(() => {
-    try {
-      const s = localStorage.getItem("quantex_macd_height");
-      if (s) return Number(s) || 110;
-    } catch {}
-    return 110;
-  });
-  const [rsiPaneHeight, setRsiPaneHeight] = useState<number>(() => {
-    try {
-      const s = localStorage.getItem("quantex_rsi_height");
-      if (s) return Number(s) || 95;
-    } catch {}
-    return 95;
-  });
-  const [stochPaneHeight, setStochPaneHeight] = useState<number>(() => {
-    try {
-      const s = localStorage.getItem("quantex_stoch_height");
-      if (s) return Number(s) || 95;
-    } catch {}
-    return 95;
-  });
+  const [macdPaneHeight, setMacdPaneHeight] = useState<number>(() =>
+    getInitialPref("macdPaneHeight", "quantex_macd_height", 110)
+  );
+  const [rsiPaneHeight, setRsiPaneHeight] = useState<number>(() =>
+    getInitialPref("rsiPaneHeight", "quantex_rsi_height", 95)
+  );
+  const [stochPaneHeight, setStochPaneHeight] = useState<number>(() =>
+    getInitialPref("stochPaneHeight", "quantex_stoch_height", 95)
+  );
 
   const handleStartResizePane = (pane: "macd" | "rsi" | "stoch", e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
@@ -812,34 +874,18 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState<boolean>(false);
 
   // HUD Table scale & styling (Available to ALL users)
-  const [hudScale, setHudScale] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("quantex_hud_scale");
-      if (saved) return Number(saved) || 100;
-    } catch {}
-    return 100;
-  });
-  const [hudFontSize, setHudFontSize] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("quantex_hud_font_size");
-      if (saved) return Number(saved) || 11;
-    } catch {}
-    return 11;
-  });
-  const [chartLabelScale, setChartLabelScale] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem("quantex_chart_label_scale");
-      if (saved) return saved;
-    } catch {}
-    return "normal";
-  });
-  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("quantex_sound_alerts") !== "false";
-    } catch {
-      return true;
-    }
-  });
+  const [hudScale, setHudScale] = useState<number>(() =>
+    getInitialPref("hudScale", "quantex_hud_scale", 100)
+  );
+  const [hudFontSize, setHudFontSize] = useState<number>(() =>
+    getInitialPref("hudFontSize", "quantex_hud_font_size", 11)
+  );
+  const [chartLabelScale, setChartLabelScale] = useState<string>(() =>
+    getInitialPref("chartLabelScale", "quantex_chart_label_scale", "normal")
+  );
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState<boolean>(() =>
+    getInitialPref("soundAlertsEnabled", "quantex_sound_alerts", true)
+  );
 
   const [settingsInitialSection, setSettingsInitialSection] = useState<string>("telegram");
 
@@ -1009,20 +1055,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [popoverActiveTab, setPopoverActiveTab] = useState<"ALL" | "GOLD" | "MOEX" | "CRYPTO">("ALL");
 
   // Dynamic chart font size & mobile badge border preferences
-  const [chartLabelFontSize, setChartLabelFontSize] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("quantex_chart_font_size");
-      if (saved) return Number(saved);
-    } catch {}
-    return typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 10;
-  });
+  const [chartLabelFontSize, setChartLabelFontSize] = useState<number>(() =>
+    getInitialPref(
+      "chartLabelFontSize",
+      "quantex_chart_font_size",
+      typeof window !== "undefined" && window.innerWidth < 640 ? 8 : 10
+    )
+  );
 
-  const [showChartBadgeBorders, setShowChartBadgeBorders] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("quantex_chart_badge_borders") === "true";
-    } catch {}
-    return false;
-  });
+  const [showChartBadgeBorders, setShowChartBadgeBorders] = useState<boolean>(() =>
+    getInitialPref("showChartBadgeBorders", "quantex_chart_badge_borders", false)
+  );
 
   const handleUpdateChartFontSize = (sz: number) => {
     setChartLabelFontSize(sz);
@@ -1116,25 +1159,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // Autonomous AI Analyst Docked Panel State (Collapsed by default on mobile/tablets so the chart gets 100% width)
   const [isAiPanelCollapsed, setIsAiPanelCollapsed] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.innerWidth < 1024 : false
+    getInitialPref(
+      "isAiPanelCollapsed",
+      "quantex_is_ai_panel_collapsed",
+      typeof window !== "undefined" ? window.innerWidth < 1024 : false
+    )
   );
   const [isHudMinimized, setIsHudMinimized] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.innerWidth < 768 : false
+    getInitialPref(
+      "isHudMinimized",
+      "quantex_is_hud_minimized",
+      typeof window !== "undefined" ? window.innerWidth < 768 : false
+    )
   );
-  const [aiPanelWidth, setAiPanelWidth] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("quantex_ai_panel_width");
-      if (saved) {
-        const val = parseInt(saved, 10);
-        if (val >= 240 && val <= 750) return val;
-      }
-    } catch {}
-    if (typeof window !== "undefined") {
-      if (window.innerWidth < 768) return Math.min(340, window.innerWidth - 28);
-      if (window.innerWidth < 1280) return 340;
-    }
-    return 380;
-  });
+  const [aiPanelWidth, setAiPanelWidth] = useState<number>(() =>
+    getInitialPref("aiPanelWidth", "quantex_ai_panel_width", 380)
+  );
   const [isDraggingAiWidth, setIsDraggingAiWidth] = useState<boolean>(false);
   const dragAiStartXRef = useRef<number>(0);
   const dragAiStartWidthRef = useRef<number>(380);
@@ -1179,7 +1219,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   }, [isDraggingAiWidth, aiPanelWidth]);
 
   // Draggable HUD State
-  const [hudPos, setHudPos] = useState<{ x: number; y: number } | null>(null);
+  const [hudPos, setHudPos] = useState<{ x: number; y: number } | null>(() =>
+    getInitialPref("hudPos", null, null)
+  );
   const [isDraggingHud, setIsDraggingHud] = useState<boolean>(false);
   const hudDragRef = useRef<{ startX: number; startY: number; initialX: number; initialY: number }>({
     startX: 0,
@@ -1298,21 +1340,43 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // ⚙️ INPUTS EXACTLY MATCHING QUANTEX PREMIUM v8 PINE SCRIPT v6
   // ========================================================
   // gp_presets: "⚙️ Оптимальные Пресеты QUANTEX"
-  const [presetSel, setPresetSel] = useState<string>("★ Универсальный (Все таймфреймы / Авто-Адаптивный)");
+  const [presetSel, setPresetSel] = useState<string>(() =>
+    getInitialPref("presetSel", "quantex_preset_sel", "★ Универсальный (Все таймфреймы / Авто-Адаптивный)")
+  );
 
   // gp_ui: "📱 Настройки Мобильной Оптимизации"
-  const [showTables, setShowTables] = useState<boolean>(true);
-  const [tblViewMode, setTblViewMode] = useState<string>("💻 Стандартный (ПК / Полный HUD)");
-  const [hudTextDensity, setHudTextDensity] = useState<string>("🖥️ ПК (Полный текст)");
-  const [tablePos, setTablePos] = useState<string>("Нижний левый");
-  const [tableTextSz, setTableTextSz] = useState<string>("Маленький (size.small)");
-  const [textSzOpt, setTextSzOpt] = useState<string>("Маленький");
+  const [showTables, setShowTables] = useState<boolean>(() =>
+    getInitialPref("showTables", "quantex_show_tables", true)
+  );
+  const [tblViewMode, setTblViewMode] = useState<string>(() =>
+    getInitialPref("tblViewMode", "quantex_tbl_view_mode", "💻 Стандартный (ПК / Полный HUD)")
+  );
+  const [hudTextDensity, setHudTextDensity] = useState<string>(() =>
+    getInitialPref("hudTextDensity", "quantex_hud_text_density", "🖥️ ПК (Полный текст)")
+  );
+  const [tablePos, setTablePos] = useState<string>(() =>
+    getInitialPref("tablePos", "quantex_table_pos", "Нижний левый")
+  );
+  const [tableTextSz, setTableTextSz] = useState<string>(() =>
+    getInitialPref("tableTextSz", "quantex_table_text_sz", "Маленький (size.small)")
+  );
+  const [textSzOpt, setTextSzOpt] = useState<string>(() =>
+    getInitialPref("textSzOpt", "quantex_text_sz_opt", "Маленький")
+  );
   const [labelOffset, setLabelOffset] = useState<number>(15);
   const [lineLen, setLineLen] = useState<number>(20);
-  const [cleanOb, setCleanOb] = useState<boolean>(true);
-  const [mergeObFvg, setMergeObFvg] = useState<boolean>(true);
-  const [showSweeps, setShowSweeps] = useState<boolean>(false);
-  const [useAntiRound, setUseAntiRound] = useState<boolean>(true);
+  const [cleanOb, setCleanOb] = useState<boolean>(() =>
+    getInitialPref("cleanOb", "quantex_clean_ob", true)
+  );
+  const [mergeObFvg, setMergeObFvg] = useState<boolean>(() =>
+    getInitialPref("mergeObFvg", "quantex_merge_ob_fvg", true)
+  );
+  const [showSweeps, setShowSweeps] = useState<boolean>(() =>
+    getInitialPref("showSweeps", "quantex_show_sweeps", false)
+  );
+  const [useAntiRound, setUseAntiRound] = useState<boolean>(() =>
+    getInitialPref("useAntiRound", "quantex_use_anti_round", true)
+  );
 
   // gp_delta: "📊 Volume Delta & MTF"
   const [vdSmoothing, setVdSmoothing] = useState<number>(14);
@@ -1322,26 +1386,50 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [lbSt, setLbSt] = useState<number>(5);
   const [lbIt, setLbIt] = useState<number>(12);
   const [lbLt, setLbLt] = useState<number>(28);
-  const [showBos, setShowBos] = useState<boolean>(true);
-  const [showOb, setShowOb] = useState<boolean>(true);
-  const [showFvg, setShowFvg] = useState<boolean>(true);
+  const [showBos, setShowBos] = useState<boolean>(() =>
+    getInitialPref("showBos", "quantex_show_bos", true)
+  );
+  const [showOb, setShowOb] = useState<boolean>(() =>
+    getInitialPref("showOb", "quantex_show_ob", true)
+  );
+  const [showFvg, setShowFvg] = useState<boolean>(() =>
+    getInitialPref("showFvg", "quantex_show_fvg", true)
+  );
   const [obLimit, setObLimit] = useState<number>(3);
-  const [showSrZones, setShowSrZones] = useState<boolean>(true);
+  const [showSrZones, setShowSrZones] = useState<boolean>(() =>
+    getInitialPref("showSrZones", "quantex_show_sr_zones", true)
+  );
   const [maxSrBoxes, setMaxSrBoxes] = useState<number>(3);
   const [mergeSr, setMergeSr] = useState<boolean>(true);
   const [mergeDist, setMergeDist] = useState<number>(0.65);
 
   // gp_fib: "🎯 Волновой Прогноз Цены"
-  const [fibPeriod, setFibPeriod] = useState<number>(15);
-  const [showProbs, setShowProbs] = useState<boolean>(true);
-  const [dirMode, setDirMode] = useState<string>("Авто-Структура");
-  const [showReversal, setShowReversal] = useState<boolean>(true);
-  const [showForecast, setShowForecast] = useState<boolean>(true);
-  const [showAltWave, setShowAltWave] = useState<boolean>(true);
+  const [fibPeriod, setFibPeriod] = useState<number>(() =>
+    getInitialPref("fibPeriod", "quantex_fib_period", 15)
+  );
+  const [showProbs, setShowProbs] = useState<boolean>(() =>
+    getInitialPref("showProbs", "quantex_show_probs", true)
+  );
+  const [dirMode, setDirMode] = useState<string>(() =>
+    getInitialPref("dirMode", "quantex_dir_mode", "Авто-Структура")
+  );
+  const [showReversal, setShowReversal] = useState<boolean>(() =>
+    getInitialPref("showReversal", "quantex_show_reversal", true)
+  );
+  const [showForecast, setShowForecast] = useState<boolean>(() =>
+    getInitialPref("showForecast", "quantex_show_forecast", true)
+  );
+  const [showAltWave, setShowAltWave] = useState<boolean>(() =>
+    getInitialPref("showAltWave", "quantex_show_alt_wave", true)
+  );
   const [slBreakMode, setSlBreakMode] = useState<string>("Закрытие бара (Фильтр шпилек / SMC)");
   const [filterPlanBMtf, setFilterPlanBMtf] = useState<boolean>(true);
-  const [fcLookback, setFcLookback] = useState<number>(30);
-  const [fcTargetMult, setFcTargetMult] = useState<number>(1.0);
+  const [fcLookback, setFcLookback] = useState<number>(() =>
+    getInitialPref("fcLookback", "quantex_fc_lookback", 30)
+  );
+  const [fcTargetMult, setFcTargetMult] = useState<number>(() =>
+    getInitialPref("fcTargetMult", "quantex_fc_target_mult", 1.0)
+  );
   const [fcPostTarget, setFcPostTarget] = useState<boolean>(true);
   const [fcModelAcc, setFcModelAcc] = useState<string>("SMC-Balanced");
   const [fcUseMtf, setFcUseMtf] = useState<boolean>(true);
@@ -1351,33 +1439,61 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [fcFastRejection, setFcFastRejection] = useState<boolean>(true);
 
   // gp_sig: "⚡ Торговые Сигналы QUANTEX"
-  const [showSignals, setShowSignals] = useState<boolean>(false);
-  const [signalMode, setSignalMode] = useState<string>("Консервативный");
+  const [showSignals, setShowSignals] = useState<boolean>(() =>
+    getInitialPref("showSignals", "quantex_show_signals", false)
+  );
+  const [signalMode, setSignalMode] = useState<string>(() =>
+    getInitialPref("signalMode", "quantex_signal_mode", "Консервативный")
+  );
 
   // gp_colors: "🎨 Тематическое Оформление"
   const [themeMode, setThemeMode] = useState<string>("Золотой Слейт");
 
   // gp_trend: "📈 Динамическая Линия Тренда"
-  const [showTrendL, setShowTrendL] = useState<boolean>(true);
-  const [trendType, setTrendType] = useState<string>("EMA");
-  const [trendLen, setTrendLen] = useState<number>(200);
+  const [showTrendL, setShowTrendL] = useState<boolean>(() =>
+    getInitialPref("showTrendL", "quantex_show_trend_l", true)
+  );
+  const [trendType, setTrendType] = useState<string>(() =>
+    getInitialPref("trendType", "quantex_trend_type", "EMA")
+  );
+  const [trendLen, setTrendLen] = useState<number>(() =>
+    getInitialPref("trendLen", "quantex_trend_len", 200)
+  );
 
   // gp_trail: "🛡️ Адаптивный Трейлинг-Стоп (Anti-Whipsaw)"
-  const [useTrailing, setUseTrailing] = useState<boolean>(true);
-  const [trailMode, setTrailMode] = useState<string>("🛡️ Институциональный (BE при TP1 + Защита 50%)");
+  const [useTrailing, setUseTrailing] = useState<boolean>(() =>
+    getInitialPref("useTrailing", "quantex_use_trailing", true)
+  );
+  const [trailMode, setTrailMode] = useState<string>(() =>
+    getInitialPref("trailMode", "quantex_trail_mode", "🛡️ Институциональный (BE при TP1 + Защита 50%)")
+  );
   const [trailBeTrigger, setTrailBeTrigger] = useState<string>("Строго при взятии TP1 (Рекомендовано)");
   const [trailBeBuff, setTrailBeBuff] = useState<number>(0.15);
   const [trailAtrDist, setTrailAtrDist] = useState<number>(2.20);
   const [trailResetsWave, setTrailResetsWave] = useState<boolean>(false);
-  const [showTrailLine, setShowTrailLine] = useState<boolean>(false);
+  const [showTrailLine, setShowTrailLine] = useState<boolean>(() =>
+    getInitialPref("showTrailLine", "quantex_show_trail_line", false)
+  );
 
   // gp_osc: "📊 MACD (Binance) + RSI" (Enabled by default as requested)
-  const [showMacdPane, setShowMacdPane] = useState<boolean>(true);
-  const [macdFast, setMacdFast] = useState<number>(12);
-  const [macdSlow, setMacdSlow] = useState<number>(26);
-  const [macdSigLen, setMacdSigLen] = useState<number>(9);
-  const [rsi6Len, setRsi6Len] = useState<number>(6);
-  const [rsi14Len, setRsi14Len] = useState<number>(14);
+  const [showMacdPane, setShowMacdPane] = useState<boolean>(() =>
+    getInitialPref("showMacdPane", "quantex_show_macd_pane", true)
+  );
+  const [macdFast, setMacdFast] = useState<number>(() =>
+    getInitialPref("macdFast", "quantex_macd_fast", 12)
+  );
+  const [macdSlow, setMacdSlow] = useState<number>(() =>
+    getInitialPref("macdSlow", "quantex_macd_slow", 26)
+  );
+  const [macdSigLen, setMacdSigLen] = useState<number>(() =>
+    getInitialPref("macdSigLen", "quantex_macd_sig_len", 9)
+  );
+  const [rsi6Len, setRsi6Len] = useState<number>(() =>
+    getInitialPref("rsi6Len", "quantex_rsi6_len", 6)
+  );
+  const [rsi14Len, setRsi14Len] = useState<number>(() =>
+    getInitialPref("rsi14Len", "quantex_rsi14_len", 14)
+  );
   const [showOscMarks, setShowOscMarks] = useState<boolean>(false);
   const [showRsiDiv, setShowRsiDiv] = useState<boolean>(false);
   const [showDivLines, setShowDivLines] = useState<boolean>(false);
@@ -1389,16 +1505,30 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [showTpClusters, setShowTpClusters] = useState<boolean>(false);
 
   // gp_gex: "🏛️ GEX & Dealer Gamma Engine"
-  const [useGex, setUseGex] = useState<boolean>(true);
+  const [useGex, setUseGex] = useState<boolean>(() =>
+    getInitialPref("useGex", "quantex_use_gex", true)
+  );
   const [gexAssetType, setGexAssetType] = useState<string>("Авто-Определение");
   const [gexAnchorMode, setGexAnchorMode] = useState<string>("🎯 Дневной якорь (рекомендовано)");
   const [flipSearchRange, setFlipSearchRange] = useState<number>(8);
-  const [showGexWalls, setShowGexWalls] = useState<boolean>(true);
-  const [showGexFlip, setShowGexFlip] = useState<boolean>(true);
-  const [showGexPain, setShowGexPain] = useState<boolean>(true);
-  const [showGexSleepers, setShowGexSleepers] = useState<boolean>(false);
-  const [showGexEm, setShowGexEm] = useState<boolean>(false);
-  const [showGexBars, setShowGexBars] = useState<boolean>(true);
+  const [showGexWalls, setShowGexWalls] = useState<boolean>(() =>
+    getInitialPref("showGexWalls", "quantex_show_gex_walls", true)
+  );
+  const [showGexFlip, setShowGexFlip] = useState<boolean>(() =>
+    getInitialPref("showGexFlip", "quantex_show_gex_flip", true)
+  );
+  const [showGexPain, setShowGexPain] = useState<boolean>(() =>
+    getInitialPref("showGexPain", "quantex_show_gex_pain", true)
+  );
+  const [showGexSleepers, setShowGexSleepers] = useState<boolean>(() =>
+    getInitialPref("showGexSleepers", "quantex_show_gex_sleepers", false)
+  );
+  const [showGexEm, setShowGexEm] = useState<boolean>(() =>
+    getInitialPref("showGexEm", "quantex_show_gex_em", false)
+  );
+  const [showGexBars, setShowGexBars] = useState<boolean>(() =>
+    getInitialPref("showGexBars", "quantex_show_gex_bars", true)
+  );
   const [gexRightLimit, setGexRightLimit] = useState<number>(80);
   const [gexAlignFc, setGexAlignFc] = useState<boolean>(true);
   const [manualPcr, setManualPcr] = useState<number>(0.0);
@@ -1454,14 +1584,264 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // Selected strike for GEX detail modal / breakdown
   const [selectedStrikeDetail, setSelectedStrikeDetail] = useState<GexStrikeData | null>(null);
-  const [gexHorizon, setGexHorizon] = useState<"DAY" | "WEEK" | "MONTH" | "ALL">("DAY");
-  const gexHorizonRef = useRef<"DAY" | "WEEK" | "MONTH" | "ALL">("DAY");
+  const [gexHorizon, setGexHorizon] = useState<"DAY" | "WEEK" | "MONTH" | "ALL">(() =>
+    getInitialPref("gexHorizon", "quantex_gex_horizon", "DAY")
+  );
+  const gexHorizonRef = useRef<"DAY" | "WEEK" | "MONTH" | "ALL">(gexHorizon);
   useEffect(() => {
     gexHorizonRef.current = gexHorizon;
   }, [gexHorizon]);
-  const [gexFilterMode, setGexFilterMode] = useState<"atm" | "all" | "walls">("atm");
-  const [gexMetricMode, setGexMetricMode] = useState<"gex" | "oi" | "volume">("gex");
+  const [gexFilterMode, setGexFilterMode] = useState<"atm" | "all" | "walls">(() =>
+    getInitialPref("gexFilterMode", "quantex_gex_filter_mode", "atm")
+  );
+  const [gexMetricMode, setGexMetricMode] = useState<"gex" | "oi" | "volume">(() =>
+    getInitialPref("gexMetricMode", "quantex_gex_metric_mode", "gex")
+  );
   const [gexExplTab, setGexExplTab] = useState<"simple" | "scenarios" | "guide" | "rules">("simple");
+
+  // ========================================================
+  // 💾 PERSISTENCE ENGINE: HYDRATE & DEBOUNCED AUTO-SYNC (PER-USER)
+  // ========================================================
+  const isHydratedFromServerRef = useRef<boolean>(false);
+  const saveDebounceTimerRef = useRef<any>(null);
+  const activeUsername = (stationUser?.username || "admin").trim().toLowerCase();
+
+  const applyPreferencesToState = (p: Record<string, any>) => {
+    if (p.activeAsset !== undefined) setActiveAsset(p.activeAsset);
+    if (p.activeTf !== undefined) setActiveTf(p.activeTf);
+    if (p.chartStyle !== undefined) setChartStyle(p.chartStyle);
+    if (p.stationTheme !== undefined && STATION_THEMES.some(t => t.id === p.stationTheme)) {
+      setStationTheme(p.stationTheme);
+    }
+    if (p.showEma50 !== undefined) setShowEma50(Boolean(p.showEma50));
+    if (p.showEma100 !== undefined) setShowEma100(Boolean(p.showEma100));
+    if (p.showEma200 !== undefined) setShowEma200(Boolean(p.showEma200));
+    if (p.showRsiPane !== undefined) setShowRsiPane(Boolean(p.showRsiPane));
+    if (p.showStochPane !== undefined) setShowStochPane(Boolean(p.showStochPane));
+    if (p.macdPaneHeight !== undefined) setMacdPaneHeight(Number(p.macdPaneHeight));
+    if (p.rsiPaneHeight !== undefined) setRsiPaneHeight(Number(p.rsiPaneHeight));
+    if (p.stochPaneHeight !== undefined) setStochPaneHeight(Number(p.stochPaneHeight));
+    if (p.hudScale !== undefined) setHudScale(Number(p.hudScale));
+    if (p.hudFontSize !== undefined) setHudFontSize(Number(p.hudFontSize));
+    if (p.chartLabelScale !== undefined) setChartLabelScale(String(p.chartLabelScale));
+    if (p.soundAlertsEnabled !== undefined) setSoundAlertsEnabled(Boolean(p.soundAlertsEnabled));
+    if (p.chartLabelFontSize !== undefined) setChartLabelFontSize(Number(p.chartLabelFontSize));
+    if (p.showChartBadgeBorders !== undefined) setShowChartBadgeBorders(Boolean(p.showChartBadgeBorders));
+    if (p.isHudMinimized !== undefined) setIsHudMinimized(Boolean(p.isHudMinimized));
+    if (p.aiPanelWidth !== undefined) setAiPanelWidth(Number(p.aiPanelWidth));
+    if (p.isAiPanelCollapsed !== undefined) setIsAiPanelCollapsed(Boolean(p.isAiPanelCollapsed));
+    if (p.hudPos !== undefined) setHudPos(p.hudPos);
+    if (p.presetSel !== undefined) setPresetSel(String(p.presetSel));
+    if (p.showTables !== undefined) setShowTables(Boolean(p.showTables));
+    if (p.tblViewMode !== undefined) setTblViewMode(String(p.tblViewMode));
+    if (p.hudTextDensity !== undefined) setHudTextDensity(String(p.hudTextDensity));
+    if (p.tablePos !== undefined) setTablePos(String(p.tablePos));
+    if (p.tableTextSz !== undefined) setTableTextSz(String(p.tableTextSz));
+    if (p.textSzOpt !== undefined) setTextSzOpt(String(p.textSzOpt));
+    if (p.cleanOb !== undefined) setCleanOb(Boolean(p.cleanOb));
+    if (p.mergeObFvg !== undefined) setMergeObFvg(Boolean(p.mergeObFvg));
+    if (p.showSweeps !== undefined) setShowSweeps(Boolean(p.showSweeps));
+    if (p.useAntiRound !== undefined) setUseAntiRound(Boolean(p.useAntiRound));
+    if (p.showBos !== undefined) setShowBos(Boolean(p.showBos));
+    if (p.showOb !== undefined) setShowOb(Boolean(p.showOb));
+    if (p.showFvg !== undefined) setShowFvg(Boolean(p.showFvg));
+    if (p.showSrZones !== undefined) setShowSrZones(Boolean(p.showSrZones));
+    if (p.fibPeriod !== undefined) setFibPeriod(Number(p.fibPeriod));
+    if (p.showProbs !== undefined) setShowProbs(Boolean(p.showProbs));
+    if (p.dirMode !== undefined) setDirMode(String(p.dirMode));
+    if (p.showReversal !== undefined) setShowReversal(Boolean(p.showReversal));
+    if (p.showForecast !== undefined) setShowForecast(Boolean(p.showForecast));
+    if (p.showAltWave !== undefined) setShowAltWave(Boolean(p.showAltWave));
+    if (p.fcLookback !== undefined) setFcLookback(Number(p.fcLookback));
+    if (p.fcTargetMult !== undefined) setFcTargetMult(Number(p.fcTargetMult));
+    if (p.showSignals !== undefined) setShowSignals(Boolean(p.showSignals));
+    if (p.signalMode !== undefined) setSignalMode(String(p.signalMode));
+    if (p.showTrendL !== undefined) setShowTrendL(Boolean(p.showTrendL));
+    if (p.trendType !== undefined) setTrendType(String(p.trendType));
+    if (p.trendLen !== undefined) setTrendLen(Number(p.trendLen));
+    if (p.useTrailing !== undefined) setUseTrailing(Boolean(p.useTrailing));
+    if (p.trailMode !== undefined) setTrailMode(String(p.trailMode));
+    if (p.showTrailLine !== undefined) setShowTrailLine(Boolean(p.showTrailLine));
+    if (p.showMacdPane !== undefined) setShowMacdPane(Boolean(p.showMacdPane));
+    if (p.macdFast !== undefined) setMacdFast(Number(p.macdFast));
+    if (p.macdSlow !== undefined) setMacdSlow(Number(p.macdSlow));
+    if (p.macdSigLen !== undefined) setMacdSigLen(Number(p.macdSigLen));
+    if (p.rsi6Len !== undefined) setRsi6Len(Number(p.rsi6Len));
+    if (p.rsi14Len !== undefined) setRsi14Len(Number(p.rsi14Len));
+    if (p.useGex !== undefined) setUseGex(Boolean(p.useGex));
+    if (p.showGexWalls !== undefined) setShowGexWalls(Boolean(p.showGexWalls));
+    if (p.showGexFlip !== undefined) setShowGexFlip(Boolean(p.showGexFlip));
+    if (p.showGexPain !== undefined) setShowGexPain(Boolean(p.showGexPain));
+    if (p.showGexSleepers !== undefined) setShowGexSleepers(Boolean(p.showGexSleepers));
+    if (p.showGexEm !== undefined) setShowGexEm(Boolean(p.showGexEm));
+    if (p.showGexBars !== undefined) setShowGexBars(Boolean(p.showGexBars));
+    if (p.gexHorizon !== undefined) setGexHorizon(p.gexHorizon);
+    if (p.gexFilterMode !== undefined) setGexFilterMode(p.gexFilterMode);
+    if (p.gexMetricMode !== undefined) setGexMetricMode(p.gexMetricMode);
+  };
+
+  // 1. Hydration from localStorage & server for active user
+  useEffect(() => {
+    let isCancelled = false;
+    const u = activeUsername;
+
+    // Load instantly from user's local storage cache
+    try {
+      const userCached = localStorage.getItem(`${STATION_PREFS_KEY}_${u}`);
+      if (userCached) {
+        const parsed = JSON.parse(userCached);
+        if (parsed && typeof parsed === "object") {
+          applyPreferencesToState(parsed);
+        }
+      }
+    } catch {}
+
+    // Hydrate latest persistent profile from server
+    fetch(`/api/settings/user-preferences?username=${encodeURIComponent(u)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (isCancelled) return;
+        if (data?.success && data.preferences && Object.keys(data.preferences).length > 0) {
+          applyPreferencesToState(data.preferences);
+          try {
+            localStorage.setItem(`${STATION_PREFS_KEY}_${u}`, JSON.stringify(data.preferences));
+            localStorage.setItem(STATION_PREFS_KEY, JSON.stringify(data.preferences));
+          } catch {}
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        isHydratedFromServerRef.current = true;
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeUsername]);
+
+  // 2. Debounced auto-sync to user's storage and station-settings.json on the server
+  useEffect(() => {
+    const u = activeUsername;
+    const currentPrefs = {
+      activeAsset,
+      activeTf,
+      chartStyle,
+      stationTheme,
+      showEma50,
+      showEma100,
+      showEma200,
+      showRsiPane,
+      showStochPane,
+      macdPaneHeight,
+      rsiPaneHeight,
+      stochPaneHeight,
+      hudScale,
+      hudFontSize,
+      chartLabelScale,
+      soundAlertsEnabled,
+      chartLabelFontSize,
+      showChartBadgeBorders,
+      isHudMinimized,
+      aiPanelWidth,
+      isAiPanelCollapsed,
+      hudPos,
+      presetSel,
+      showTables,
+      tblViewMode,
+      hudTextDensity,
+      tablePos,
+      tableTextSz,
+      textSzOpt,
+      cleanOb,
+      mergeObFvg,
+      showSweeps,
+      useAntiRound,
+      showBos,
+      showOb,
+      showFvg,
+      showSrZones,
+      fibPeriod,
+      showProbs,
+      dirMode,
+      showReversal,
+      showForecast,
+      showAltWave,
+      fcLookback,
+      fcTargetMult,
+      showSignals,
+      signalMode,
+      showTrendL,
+      trendType,
+      trendLen,
+      useTrailing,
+      trailMode,
+      showTrailLine,
+      showMacdPane,
+      macdFast,
+      macdSlow,
+      macdSigLen,
+      rsi6Len,
+      rsi14Len,
+      useGex,
+      showGexWalls,
+      showGexFlip,
+      showGexPain,
+      showGexSleepers,
+      showGexEm,
+      showGexBars,
+      gexHorizon,
+      gexFilterMode,
+      gexMetricMode
+    };
+
+    // Save immediately to user-specific localStorage (0ms lag, survives refresh)
+    try {
+      localStorage.setItem(`${STATION_PREFS_KEY}_${u}`, JSON.stringify(currentPrefs));
+      localStorage.setItem(STATION_PREFS_KEY, JSON.stringify(currentPrefs));
+      localStorage.setItem("quantex_theme", stationTheme);
+      localStorage.setItem("quantex_hud_scale", String(hudScale));
+      localStorage.setItem("quantex_hud_font_size", String(hudFontSize));
+      localStorage.setItem("quantex_chart_font_size", String(chartLabelFontSize));
+      localStorage.setItem("quantex_chart_badge_borders", String(showChartBadgeBorders));
+      localStorage.setItem("quantex_sound_alerts", String(soundAlertsEnabled));
+      localStorage.setItem("quantex_macd_height", String(macdPaneHeight));
+      localStorage.setItem("quantex_rsi_height", String(rsiPaneHeight));
+      localStorage.setItem("quantex_stoch_height", String(stochPaneHeight));
+      localStorage.setItem("quantex_ai_panel_width", String(aiPanelWidth));
+    } catch {}
+
+    // Sync to server for this specific user
+    if (isHydratedFromServerRef.current) {
+      if (saveDebounceTimerRef.current) clearTimeout(saveDebounceTimerRef.current);
+      saveDebounceTimerRef.current = setTimeout(() => {
+        fetch("/api/settings/user-preferences", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: u,
+            preferences: currentPrefs
+          })
+        }).catch(() => {});
+      }, 500);
+    }
+  }, [
+    activeUsername,
+    activeAsset, activeTf, chartStyle, stationTheme,
+    showEma50, showEma100, showEma200, showRsiPane, showStochPane,
+    macdPaneHeight, rsiPaneHeight, stochPaneHeight,
+    hudScale, hudFontSize, chartLabelScale, soundAlertsEnabled,
+    chartLabelFontSize, showChartBadgeBorders, isHudMinimized,
+    aiPanelWidth, isAiPanelCollapsed, hudPos, presetSel, showTables,
+    tblViewMode, hudTextDensity, tablePos, tableTextSz, textSzOpt,
+    cleanOb, mergeObFvg, showSweeps, useAntiRound, showBos, showOb,
+    showFvg, showSrZones, fibPeriod, showProbs, dirMode, showReversal,
+    showForecast, showAltWave, fcLookback, fcTargetMult, showSignals,
+    signalMode, showTrendL, trendType, trendLen, useTrailing, trailMode,
+    showTrailLine, showMacdPane, macdFast, macdSlow, macdSigLen,
+    rsi6Len, rsi14Len, useGex, showGexWalls, showGexFlip, showGexPain,
+    showGexSleepers, showGexEm, showGexBars, gexHorizon, gexFilterMode,
+    gexMetricMode
+  ]);
 
   // Pine Script v6 / QUANTEX Premium v8 Editor State
   const [indicatorCode, setIndicatorCode] = useState<string>("");
@@ -8585,7 +8965,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               {/* Footer */}
               <div className="pt-2 border-t flex items-center justify-between" style={{ borderColor: curPalette.border }}>
                 <span className="text-[10.5px] text-gray-400">
-                  Настройки сохраняются автоматически в браузере
+                  💾 Сохраняются в браузере и на сервере (data/station-settings.json)
                 </span>
                 <button
                   type="button"
