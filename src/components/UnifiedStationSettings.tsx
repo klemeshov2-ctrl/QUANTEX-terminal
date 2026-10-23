@@ -169,6 +169,7 @@ export interface UnifiedSettingsData {
     geminiModel: string;
     geminiEndpoint?: string;
     proxyUrl?: string;
+    enableWebSearch?: boolean;
     temperature: number;
   };
   serverSecurity: {
@@ -256,6 +257,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       geminiModel: "gemini-3.5-flash",
       geminiEndpoint: "",
       proxyUrl: "",
+      enableWebSearch: true,
       temperature: 0.3
     },
     serverSecurity: {
@@ -1313,6 +1315,33 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                       <option value="gemini-4-argon">gemini-4-argon (Элитный квант)</option>
                     </select>
                   </div>
+                </div>
+
+                {/* Live Google Search & Global Macro Thinking Toggle */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-purple-950/20 border border-purple-500/30">
+                  <div className="space-y-0.5">
+                    <div className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
+                      <span>🌐 Живой поиск Google Search и глобальный макроанализ</span>
+                      <span className="px-1.5 py-0.2 rounded text-[9px] bg-purple-500/20 text-purple-200 border border-purple-500/30">Live Web &amp; Macro</span>
+                    </div>
+                    <div className="text-[11px] text-gray-400">
+                      ИИ привлекает общедоступные мировые данные: свежую статистику США, решения ФРС/ЕЦБ, инфляцию CPI/PCE, индекс DXY и геополитику
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.ai.enableWebSearch !== false}
+                      onChange={e =>
+                        setSettings(prev => ({
+                          ...prev,
+                          ai: { ...prev.ai, enableWebSearch: e.target.checked }
+                        }))
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+                  </label>
                 </div>
 
                 {/* Geo-Bypass & Outbound Proxy Controls */}

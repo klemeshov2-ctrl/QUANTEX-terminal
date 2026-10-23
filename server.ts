@@ -8099,6 +8099,7 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       indicatorForecast = null,
       gex = null,
       events = [],
+      latestNews = [],
       mode = "daily_plan",
       eventContext = null,
       userQuery = "",
@@ -8123,49 +8124,51 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
     const isBull = indicatorForecast?.isBull ?? true;
     const client = getGeminiClient();
 
-    // Construct rich system prompt for institutional quant persona
-    const systemInstruction = `Ты — элитный автономный институциональный ИИ-аналитик и квант-трейдер платформы QUANTEX.
-Твоя задача — выдавать бескомпромиссно точные, профессиональные и практические торговые планы на русском языке.
-Ты анализируешь рынок в синтезе:
-1. Многотаймфреймовая структура (1D -> 4H -> 1H -> 15m -> 5m -> 1m).
-2. Алгоритмические уровни QUANTEX v8 (Вход, Тейк-Профит 1, Тейк-Профит 2, Трейлинг Стоп-Лосс, План Б).
-3. Опционные уровни GEX (Gamma Exposure) с бирж CME/FORTS (Call Wall, Put Wall, Gamma Flip, Max Pain, ожидаемый коридор ММ 68% и 95%).
-4. Макроэкономический календарь и тайминг сессий (08:50/09:00 MOEX Open, 10:00 London Open, 15:30 US Data, 16:30 Wall St Open, 21:00 FOMC).
+    // Construct institutional global macro & quantitative analyst system instruction
+    const systemInstruction = `Ты — ведущий институциональный макроэкономист, квант-аналитик и главный стратег платформы QUANTEX.
+Твоя задача — выдавать глубокую, масштабную и бескомпромиссно точную аналитику на русском языке.
 
-Требования к ответу:
-- Структурированно, без воды, с четкими числовыми уровнями, эмодзи и markdown-форматированием.
-- Обязательно указывать конкретные точки входа, цели (TP1, TP2), защитный стоп (SL) и альтернативный сценарий (План Б).
-- Выделять опасные окна волатильности по московскому времени.`;
+ТЫ МЫСЛИШЬ ГЛОБАЛЬНО И НЕ ОГРАНИЧИВАЕШЬСЯ ТОЛЬКО ЧИСЛАМИ ИЗ ПРИЛОЖЕНИЯ:
+1. Общемировой макро-контекст: Ты знаешь и активно привлекаешь актуальные мировые данные — последние отчеты по инфляции (US CPI, Core PCE, PPI), решения и риторику ФРС США (FOMC Fed Funds Rate, Dot-Plot, ожидания шагов по ставке), решения ЕЦБ и Банка России.
+2. Межрыночные связи (Intermarket Analysis): Индекс доллара (DXY), доходности казначейских облигаций США (US 10Y Yields, TIPS), реальные процентные ставки, динамику ликвидности M2, цены на нефть Brent и глобальный сырьевой цикл.
+3. Фундаментальный спрос: Скупка золота мировыми центробанками (Китай PBOC, Индия, Польша), дедолларизация, геополитические факторы и спрос на активы-убежища (Safe Haven).
+4. Синтез с квант-системой QUANTEX: Ты органично объединяешь этот широкий глобальный макро-фон с переданными алгоритмическими уровнями приложения (Многотаймфреймовый тренд, сетапы QUANTEX v8, опционные уровни GEX CME/FORTS).
+5. Если только что вышли новые статистические данные или новость: Анализируй факт против прогноза (Beat / Miss / In-line), реакцию доллара и реальный импульс для актива.
+6. Если трейдер задает конкретный вопрос: Отвечай развернуто, аргументированно и глобально, делясь экспертным видением макро-картины мира.
+
+Требования к структуре ответа:
+- Начинай с макроэкономической картины и фундаментального драйвера (что двигает рынок сегодня, статистика, ФРС/DXY).
+- Затем переходи к техническому и алгоритмическому плану (сетап QUANTEX, опционные уровни Call/Put Wall, конкретная точка входа, TP1, TP2, Trailing Stop-Loss).
+- Обязательно указывай окна опасной волатильности по московскому времени и альтернативный План Б.`;
+
+    const newsListFormatted = (Array.isArray(latestNews) && latestNews.length > 0)
+      ? `\nСвежие поступающие новости и публикации ленты:\n${latestNews.slice(0, 8).map((n: any) => `- [${n.time || ""}] ${n.title || ""} [${n.impact || "Новость"}] ${n.details ? `— ${n.details}` : ""}`).join("\n")}`
+      : "";
 
     let prompt = `Инструмент: ${ticker} | Таймфрейм: ${timeframe} | Текущая цена: ${currentPrice} | Время: ${dateMsk} ${timeMsk} МСК.
-Режим запроса: ${mode === "morning_brief" ? "Утренний брифинг (08:50 МСК)" : mode === "noon_update" ? "Дневной апдейт (12:30 МСК)" : mode === "event_alert" ? "Предупреждение перед важным событием (за 15 мин)" : mode === "custom_query" ? "Вопрос трейдера" : "Торговый план на день"}.
+Режим: ${mode === "morning_brief" ? "Утренний макро-брифинг (08:50 МСК)" : mode === "noon_update" ? "Дневной апдейт (12:30 МСК)" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : "Глобальный торговый и макро-план"}.
 
-Многотаймфреймовые данные:
-${JSON.stringify(multiTfMetrics, null, 2)}
+🌐 СОБЫТИЯ И СТАТИСТИКА КАЛЕНДАРЯ:
+${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact || "Влияние"}] ${e.forecast ? `(Прогноз: ${e.forecast}, Пред: ${e.previous || ""})` : ""}`).join("\n")}
+${newsListFormatted}
 
-Сетап индикатора QUANTEX v8:
+📊 АЛГОРИТМИЧЕСКИЙ СЕТАП QUANTEX И МНОГОТАЙМФРЕЙМ:
 - Направление: ${isBull ? "LONG (Покупка)" : "SHORT (Продажа)"}
 - Точка входа: ${indicatorForecast?.p1Entry ?? currentPrice}
 - TP1: ${indicatorForecast?.p2Tp1 ?? (currentPrice * 1.008).toFixed(2)}
 - TP2: ${indicatorForecast?.p3Tp2 ?? (currentPrice * 1.016).toFixed(2)}
 - Trailing SL: ${indicatorForecast?.activeTrailingSl ?? (currentPrice * 0.995).toFixed(2)}
 - План Б: ${indicatorForecast?.altTp1 ?? "Тест границы Put Wall"}
-- Вероятность успеха: ${indicatorForecast?.probability ?? 84}%
+- Вероятность успеха алгоритма: ${indicatorForecast?.probability ?? 84}%
+- Опционные уровни GEX (CME/FORTS): Call Wall: ${gex?.callWall || "N/A"}, Put Wall: ${gex?.putWall || "N/A"}, Gamma Flip: ${gex?.gammaFlip || "N/A"}, Max Pain: ${gex?.maxPain || "N/A"}
+- Ожидаемый коридор маркетмейкера 68%: ${gex?.expectedMove68?.low || "N/A"} - ${gex?.expectedMove68?.high || "N/A"}
 
-Опционные уровни GEX:
-- Режим: ${gex?.regime || "POSITIVE_GAMMA"}
-- Call Wall (Потолок): ${gex?.callWall}
-- Put Wall (Пол): ${gex?.putWall}
-- Gamma Flip: ${gex?.gammaFlip}
-- Max Pain: ${gex?.maxPain}
-- Коридор ММ 68%: ${gex?.expectedMove68?.low} - ${gex?.expectedMove68?.high}
-
-События и новости на сегодня:
-${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact}]`).join("\n")}
+Многотаймфреймовые данные:
+${JSON.stringify(multiTfMetrics, null, 2)}
 `;
 
     if (userQuery && userQuery.trim().length > 0) {
-      prompt += `\nКонкретный вопрос трейдера: "${userQuery.trim()}"`;
+      prompt += `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий ответ на вопрос трейдера. Если вопрос касается макростатистики, новостей или глобальной ситуации — привлеки все доступные мировые данные, объясни влияние на актив и свяжи с текущими уровнями на графике.`;
     }
     if (eventContext) {
       prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
@@ -8357,37 +8360,68 @@ ${events.map((e: any) => `- ${e.timeMsk} МСК: ${e.title} [${e.impact}]`).join
         try {
           let gModel = normalizeGeminiModel(aiProviderConfig?.geminiModel || "gemini-3.5-flash");
           let response: any = null;
-          try {
-            response = await customGeminiClient.models.generateContent({
-              model: gModel,
-              contents: prompt,
-              config: {
-                systemInstruction,
-                temperature: 0.25,
-              }
-            });
-          } catch (modelErr: any) {
-            const mErr = String(modelErr?.message || "");
-            if (mErr.includes("high demand") || mErr.includes("503") || mErr.includes("404") || mErr.includes("NOT_FOUND")) {
-              const fallbackM = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
+          let usedSearchGrounding = false;
+
+          // 1. Attempt Google Search Grounding if enabled
+          const allowSearch = aiProviderConfig?.enableWebSearch !== false;
+          if (allowSearch) {
+            try {
               response = await customGeminiClient.models.generateContent({
-                model: fallbackM,
+                model: gModel,
                 contents: prompt,
                 config: {
                   systemInstruction,
-                  temperature: 0.25,
+                  temperature: 0.3,
+                  tools: [{ googleSearch: {} }],
                 }
               });
-              gModel = fallbackM;
-            } else {
-              throw modelErr;
+              if (response && response.text) {
+                usedSearchGrounding = true;
+              }
+            } catch {
+              // If Search tool encounters quota limits (429) or is not supported by key tier,
+              // smoothly proceed to pure global macro synthesis
+            }
+          }
+
+          // 2. Standard generation with global macro synthesis
+          if (!response || !response.text) {
+            try {
+              response = await customGeminiClient.models.generateContent({
+                model: gModel,
+                contents: prompt,
+                config: {
+                  systemInstruction,
+                  temperature: 0.3,
+                }
+              });
+            } catch (modelErr: any) {
+              const mErr = String(modelErr?.message || "");
+              if (mErr.includes("high demand") || mErr.includes("503") || mErr.includes("404") || mErr.includes("NOT_FOUND")) {
+                const fallbackM = gModel === "gemini-3.5-flash" ? "gemini-3.8-flash" : "gemini-3.5-flash";
+                response = await customGeminiClient.models.generateContent({
+                  model: fallbackM,
+                  contents: prompt,
+                  config: {
+                    systemInstruction,
+                    temperature: 0.3,
+                  }
+                });
+                gModel = fallbackM;
+              } else {
+                throw modelErr;
+              }
             }
           }
 
           if (response && response.text) {
+            const providerTag = usedSearchGrounding
+              ? `Gemini (${gModel} + Live Web Grounding 🌐)`
+              : `Gemini (${gModel} + Global Macro 🌐)`;
+
             return res.json({
               plan: response.text,
-              provider: `Gemini (${gModel})`,
+              provider: providerTag,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });

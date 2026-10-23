@@ -1587,10 +1587,28 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             {/* Quick Chips */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[10px] font-mono scrollbar-none">
               <button
-                onClick={() => handleSendManualQuery(`Дай подробный торговый план на день по ${activeAsset} с точками входа, целями и стопом.`)}
+                onClick={() => handleSendManualQuery(`Оцени глобальную макроэкономику: вышедшие данные статистики (CPI/PCE США, рынок труда), ставку ФРС, индекс доллара DXY и их влияние на ${activeAsset}.`)}
+                className="px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 hover:bg-emerald-900 border border-emerald-800/80 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold shadow-sm"
+              >
+                <span>🌍 Макро &amp; Статистика</span>
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Дай подробный глобальный торговый план по ${activeAsset} с синтезом макроэкономики, уровней QUANTEX и опционного позиционирования GEX.`)}
                 className="px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 hover:bg-cyan-900 border border-cyan-800/80 shrink-0 cursor-pointer transition"
               >
                 🎯 План на день
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Какие ожидания по процентной ставке ФРС США, динамика индекса доллара DXY и доходности трежерис US10Y сейчас влияют на ${activeAsset}?`)}
+                className="px-2 py-0.5 rounded-full bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/80 shrink-0 cursor-pointer transition"
+              >
+                📊 ФРС &amp; DXY
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Каковы фундаментальные драйверы: скупка золота мировыми центробанками (PBOC Китая, Индия), дедолларизация и геополитика для ${activeAsset}?`)}
+                className="px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 hover:bg-amber-900 border border-amber-800/80 shrink-0 cursor-pointer transition"
+              >
+                🪙 Спрос ЦБ &amp; Геополит.
               </button>
               <button
                 onClick={() => handleSendManualQuery(`Проанализируй уровни GEX для ${activeAsset}: Call Wall, Put Wall и Max Pain.`)}
@@ -1610,7 +1628,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                   setEventsSubTab("news");
                   handleRefreshNewsFeed();
                 }}
-                className="px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 hover:bg-amber-900 border border-amber-800/80 shrink-0 cursor-pointer transition flex items-center gap-1"
+                className="px-2 py-0.5 rounded-full bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700 shrink-0 cursor-pointer transition flex items-center gap-1"
               >
                 <Zap className="h-2.5 w-2.5 text-amber-400" />
                 <span>Собрать новости</span>
