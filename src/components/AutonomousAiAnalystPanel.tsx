@@ -269,6 +269,60 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
   }
 ];
 
+// Weekend macro & market agenda (MSK) for Saturdays and Sundays
+const WEEKEND_CALENDAR_EVENTS: MacroCalendarEvent[] = [
+  {
+    timeMsk: "11:00",
+    title: "Субботний перерасчет позиций и экспирация 24/7 крипто-опционов (Deribit)",
+    impact: "HIGH",
+    section: "CRYPTO",
+    sections: ["CRYPTO"],
+    details: "Обновление карты открытого интереса, страйка Max Pain и гамма-профилей по BTC и ETH",
+    source: "Deribit / CoinGlass",
+    url: "https://ru.tradingview.com/symbols/BTCUSDT/"
+  },
+  {
+    timeMsk: "14:00",
+    title: "Анализ позиционирования институциональных фондов по отчету CFTC COT (Commitments of Traders)",
+    impact: "HIGH",
+    section: "GOLD",
+    sections: ["GOLD", "MOEX"],
+    details: "Сверка чистого позиционирования Managed Money по золоту (COMEX) и валютам за прошедшую торговую неделю",
+    source: "Комиссия CFTC США",
+    url: "https://www.cftc.gov/marketreports/commitmentsoftraders/index.htm"
+  },
+  {
+    timeMsk: "18:00",
+    title: "Мониторинг геополитических рисков и энергокоридоров (Ормузский пролив, Ближний Восток)",
+    impact: "HIGH",
+    section: "GEOPOLITICS",
+    sections: ["GEOPOLITICS", "GOLD", "MOEX"],
+    details: "Оценка вероятности гэпа на открытии рынков металлов и нефти в ночь на понедельник",
+    source: "Коммерсантъ / ТАСС",
+    url: "https://tass.ru/mezhdunarodnaya-panorama"
+  },
+  {
+    timeMsk: "Вс 23:59 / Пн 01:00",
+    title: "Открытие торгов металлами (CME Globex) и старт тихоокеанско-азиатской сессии",
+    impact: "CRITICAL",
+    section: "GOLD",
+    sections: ["GOLD"],
+    details: "Возобновление мировых торгов золотом XAUUSD и серебром, первичная реакция на события выходных",
+    source: "CME Group",
+    url: "https://www.cmegroup.com/markets/metals/precious/gold.html"
+  }
+];
+
+function isWeekendInMsk(): boolean {
+  try {
+    const day = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", weekday: "short" }).format(new Date());
+    return day === "Sat" || day === "Sun";
+  } catch {
+    const d = new Date().getUTCDay();
+    return d === 0 || d === 6;
+  }
+}
+
 export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> = ({
   activeAsset,
   activeTf,
@@ -685,7 +739,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           expectedMove95: dayGexReport?.expectedMove95 || gexReport?.expectedMove95 || { low: 4105, high: 4220 },
           pcrOi: dayGexReport?.pcrOi || gexReport?.pcrOi || 0.85
         },
-        events: calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS,
+        events: isWeekendInMsk() ? WEEKEND_CALENDAR_EVENTS : (calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS),
         latestNews: freshNewsContext,
         mode,
         eventContext,
@@ -805,6 +859,47 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const putWall = payload.gex?.putWall || (price * 0.985).toFixed(2);
     const gammaFlip = payload.gex?.gammaFlip || price;
     const style = payload.responseStyle || responseStyleMode;
+
+    const isWeekend = isWeekendInMsk();
+    const tUpper = String(payload.ticker || "").toUpperCase();
+    const isCrypto = tUpper.includes("BTC") || tUpper.includes("ETH") || tUpper.includes("SOL") || tUpper.includes("XRP");
+    const isMarketClosed = isWeekend && !isCrypto;
+
+    if (isMarketClosed) {
+      if (style === "short") {
+        return `### ⚡ Короткий аудит закрытия недели: ${payload.ticker} (${payload.timeframe})
+* **Статус биржи:** ⏸️ **Рынок закрыт на выходные**. Возобновление мировых торгов в ночь на понедельник в 01:00 МСК (CME Globex).
+* **Недельное закрытие:** \`${price}\` | Модель QUANTEX: **${isBull ? "🟢 LONG (Бычий уклон)" : "🔴 SHORT (Коррекция)"}**
+* **Опционы GEX (\`${regime}\`):** Потолок \`${callWall}\` | Поддержка \`${putWall}\` | Flip \`${gammaFlip}\`
+* **План на открытие:** Встречать открытие в понедельник, контроль подтверждения объемов выше \`${entry}\` (цели TP1: \`${tp1}\`, TP2: \`${tp2}\`, SL: \`${sl}\`).`;
+      }
+
+      return `### ${style === "autonomous" ? "🤖 Автономный ИИ QUANTEX" : "📊 Развёрнутый план"} — Аудит закрытия недели: ${payload.ticker}
+
+**Статус биржи:** ⏸️ **Рынок металлов закрыт на выходные**. Торги возобновятся в ночь на понедельник в 01:00 МСК (CME Globex).
+**Цена закрытия недели:** \`${price}\`  
+**Глобальный консенсус Multi-TF:** ${isBull ? "🟢 BULLISH (Преимущество покупателей)" : "🔴 BEARISH (Преимущество продавцов)"}  
+**Опционный режим:** \`${regime}\`  
+**Ключевой диапазон ликвидности:** \`${putWall}\` (Put Wall) — \`${callWall}\` (Call Wall)  
+**Граница турбулентности (Zero Flip):** \`${gammaFlip}\`
+
+---
+
+### 🎯 Торговый сценарий к открытию торгов в понедельник
+* **Направление:** **${isBull ? "LONG (Покупка на тесте поддержки)" : "SHORT (Продажа от сопротивления)"}**
+* **Зона входа (Entry):** \`${entry}\` (лимитный ордер на подтверждении открытия)
+* **Цель 1 (TP1):** \`${tp1}\` — фиксация 50% позиции и перенос SL в безубыток
+* **Цель 2 (TP2):** \`${tp2}\` — финальный пул ликвидности перед Call Wall
+* **Защитный стоп (SL):** \`${sl}\` (Sweep Protection: фильтр закрытия тела свечи)
+* **План Б (Инвалидация):** Закрытие 15м свечи за \`${sl}\` отменяет сценарий.
+
+---
+
+### 📋 Повестка выходных и подготовка к сессии
+* **Отчеты CFTC COT:** Сверка баланса открытого интереса институциональных фондов по золоту.
+* **Геополитический мониторинг:** Оценка риска ценового разрыва (Weekend Gap Risk).
+* **В ночь на понедельник в 01:00 МСК:** Возобновление мировых торгов (CME Globex & Сидней). При открытии с гэпом воздержитесь от рыночных ордеров в первые 15 минут.`;
+    }
 
     if (style === "short") {
       return `### ⚡ Короткий ответ ИИ: ${payload.ticker} (${payload.timeframe})
@@ -1035,10 +1130,15 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       });
   }, [localNewsFeed, newsItems, newsCategoryFilter, newsSearchTerm]);
 
+  const isWeekendNow = isWeekendInMsk();
+  const isCryptoAsset = activeAsset.includes("BTC") || activeAsset.includes("ETH") || activeAsset.includes("SOL") || activeAsset.includes("XRP");
+  const isClosedForWeekend = isWeekendNow && !isCryptoAsset;
+
   const syncedCalendarList = useMemo(() => {
-    const rawEvents = calendarEvents && calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS;
+    const defaultList = isWeekendNow ? WEEKEND_CALENDAR_EVENTS : DEFAULT_TODAY_EVENTS;
+    const rawEvents = calendarEvents && calendarEvents.length > 0 && !isWeekendNow ? calendarEvents : defaultList;
     return rawEvents.filter((ev) => matchesPanelSection(ev, newsCategoryFilter));
-  }, [calendarEvents, newsCategoryFilter]);
+  }, [calendarEvents, newsCategoryFilter, isWeekendNow]);
 
   // Provider badge text for header reflecting active response style mode
   const providerBadgeText = useMemo(() => {
@@ -1081,6 +1181,30 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                   {activeAsset}
                 </span>
 
+                {/* Market Status Pill */}
+                {isClosedForWeekend ? (
+                  <span
+                    className="font-mono text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
+                    title="Рынок закрыт на выходные (COMEX/LBMA/MOEX). Возобновление торгов: В ночь на понедельник в 01:00 МСК"
+                  >
+                    ⏸️ Закрыто до пн
+                  </span>
+                ) : isWeekendNow ? (
+                  <span
+                    className="font-mono text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shrink-0"
+                    title="Крипторынок активен 24/7 (Шлюзы CME/ETF закрыты на выходные)"
+                  >
+                    🟢 24/7 (Выходной)
+                  </span>
+                ) : (
+                  <span
+                    className="font-mono text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shrink-0"
+                    title="Торговая сессия активна"
+                  >
+                    🟢 Активно
+                  </span>
+                )}
+
                 {/* Active Mode Badge */}
                 <button
                   type="button"
@@ -1095,7 +1219,11 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 <Clock className="h-2.5 w-2.5 text-cyan-400" />
                 <span>{currentMskTime} МСК</span>
                 <span className="text-gray-600">•</span>
-                <span className="text-emerald-400 font-bold">Синхронно</span>
+                {isClosedForWeekend ? (
+                  <span className="text-amber-400 font-bold">Выходной аудит</span>
+                ) : (
+                  <span className="text-emerald-400 font-bold">Синхронно</span>
+                )}
               </p>
             </div>
           </div>
@@ -1807,10 +1935,28 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             {/* Quick Chips */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[10px] font-mono scrollbar-none">
               <button
-                onClick={() => handleSendManualQuery(`Оцени глобальную макроэкономику: вышедшие данные статистики (CPI/PCE США, рынок труда), ставку ФРС, индекс доллара DXY и их влияние на ${activeAsset}.`)}
-                className="px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 hover:bg-emerald-900 border border-emerald-800/80 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold shadow-sm"
+                onClick={() => handleSendManualQuery(`Какие данные вышли по инфляции США (CPI, базовая Core CPI и индекс PCE) и как они повлияли на ${activeAsset}?`)}
+                className="px-2 py-0.5 rounded-full bg-emerald-950/90 text-emerald-300 hover:bg-emerald-900 border border-emerald-700/90 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold shadow-sm"
               >
-                <span>🌍 Макро &amp; Статистика</span>
+                <span>🌐 Инфляция США (CPI)</span>
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Какое решение приняла ФРС по процентной ставке (FOMC), что заявило руководство Федрезерва и каковы ожидания рынка по ${activeAsset}?`)}
+                className="px-2 py-0.5 rounded-full bg-indigo-950/90 text-indigo-300 hover:bg-indigo-900 border border-indigo-700/90 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold"
+              >
+                <span>🏛️ Ставка ФРС (FOMC)</span>
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Какие важные мировые новости и геополитические события вышли в мире, которых нет в приложении, и как они влияют на ${activeAsset}?`)}
+                className="px-2 py-0.5 rounded-full bg-sky-950/90 text-sky-300 hover:bg-sky-900 border border-sky-700/90 shrink-0 cursor-pointer transition flex items-center gap-1"
+              >
+                <span>🌍 Мировые новости</span>
+              </button>
+              <button
+                onClick={() => handleSendManualQuery(`Какие данные вышли по рынку труда США (Non-Farm Payrolls, безработица и Jobless Claims) и каков их эффект?`)}
+                className="px-2 py-0.5 rounded-full bg-teal-950/90 text-teal-300 hover:bg-teal-900 border border-teal-700/90 shrink-0 cursor-pointer transition"
+              >
+                💼 Рынок труда (NFP)
               </button>
               <button
                 onClick={() => handleSendManualQuery(`Дай подробный глобальный торговый план по ${activeAsset} с синтезом макроэкономики, уровней QUANTEX и опционного позиционирования GEX.`)}
@@ -1819,16 +1965,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 🎯 План на день
               </button>
               <button
-                onClick={() => handleSendManualQuery(`Какие ожидания по процентной ставке ФРС США, динамика индекса доллара DXY и доходности трежерис US10Y сейчас влияют на ${activeAsset}?`)}
-                className="px-2 py-0.5 rounded-full bg-indigo-950/80 text-indigo-300 hover:bg-indigo-900 border border-indigo-800/80 shrink-0 cursor-pointer transition"
-              >
-                📊 ФРС &amp; DXY
-              </button>
-              <button
                 onClick={() => handleSendManualQuery(`Каковы фундаментальные драйверы: скупка золота мировыми центробанками (PBOC Китая, Индия), дедолларизация и геополитика для ${activeAsset}?`)}
                 className="px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 hover:bg-amber-900 border border-amber-800/80 shrink-0 cursor-pointer transition"
               >
-                🪙 Спрос ЦБ &amp; Геополит.
+                🪙 Спрос ЦБ &amp; БРИКС
               </button>
               <button
                 onClick={() => handleSendManualQuery(`Проанализируй уровни GEX для ${activeAsset}: Call Wall, Put Wall и Max Pain.`)}
@@ -1867,7 +2007,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                     handleSendManualQuery();
                   }
                 }}
-                placeholder={`Спросить ИИ (${providerBadgeText}) по ${activeAsset}...`}
+                placeholder={`Спросить ИИ (${providerBadgeText}) об инфляции США, ставке ФРС, мировых новостях или по ${activeAsset}...`}
                 className="flex-1 bg-transparent border-none text-xs text-white placeholder-gray-500 focus:outline-none"
               />
               <button
