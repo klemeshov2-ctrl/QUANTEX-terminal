@@ -2284,6 +2284,12 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             {/* Quick Chips */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[10px] font-mono scrollbar-none">
               <button
+                onClick={() => handleSendManualQuery(`Какие ожидания и прогнозы аналитиков ведущих инвестдомов по ${activeAsset} к концу года?`)}
+                className="px-2 py-0.5 rounded-full bg-violet-950/90 text-violet-300 hover:bg-violet-900 border border-violet-700/90 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold shadow-sm"
+              >
+                <span>📈 Прогнозы к концу года</span>
+              </button>
+              <button
                 onClick={() => handleSendManualQuery(`Какие данные вышли по инфляции США (CPI, базовая Core CPI и индекс PCE) и как они повлияли на ${activeAsset}?`)}
                 className="px-2 py-0.5 rounded-full bg-emerald-950/90 text-emerald-300 hover:bg-emerald-900 border border-emerald-700/90 shrink-0 cursor-pointer transition flex items-center gap-1 font-bold shadow-sm"
               >
@@ -2343,6 +2349,25 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 <span>Собрать новости</span>
               </button>
             </div>
+
+            {/* Dynamic key status notice if using Gemini without configured key */}
+            {providerSettings.provider === "gemini" && (!providerSettings.geminiApiKey || providerSettings.geminiApiKey.startsWith("AIzaSyAhY9_") || providerSettings.geminiApiKey.length < 10) && (
+              <div className="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-amber-950/40 border border-amber-600/40 text-amber-200 text-[10px] font-sans">
+                <div className="flex items-center gap-1.5 truncate">
+                  <Sparkles className="h-3 w-3 text-amber-400 shrink-0" />
+                  <span className="truncate">Работает автономный квант-движок QUANTEX. Для живого чата с Gemini укажите ключ:</span>
+                </div>
+                {onOpenSettingsTab && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettingsTab}
+                    className="text-[9.5px] font-bold text-amber-300 hover:text-white underline whitespace-nowrap cursor-pointer shrink-0"
+                  >
+                    Ввести ключ →
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Input field + Send button */}
             <div className="flex items-center gap-1.5 bg-[#121829] border border-gray-700/80 rounded-xl px-2.5 py-1.5 focus-within:border-cyan-500/80 transition">
