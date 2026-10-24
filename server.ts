@@ -1291,9 +1291,42 @@ function persistSentNewsIds() {
   } catch {}
 }
 
+// Disk storage for per-user AI chat history and isolated analyst states
+const AI_USER_HISTORIES_FILE = path.join(DATA_DIR, "ai-user-histories.json");
+interface StoredAiUserHistory {
+  username: string;
+  messages: any[];
+  updatedAt: string;
+}
+let aiUserHistories: Record<string, StoredAiUserHistory> = {};
+
+function loadAiUserHistories() {
+  try {
+    if (fs.existsSync(AI_USER_HISTORIES_FILE)) {
+      const raw = fs.readFileSync(AI_USER_HISTORIES_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        aiUserHistories = parsed;
+        addServerLog("INFO", `Загружена база историй ИИ-аналитика для ${Object.keys(parsed).length} пользователей`);
+      }
+    }
+  } catch (err: any) {
+    addServerLog("WARN", `Не удалось загрузить историю ИИ пользователей: ${err.message}`);
+  }
+}
+
+function persistAiUserHistories() {
+  try {
+    fs.writeFileSync(AI_USER_HISTORIES_FILE, JSON.stringify(aiUserHistories, null, 2), "utf-8");
+  } catch (err: any) {
+    console.error("Failed to save ai user histories:", err);
+  }
+}
+
 // Initial load from disk
 loadPersistedData();
 loadSentNewsIds();
+loadAiUserHistories();
 
 const pastGoldReports: ScheduledReport[] = [];
 
@@ -8456,10 +8489,105 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
   }
 }
 
+// --- PER-USER AI ANALYST CHAT HISTORY & REPOSITORY ---
+app.get("/api/ai-analyst/history", (req, res) => {
+  try {
+    const rawUser = String(req.query.username || "admin").trim().toLowerCase();
+    const ticker = req.query.ticker ? String(req.query.ticker).trim().toUpperCase() : null;
+    const userRecord = aiUserHistories[rawUser];
+    const messages = userRecord ? (userRecord.messages || []) : [];
+    const filtered = ticker ? messages.filter(m => !m.asset || m.asset.toUpperCase() === ticker) : messages;
+    res.json({
+      success: true,
+      username: rawUser,
+      messages: filtered,
+      totalCount: messages.length,
+      filteredCount: filtered.length
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-analyst/history", (req, res) => {
+  try {
+    const { username = "admin", message, messages, ticker } = req.body;
+    const cleanUser = String(username).trim().toLowerCase();
+    if (!aiUserHistories[cleanUser]) {
+      aiUserHistories[cleanUser] = {
+        username: cleanUser,
+        messages: [],
+        updatedAt: new Date().toISOString()
+      };
+    }
+    const target = aiUserHistories[cleanUser];
+    if (Array.isArray(messages)) {
+      target.messages = messages.slice(-500);
+    } else if (message && typeof message === "object") {
+      const enriched = {
+        ...message,
+        asset: message.asset || ticker || "XAUUSD",
+        username: cleanUser,
+        timestamp: message.timestamp || Date.now()
+      };
+      // Prevent duplicates by ID
+      const exists = target.messages.some(m => m.id === enriched.id);
+      if (!exists) {
+        target.messages.push(enriched);
+        if (target.messages.length > 500) {
+          target.messages = target.messages.slice(-500);
+        }
+      }
+    }
+    target.updatedAt = new Date().toISOString();
+    persistAiUserHistories();
+    res.json({
+      success: true,
+      username: cleanUser,
+      totalCount: target.messages.length
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-analyst/clear-history", (req, res) => {
+  try {
+    const { username = "admin", ticker, clearAll = false } = req.body;
+    const cleanUser = String(username).trim().toLowerCase();
+    const userRecord = aiUserHistories[cleanUser];
+    if (!userRecord) {
+      return res.json({ success: true, clearedCount: 0, remainingCount: 0 });
+    }
+
+    const prevCount = userRecord.messages.length;
+    if (clearAll || !ticker) {
+      userRecord.messages = [];
+    } else {
+      const targetTicker = String(ticker).trim().toUpperCase();
+      userRecord.messages = userRecord.messages.filter(
+        m => m.asset && m.asset.toUpperCase() !== targetTicker
+      );
+    }
+    userRecord.updatedAt = new Date().toISOString();
+    persistAiUserHistories();
+    const remainingCount = userRecord.messages.length;
+    res.json({
+      success: true,
+      username: cleanUser,
+      clearedCount: prevCount - remainingCount,
+      remainingCount
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
 app.post("/api/ai-analyst/generate-plan", async (req, res) => {
   try {
     const {
+      username = "admin",
       ticker = "BTCUSDT",
       timeframe = "15m",
       currentPrice = 4165.0,

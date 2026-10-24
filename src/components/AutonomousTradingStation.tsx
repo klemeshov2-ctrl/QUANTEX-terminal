@@ -6376,6 +6376,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               }}
             >
               <AutonomousAiAnalystPanel
+                currentUser={propUser}
                 activeAsset={activeAsset}
                 activeTf={activeTf}
                 currentPrice={latestCandle ? latestCandle.close : 4165.0}

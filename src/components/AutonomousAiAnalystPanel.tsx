@@ -33,9 +33,14 @@ import {
   Filter,
   Check,
   Zap,
-  Activity
+  Activity,
+  Trash2,
+  History,
+  User,
+  X
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { UserAccountItem } from "./UnifiedStationSettings";
 
 export interface MacroCalendarEvent {
   id?: string;
@@ -81,6 +86,8 @@ export interface AiChatMessage {
   time: string; // HH:mm МСК
   timestamp: number;
   provider?: string;
+  asset?: string;
+  username?: string;
 }
 
 export interface TickerAiState {
@@ -116,6 +123,7 @@ export interface AiProviderSettings {
 }
 
 export interface AutonomousAiAnalystPanelProps {
+  currentUser?: UserAccountItem;
   activeAsset: string;
   activeTf: string;
   currentPrice: number;
@@ -324,6 +332,7 @@ function isWeekendInMsk(): boolean {
 }
 
 export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> = ({
+  currentUser,
   activeAsset,
   activeTf,
   currentPrice,
@@ -342,10 +351,25 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   width,
   onWidthChange
 }: AutonomousAiAnalystPanelProps) => {
+  // Active User Context (Dedicated AI Analyst for each user)
+  const activeUsername = currentUser?.username ? currentUser.username.trim() : "admin";
+  const userRole = currentUser?.role || "trader";
+
+  // Master all-history messages for this user (across all tickers)
+  const [allUserMessages, setAllUserMessages] = useState<AiChatMessage[]>([]);
+  // Chat sub-view filter: "current_asset" vs "all_history"
+  const [chatViewMode, setChatViewMode] = useState<"current_asset" | "all_history">("current_asset");
+  // Search filter inside full history
+  const [historySearchQuery, setHistorySearchQuery] = useState<string>("");
+  // Clear chat modal state
+  const [isClearModalOpen, setIsClearModalOpen] = useState<boolean>(false);
+  const [clearScope, setClearScope] = useState<"current_asset" | "all_history">("current_asset");
+  const [clearToastMessage, setClearToastMessage] = useState<string | null>(null);
+
   // Panel Active Sub-Tab: "plan" (Торговый план), "chat" (Диалог), "schedule" (Авто-рассылка), "events" (События & Новости)
   const [panelTab, setPanelTab] = useState<"plan" | "chat" | "schedule" | "events">("plan");
 
-  // Per-Ticker State (Loaded and Isolated for EACH activeAsset)
+  // Per-Ticker State (Loaded and Isolated for EACH activeAsset and activeUsername)
   const [tickerState, setTickerState] = useState<TickerAiState>({
     dailyPlan: null,
     dailyPlanTimestamp: null,
@@ -613,23 +637,30 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }
   };
 
-  // 1. Load Per-Ticker Data on Asset Change
+  // 1. Load Per-User & Per-Ticker Data on Asset or User Change
   useEffect(() => {
     try {
-      const storageKey = `st_ai_analyst_ticker_${activeAsset}`;
-      const savedData = localStorage.getItem(storageKey);
+      const userStorageKey = `st_ai_analyst_${activeUsername}_${activeAsset}`;
+      const legacyKey = `st_ai_analyst_ticker_${activeAsset}`;
+      let savedData = localStorage.getItem(userStorageKey);
+      if (!savedData && activeUsername === "admin") {
+        savedData = localStorage.getItem(legacyKey);
+      }
+
       if (savedData) {
         const parsed = JSON.parse(savedData);
         setTickerState(parsed);
       } else {
-        // Initialize default welcome message for this ticker
+        // Initialize default welcome message for this user & ticker
         const welcomeMsg: AiChatMessage = {
           id: `welcome_${Date.now()}`,
           role: "assistant",
           badge: "🤖 Автономный Аналитик",
-          text: `👋 Здравствуйте! Я ваш персональный автономный квант-аналитик по **${activeAsset}**.\n\nЯ непрерывно анализирую графики по всем таймфреймам (1м, 5м, 15м, 1ч, 4ч, 1д), опционные барьеры GEX, дельту объемов и макроэкономические события на сегодня.\n\nВы можете выбрать активный движок ИИ во вкладке **«⚙️ API ИИ»** (DeepSeek V3/R1, Qwen Plus, Gemini или квантовый QUANTEX Algo). Нажмите **«Сформировать план на день»** или задайте любой вопрос!`,
+          text: `👋 Здравствуйте, **${activeUsername}**! Я ваш персональный автономный квант-аналитик по **${activeAsset}**.\n\nЯ непрерывно анализирую графики по всем таймфреймам (1м, 5м, 15м, 1ч, 4ч, 1д), опционные барьеры GEX, дельту объемов и макроэкономические события на сегодня.\n\nВы можете выбрать активный движок ИИ во вкладке **«⚙️ API ИИ»** (DeepSeek V3/R1, Qwen Plus, Gemini или квантовый QUANTEX Algo). Нажмите **«Сформировать план на день»** или задайте любой вопрос!`,
           time: new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date()),
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          asset: activeAsset,
+          username: activeUsername
         };
         const initial: TickerAiState = {
           dailyPlan: null,
@@ -639,22 +670,200 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           dispatchedAlertIds: []
         };
         setTickerState(initial);
-        localStorage.setItem(storageKey, JSON.stringify(initial));
+        localStorage.setItem(userStorageKey, JSON.stringify(initial));
       }
     } catch (e) {
       console.warn("Notice loading ticker AI state:", e);
     }
-  }, [activeAsset]);
+  }, [activeUsername, activeAsset]);
 
-  // Save changes to localStorage per ticker
-  const saveTickerState = (updated: TickerAiState) => {
+  // 1b. Load Master All-History for Current User across All Assets
+  useEffect(() => {
+    const masterHistoryKey = `st_ai_analyst_${activeUsername}_master_history`;
+    try {
+      const savedMaster = localStorage.getItem(masterHistoryKey);
+      if (savedMaster) {
+        const parsed = JSON.parse(savedMaster);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAllUserMessages(parsed);
+        }
+      }
+    } catch {}
+
+    // Synchronize with server-side repository
+    fetch(`/api/ai-analyst/history?username=${encodeURIComponent(activeUsername)}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+          setAllUserMessages(prev => {
+            const existingIds = new Set(prev.map(m => m.id));
+            const newOnes = data.messages.filter((m: any) => !existingIds.has(m.id));
+            if (newOnes.length > 0) {
+              const merged = [...prev, ...newOnes].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+              try {
+                localStorage.setItem(masterHistoryKey, JSON.stringify(merged));
+              } catch {}
+              return merged;
+            }
+            return prev;
+          });
+        }
+      })
+      .catch(() => {});
+  }, [activeUsername]);
+
+  // Save changes to localStorage per user and asset, and sync new messages to master history
+  const saveTickerState = (updated: TickerAiState, newMessageToAppend?: AiChatMessage) => {
     setTickerState(updated);
     try {
-      localStorage.setItem(`st_ai_analyst_ticker_${activeAsset}`, JSON.stringify(updated));
+      localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updated));
     } catch (e) {
       console.warn("Notice saving ticker state:", e);
     }
+
+    if (newMessageToAppend) {
+      const enrichedMsg: AiChatMessage = {
+        ...newMessageToAppend,
+        asset: newMessageToAppend.asset || activeAsset,
+        username: newMessageToAppend.username || activeUsername,
+        timestamp: newMessageToAppend.timestamp || Date.now()
+      };
+
+      setAllUserMessages(prev => {
+        const exists = prev.some(m => m.id === enrichedMsg.id);
+        const nextList = exists ? prev : [...prev, enrichedMsg];
+        try {
+          localStorage.setItem(`st_ai_analyst_${activeUsername}_master_history`, JSON.stringify(nextList));
+        } catch {}
+        return nextList;
+      });
+
+      // Background persist to server
+      fetch("/api/ai-analyst/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: activeUsername,
+          message: enrichedMsg,
+          ticker: activeAsset
+        })
+      }).catch(() => {});
+    }
   };
+
+  // Handle Clear Chat (Scope: current asset or all history for this user)
+  const handleClearChat = async (scope: "current_asset" | "all_history") => {
+    setIsClearModalOpen(false);
+    try {
+      const mskTime = new Intl.DateTimeFormat("ru-RU", {
+        timeZone: "Europe/Moscow",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date());
+
+      if (scope === "current_asset") {
+        const welcomeMsg: AiChatMessage = {
+          id: `welcome_${Date.now()}`,
+          role: "assistant",
+          badge: "🤖 Автономный Аналитик",
+          text: `👋 Здравствуйте, **${activeUsername}**! История диалога по инструменту **${activeAsset}** очищена.\n\nЯ готов к новому квант-анализу графиков, уровней GEX и макроэкономических новостей. Нажмите **«Сформировать план на день»** или задайте уточняющий вопрос.`,
+          time: `${mskTime} МСК`,
+          timestamp: Date.now(),
+          asset: activeAsset,
+          username: activeUsername
+        };
+
+        const updatedTicker: TickerAiState = {
+          ...tickerState,
+          messages: [welcomeMsg]
+        };
+        setTickerState(updatedTicker);
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
+
+        // Filter out this asset's messages from allUserMessages
+        setAllUserMessages(prev => {
+          const remaining = prev.filter(m => m.asset && m.asset.toUpperCase() !== activeAsset.toUpperCase());
+          const next = [...remaining, welcomeMsg];
+          try {
+            localStorage.setItem(`st_ai_analyst_${activeUsername}_master_history`, JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+
+        // Notify server
+        await fetch("/api/ai-analyst/clear-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: activeUsername,
+            ticker: activeAsset,
+            clearAll: false
+          })
+        });
+
+        setClearToastMessage(`Диалог по ${activeAsset} для «${activeUsername}» успешно очищен`);
+      } else {
+        // Clear entire chat history across all tickers for this user
+        const welcomeMsg: AiChatMessage = {
+          id: `welcome_${Date.now()}`,
+          role: "assistant",
+          badge: "🤖 Автономный Аналитик",
+          text: `👋 Здравствуйте, **${activeUsername}**! Вся история диалогов ИИ-аналитика по всем инструментам полностью очищена.\n\nЯ готов к анализу. Выберите интересующий актив и сформируйте торговый план или задайте любой вопрос!`,
+          time: `${mskTime} МСК`,
+          timestamp: Date.now(),
+          asset: activeAsset,
+          username: activeUsername
+        };
+
+        const updatedTicker: TickerAiState = {
+          ...tickerState,
+          messages: [welcomeMsg]
+        };
+        setTickerState(updatedTicker);
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
+
+        setAllUserMessages([welcomeMsg]);
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_master_history`, JSON.stringify([welcomeMsg]));
+
+        // Notify server
+        await fetch("/api/ai-analyst/clear-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: activeUsername,
+            clearAll: true
+          })
+        });
+
+        setClearToastMessage(`Вся история ИИ-аналитика для пользователя «${activeUsername}» успешно очищена`);
+      }
+    } catch (err: any) {
+      console.error("Clear chat error:", err);
+      setClearToastMessage("Ошибка при очистке чата");
+    }
+
+    setTimeout(() => {
+      setClearToastMessage(null);
+    }, 4000);
+  };
+
+  // Filtered messages list based on active tab view mode and search query
+  const displayedMessages = useMemo(() => {
+    if (chatViewMode === "all_history") {
+      let list = allUserMessages;
+      if (historySearchQuery.trim()) {
+        const q = historySearchQuery.toLowerCase();
+        list = list.filter(m =>
+          (m.text && m.text.toLowerCase().includes(q)) ||
+          (m.badge && m.badge.toLowerCase().includes(q)) ||
+          (m.asset && m.asset.toLowerCase().includes(q)) ||
+          (m.provider && m.provider.toLowerCase().includes(q))
+        );
+      }
+      return list;
+    }
+    return tickerState.messages;
+  }, [chatViewMode, allUserMessages, tickerState.messages, historySearchQuery]);
 
   // Scroll chat to bottom when messages update
   useEffect(() => {
@@ -746,7 +955,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         userQuery: customUserPrompt || "",
         history: tickerState.messages.slice(-6).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text })),
         aiProviderConfig: providerSettings,
-        responseStyle: activeStyle
+        responseStyle: activeStyle,
+        username: activeUsername
       };
 
       const res = await fetch("/api/ai-analyst/generate-plan", {
@@ -783,7 +993,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         text: generatedPlanText,
         time: `${mskNow} МСК`,
         timestamp: Date.now(),
-        provider: providerName
+        provider: providerName,
+        asset: activeAsset,
+        username: activeUsername
       };
 
       const isDirectionBull = payload.indicatorForecast?.isBull ?? true;
@@ -806,7 +1018,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         messages: [...tickerState.messages, newAssistantMsg]
       };
 
-      saveTickerState(updatedTickerState);
+      saveTickerState(updatedTickerState, newAssistantMsg);
 
       // Auto switch to plan tab if user asked for a plan
       if (mode === "daily_plan" || mode === "morning_brief" || mode === "noon_update") {
@@ -824,7 +1036,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         multiTfMetrics: multiTfSummary,
         indicatorForecast: indicatorOutput?.forecast,
         gex: gexReport || dayGexReport,
-        userQuery: customUserPrompt || ""
+        userQuery: customUserPrompt || "",
+        username: activeUsername
       });
       const newAssistantMsg: AiChatMessage = {
         id: `msg_err_${Date.now()}`,
@@ -833,14 +1046,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         text: fallback,
         time: `${mskNow} МСК`,
         timestamp: Date.now(),
-        provider: "QUANTEX Algo"
+        provider: "QUANTEX Algo",
+        asset: activeAsset,
+        username: activeUsername
       };
       saveTickerState({
         ...tickerState,
         dailyPlan: tickerState.dailyPlan || fallback,
         dailyPlanTimestamp: tickerState.dailyPlanTimestamp || `${mskNow} МСК`,
         messages: [...tickerState.messages, newAssistantMsg]
-      });
+      }, newAssistantMsg);
     } finally {
       setIsGenerating(false);
     }
@@ -961,16 +1176,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const userMsg: AiChatMessage = {
       id: `user_${Date.now()}`,
       role: "user",
-      badge: "👤 Трейдер",
+      badge: `👤 ${activeUsername}`,
       text: textToSend.trim(),
       time: `${mskNow} МСК`,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      asset: activeAsset,
+      username: activeUsername
     };
 
     saveTickerState({
       ...tickerState,
       messages: [...tickerState.messages, userMsg]
-    });
+    }, userMsg);
 
     if (!overrideText) {
       setInputQuery("");
@@ -1214,6 +1431,15 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 >
                   {providerBadgeText}
                 </button>
+
+                {/* Per-User Identity Badge */}
+                <span
+                  className="font-mono text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-950/90 text-blue-300 border border-blue-700/60 shrink-0 flex items-center gap-1"
+                  title={`Персональный ИИ-аналитик аккаунта «${activeUsername}» (${userRole})`}
+                >
+                  <User className="h-2.5 w-2.5 text-blue-400" />
+                  <span>{activeUsername}</span>
+                </span>
               </div>
               <p className="text-[10px] text-gray-400 flex items-center gap-1 font-mono mt-0.5">
                 <Clock className="h-2.5 w-2.5 text-cyan-400" />
@@ -1406,7 +1632,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
               }`}
             >
               <Bot className="h-3 w-3 text-purple-400" />
-              <span>Чат ({tickerState.messages.length})</span>
+              <span>Чат ({chatViewMode === "all_history" ? allUserMessages.length : tickerState.messages.length})</span>
             </button>
 
             <button
@@ -1542,42 +1768,165 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
             {/* TAB 2: INTERACTIVE CHAT HISTORY */}
             {panelTab === "chat" && (
-              <div className="space-y-3">
-                <div className="space-y-2.5">
-                  {tickerState.messages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={`p-2.5 rounded-xl border text-xs leading-relaxed space-y-1.5 ${
-                        msg.role === "user"
-                          ? "bg-[#131b31] border-cyan-500/30 ml-4 text-cyan-100"
-                          : msg.role === "system_alert"
-                          ? "bg-rose-950/40 border-rose-500/50 text-rose-100"
-                          : "bg-[#0b0f1d] border-gray-800 mr-2 text-gray-200"
-                      }`}
+              <div className="space-y-2.5">
+                {/* Chat Sub-Toolbar: Mode Switch + History Search + Clear Chat Button */}
+                <div className="p-1.5 rounded-xl bg-[#0b0e1b] border border-gray-800 space-y-1.5">
+                  <div className="flex items-center justify-between gap-1.5">
+                    {/* View mode toggle */}
+                    <div className="flex items-center bg-[#070a14] rounded-lg p-0.5 border border-gray-800 text-[10px] font-mono shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setChatViewMode("current_asset")}
+                        className={`px-2 py-0.5 rounded font-bold transition flex items-center gap-1 cursor-pointer ${
+                          chatViewMode === "current_asset"
+                            ? "bg-purple-600 text-white shadow-sm"
+                            : "text-gray-400 hover:text-gray-200"
+                        }`}
+                        title={`Показать только диалог по активу ${activeAsset}`}
+                      >
+                        <span>📌 {activeAsset}</span>
+                        <span className="text-[9px] opacity-80">({tickerState.messages.length})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setChatViewMode("all_history")}
+                        className={`px-2 py-0.5 rounded font-bold transition flex items-center gap-1 cursor-pointer ${
+                          chatViewMode === "all_history"
+                            ? "bg-purple-600 text-white shadow-sm"
+                            : "text-gray-400 hover:text-gray-200"
+                        }`}
+                        title="Показать всю сквозную историю ИИ-аналитика по всем активам"
+                      >
+                        <History className="h-2.5 w-2.5" />
+                        <span>Вся история</span>
+                        <span className="text-[9px] opacity-80">({allUserMessages.length})</span>
+                      </button>
+                    </div>
+
+                    {/* Clear Chat Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClearScope(chatViewMode === "all_history" ? "all_history" : "current_asset");
+                        setIsClearModalOpen(true);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 hover:text-rose-100 border border-rose-800/60 hover:border-rose-600 text-[10.5px] font-bold transition cursor-pointer shadow-xs active:scale-95 shrink-0"
+                      title="Очистить историю чата ИИ-аналитика"
                     >
-                      <div className="flex items-center justify-between gap-1 text-[10px] font-mono border-b border-gray-800/60 pb-1">
-                        <span
-                          className={`font-bold px-1.5 py-0.2 rounded ${
-                            msg.role === "user"
-                              ? "bg-cyan-500/20 text-cyan-300"
-                              : msg.role === "system_alert"
-                              ? "bg-rose-500/20 text-rose-300"
-                              : "bg-purple-500/20 text-purple-300"
-                          }`}
+                      <Trash2 className="h-3 w-3 text-rose-400" />
+                      <span>Очистить чат</span>
+                    </button>
+                  </div>
+
+                  {/* If in all_history mode, show quick search and user info */}
+                  {chatViewMode === "all_history" && (
+                    <div className="flex items-center gap-1.5 pt-0.5 border-t border-gray-800/80">
+                      <div className="flex-1 flex items-center gap-1 bg-[#121829] border border-gray-700/80 rounded-md px-2 py-0.5 text-[10px]">
+                        <Search className="h-2.5 w-2.5 text-gray-400 shrink-0" />
+                        <input
+                          type="text"
+                          value={historySearchQuery}
+                          onChange={(e) => setHistorySearchQuery(e.target.value)}
+                          placeholder="Поиск по всем диалогам..."
+                          className="w-full bg-transparent border-none text-white placeholder-gray-500 focus:outline-none text-[10px]"
+                        />
+                        {historySearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setHistorySearchQuery("")}
+                            className="text-gray-400 hover:text-white text-[9px]"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                      <span className="text-[9.5px] font-mono text-gray-400 whitespace-nowrap">
+                        {displayedMessages.length} из {allUserMessages.length}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Toast feedback after clearing */}
+                {clearToastMessage && (
+                  <div className="p-2 rounded-lg bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 text-xs flex items-center justify-between gap-1.5 animate-fadeIn shadow-md">
+                    <div className="flex items-center gap-1.5">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      <span className="text-[11px] font-semibold">{clearToastMessage}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setClearToastMessage(null)}
+                      className="text-emerald-400 hover:text-white text-xs px-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Messages list */}
+                <div className="space-y-2.5">
+                  {displayedMessages.length === 0 ? (
+                    <div className="p-6 rounded-xl bg-[#0b0e1a] border border-dashed border-gray-800 text-center space-y-2">
+                      <Search className="h-6 w-6 text-gray-600 mx-auto" />
+                      <p className="text-gray-400 text-xs">Сообщений не найдено</p>
+                      {historySearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setHistorySearchQuery("")}
+                          className="text-cyan-400 text-[11px] underline cursor-pointer"
                         >
-                          {msg.badge || (msg.role === "user" ? "Вы" : "ИИ-Аналитик")}
-                        </span>
-                        <div className="flex items-center gap-1.5 text-gray-400">
-                          {msg.provider && <span className="text-[9px] text-gray-500">{msg.provider}</span>}
-                          <span>{msg.time}</span>
+                          Сбросить фильтр поиска
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    displayedMessages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`p-2.5 rounded-xl border text-xs leading-relaxed space-y-1.5 ${
+                          msg.role === "user"
+                            ? "bg-[#131b31] border-cyan-500/30 ml-4 text-cyan-100"
+                            : msg.role === "system_alert"
+                            ? "bg-rose-950/40 border-rose-500/50 text-rose-100"
+                            : "bg-[#0b0f1d] border-gray-800 mr-2 text-gray-200"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 text-[10px] font-mono border-b border-gray-800/60 pb-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`font-bold px-1.5 py-0.2 rounded ${
+                                msg.role === "user"
+                                  ? "bg-cyan-500/20 text-cyan-300"
+                                  : msg.role === "system_alert"
+                                  ? "bg-rose-500/20 text-rose-300"
+                                  : "bg-purple-500/20 text-purple-300"
+                              }`}
+                            >
+                              {msg.badge || (msg.role === "user" ? `👤 ${activeUsername}` : "ИИ-Аналитик")}
+                            </span>
+
+                            {/* Show asset tag in all_history mode or if different asset */}
+                            {msg.asset && (
+                              <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">
+                                {msg.asset}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 text-gray-400">
+                            {msg.provider && <span className="text-[9px] text-gray-500">{msg.provider}</span>}
+                            <span>{msg.time}</span>
+                          </div>
+                        </div>
+
+                        <div className="prose prose-invert max-w-none text-xs">
+                          <ReactMarkdown>{msg.text}</ReactMarkdown>
                         </div>
                       </div>
-
-                      <div className="prose prose-invert max-w-none text-xs">
-                        <ReactMarkdown>{msg.text}</ReactMarkdown>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                   <div ref={chatEndRef} />
                 </div>
               </div>
@@ -2025,6 +2374,114 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             </div>
           </div>
         </>
+      )}
+
+      {/* 🗑️ Clear Chat Confirmation Modal Dialog */}
+      {isClearModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/75 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-[#0e1424] border border-gray-700 rounded-2xl max-w-sm w-full p-4 shadow-2xl space-y-3.5 text-gray-200">
+            <div className="flex items-center justify-between border-b border-gray-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                  <Trash2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-xs text-white">Очистить историю чата</h4>
+                  <span className="text-[10px] text-gray-400 font-mono">
+                    Пользователь: <span className="text-cyan-300 font-bold">{activeUsername}</span>
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsClearModalOpen(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-[11px] text-gray-300 leading-relaxed">
+              Выберите область очистки сообщений ИИ-аналитика для вашего профиля:
+            </p>
+
+            <div className="space-y-2">
+              <label
+                onClick={() => setClearScope("current_asset")}
+                className={`flex items-start gap-2.5 p-2.5 rounded-xl border transition cursor-pointer ${
+                  clearScope === "current_asset"
+                    ? "bg-purple-950/40 border-purple-500/80 text-white shadow-sm"
+                    : "bg-[#0b0f1d] border-gray-800 text-gray-300 hover:border-gray-700"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="clear_scope"
+                  checked={clearScope === "current_asset"}
+                  onChange={() => setClearScope("current_asset")}
+                  className="mt-0.5 text-purple-600 focus:ring-0 cursor-pointer"
+                />
+                <div className="space-y-0.5">
+                  <div className="font-bold text-xs flex items-center gap-1.5">
+                    <span>📌 Только диалог по {activeAsset}</span>
+                    <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-purple-900/60 text-purple-300">
+                      {tickerState.messages.length} сообщ.
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Очистит переписку по {activeAsset}. Диалоги по другим активам сохранятся.
+                  </p>
+                </div>
+              </label>
+
+              <label
+                onClick={() => setClearScope("all_history")}
+                className={`flex items-start gap-2.5 p-2.5 rounded-xl border transition cursor-pointer ${
+                  clearScope === "all_history"
+                    ? "bg-rose-950/40 border-rose-500/80 text-white shadow-sm"
+                    : "bg-[#0b0f1d] border-gray-800 text-gray-300 hover:border-gray-700"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="clear_scope"
+                  checked={clearScope === "all_history"}
+                  onChange={() => setClearScope("all_history")}
+                  className="mt-0.5 text-rose-600 focus:ring-0 cursor-pointer"
+                />
+                <div className="space-y-0.5">
+                  <div className="font-bold text-xs flex items-center gap-1.5 text-rose-300">
+                    <span>🌐 Вся история ИИ ({activeUsername})</span>
+                    <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-rose-900/60 text-rose-200">
+                      {allUserMessages.length} сообщ.
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Полностью удалит всю переписку с ИИ-аналитиком по всем инструментам для профиля «{activeUsername}».
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-800">
+              <button
+                type="button"
+                onClick={() => setIsClearModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold transition cursor-pointer"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearChat(clearScope)}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-rose-600/30"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Очистить</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
