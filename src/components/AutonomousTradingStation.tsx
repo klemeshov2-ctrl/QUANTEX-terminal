@@ -2861,11 +2861,153 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       container.querySelectorAll('a[href*="tradingview"], #tv-attr-logo').forEach(el => el.remove());
     } catch {}
 
+    // 🚀 TradingView Desktop Pro Interaction: Vertical Price Scale Mouse Wheel Zooming & Cursor
+    const handlePriceScaleWheel = (e: WheelEvent) => {
+      if (!chartInstanceRef.current) return;
+      const rect = container.getBoundingClientRect();
+      const ps = chart.priceScale("right");
+      if (!ps) return;
+      const scaleWidth = Math.max(ps.width() || 68, 50);
+      const isOverRightScale = (
+        e.clientX >= rect.right - scaleWidth &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      );
+
+      if (!isOverRightScale) {
+        return; // Allow normal chart body wheel (timeScale horizontal zoom)
+      }
+
+      // Intercept wheel event on price scale
+      e.preventDefault();
+      e.stopPropagation();
+
+      let from: number | null = null;
+      let to: number | null = null;
+      const curRange = ps.getVisibleRange();
+      if (curRange && typeof curRange.from === "number" && typeof curRange.to === "number" && curRange.to > curRange.from) {
+        from = curRange.from;
+        to = curRange.to;
+      } else if (seriesInstanceRef.current) {
+        const pTop = seriesInstanceRef.current.coordinateToPrice(2);
+        const pBottom = seriesInstanceRef.current.coordinateToPrice(Math.max(container.clientHeight - 30, 20));
+        if (pTop != null && pBottom != null && pTop !== pBottom) {
+          from = Math.min(Number(pTop), Number(pBottom));
+          to = Math.max(Number(pTop), Number(pBottom));
+        }
+      }
+
+      if (from == null || to == null || from >= to || !isFinite(from) || !isFinite(to)) return;
+
+      const span = to - from;
+      if (span <= 0) return;
+
+      // TradingView convention:
+      // deltaY < 0 (scroll UP): zoom IN vertically (expand candlesticks, reduce price span)
+      // deltaY > 0 (scroll DOWN): zoom OUT vertically (compress candlesticks, increase price span)
+      const factor = Math.max(0.65, Math.min(1.5, Math.exp(e.deltaY * 0.0018)));
+      const newSpan = Math.max(span * factor, 1e-6);
+
+      // Anchor price at mouse cursor position
+      const mouseY = Math.max(0, Math.min(e.clientY - rect.top, container.clientHeight));
+      const series = seriesInstanceRef.current;
+      const priceAtMouse = series ? series.coordinateToPrice(mouseY) : null;
+
+      let newFrom: number;
+      let newTo: number;
+
+      if (priceAtMouse != null && Number(priceAtMouse) >= from && Number(priceAtMouse) <= to) {
+        const p = Number(priceAtMouse);
+        const ratio = (p - from) / span;
+        newFrom = p - newSpan * ratio;
+        newTo = p + newSpan * (1 - ratio);
+      } else {
+        const center = (from + to) / 2;
+        newFrom = center - newSpan / 2;
+        newTo = center + newSpan / 2;
+      }
+
+      if (newFrom < newTo && isFinite(newFrom) && isFinite(newTo)) {
+        try {
+          ps.applyOptions({ autoScale: false });
+          if (typeof (ps as any).setAutoScale === "function") {
+            (ps as any).setAutoScale(false);
+          }
+          ps.setVisibleRange({ from: newFrom, to: newTo });
+        } catch (err) {
+          console.warn("[Chart] Failed to set price scale visible range:", err);
+        }
+      }
+    };
+
+    const handlePriceScaleMouseMove = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const ps = chart.priceScale("right");
+      if (!ps) return;
+      const scaleWidth = Math.max(ps.width() || 68, 50);
+      const isOverRightScale = (
+        e.clientX >= rect.right - scaleWidth &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      );
+
+      if (isOverRightScale) {
+        if (container.style.cursor !== "ns-resize") {
+          container.style.cursor = "ns-resize";
+        }
+      } else {
+        if (container.style.cursor === "ns-resize") {
+          container.style.cursor = "";
+        }
+      }
+    };
+
+    const handlePriceScaleMouseLeave = () => {
+      if (container.style.cursor === "ns-resize") {
+        container.style.cursor = "";
+      }
+    };
+
+    const handlePriceScaleDblClick = (e: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const ps = chart.priceScale("right");
+      if (!ps) return;
+      const scaleWidth = Math.max(ps.width() || 68, 50);
+      const isOverRightScale = (
+        e.clientX >= rect.right - scaleWidth &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      );
+
+      if (isOverRightScale) {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          ps.applyOptions({ autoScale: true });
+          if (typeof (ps as any).setAutoScale === "function") {
+            (ps as any).setAutoScale(true);
+          }
+        } catch {}
+      }
+    };
+
+    container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
+    container.addEventListener("mousemove", handlePriceScaleMouseMove);
+    container.addEventListener("mouseleave", handlePriceScaleMouseLeave);
+    container.addEventListener("dblclick", handlePriceScaleDblClick, { capture: true });
+
     return () => {
       try {
         cancelAnimationFrame(rafId);
         resizeObserver.disconnect();
       } catch {}
+      container.removeEventListener("wheel", handlePriceScaleWheel, true);
+      container.removeEventListener("mousemove", handlePriceScaleMouseMove);
+      container.removeEventListener("mouseleave", handlePriceScaleMouseLeave);
+      container.removeEventListener("dblclick", handlePriceScaleDblClick, true);
       lastFittedKeyRef.current = "";
       prevCleanCandlesRef.current = [];
       seriesMarkersRef.current = null;
