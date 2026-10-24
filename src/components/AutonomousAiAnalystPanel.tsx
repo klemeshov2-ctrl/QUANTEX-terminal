@@ -115,6 +115,8 @@ export interface AiProviderSettings {
   deepSeekApiKey: string;
   deepSeekModel: "deepseek-chat" | "deepseek-reasoner";
   deepSeekEndpoint?: string;
+  deepSeekWebSearch?: boolean;
+  enableWebSearch?: boolean;
   qwenApiKey: string;
   qwenModel: "qwen-plus" | "qwen-max" | "qwen-turbo" | "qwen-2.5-72b-instruct";
   qwenEndpoint: string;
@@ -452,16 +454,22 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
               const effectiveGeminiKey = cleanApiKeyHelper(prev.geminiApiKey) || serverGeminiKey;
               const effectiveDsKey = prev.deepSeekApiKey || serverDsKey;
 
-              // If deepseek has no key, but gemini key is present, auto-select gemini
-              let targetProvider = prev.provider;
+              // Priority: serverAi.activeProvider > prev.provider
+              let targetProvider = serverAi.activeProvider || prev.provider || "deepseek";
               if (
+                targetProvider === "deepseek" &&
                 (!effectiveDsKey || effectiveDsKey.length < 5) &&
                 effectiveGeminiKey &&
                 effectiveGeminiKey.length > 5
               ) {
                 targetProvider = "gemini";
-              } else if (serverAi.activeProvider && serverAi.activeProvider !== "autonomous") {
-                targetProvider = serverAi.activeProvider;
+              } else if (
+                targetProvider === "gemini" &&
+                (!effectiveGeminiKey || effectiveGeminiKey.length < 5) &&
+                effectiveDsKey &&
+                effectiveDsKey.length > 5
+              ) {
+                targetProvider = "deepseek";
               }
 
               const merged: AiProviderSettings = {
@@ -469,6 +477,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 deepSeekApiKey: effectiveDsKey,
                 deepSeekModel: prev.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat",
                 deepSeekEndpoint: prev.deepSeekEndpoint || serverAi.deepSeekEndpoint || "https://api.deepseek.com/chat/completions",
+                deepSeekWebSearch: prev.deepSeekWebSearch ?? serverAi.deepSeekWebSearch ?? true,
+                enableWebSearch: prev.enableWebSearch ?? serverAi.enableWebSearch ?? true,
                 qwenApiKey: prev.qwenApiKey || serverAi.qwenApiKey || "",
                 qwenModel: prev.qwenModel || serverAi.qwenModel || "qwen-plus",
                 qwenEndpoint: prev.qwenEndpoint || serverAi.qwenEndpoint || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -1161,6 +1171,37 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }
   };
 
+  // Switch AI Provider (DeepSeek, Gemini, Qwen, Autonomous) directly from panel
+  const handleSelectAiProvider = (newProv: "deepseek" | "gemini" | "qwen" | "autonomous") => {
+    setProviderSettings(prev => {
+      const updated = { ...prev, provider: newProv };
+      try {
+        localStorage.setItem("st_ai_provider_settings", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    fetch("/api/settings/unified", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ai: {
+          activeProvider: newProv
+        }
+      })
+    }).catch(() => {});
+
+    try {
+      window.dispatchEvent(new CustomEvent("station_settings_updated"));
+    } catch {}
+
+    if (newProv === "autonomous") {
+      setResponseStyleMode("autonomous");
+    } else if (responseStyleMode === "autonomous") {
+      setResponseStyleMode("detailed");
+    }
+  };
+
   // User sends manual text query
   const handleSendManualQuery = (overrideText?: string) => {
     const textToSend = overrideText || inputQuery;
@@ -1511,13 +1552,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         </div>
       </div>
 
-      {/* Collapsible 3-Mode Settings Selector Bar */}
+      {/* Collapsible AI Provider & Mode Settings Selector Bar */}
       {!isCollapsed && showModeSettings && (
-        <div className="p-2.5 bg-[#0e1526] border-b border-cyan-500/40 space-y-2 shrink-0 animate-fadeIn">
+        <div className="p-3 bg-[#0e1526] border-b border-cyan-500/40 space-y-3 shrink-0 animate-fadeIn text-xs">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-mono uppercase tracking-wider font-extrabold text-cyan-300 flex items-center gap-1.5">
               <Settings className="h-3 w-3 text-cyan-400" />
-              <span>Режим работы ИИ-Аналитика</span>
+              <span>Настройка Нейросети & Режима Аналитика</span>
             </span>
             <button
               type="button"
@@ -1528,60 +1569,179 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5">
-            <button
-              type="button"
-              onClick={() => handleSelectResponseMode("short")}
-              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
-                responseStyleMode === "short"
-                  ? "bg-amber-500/20 border-amber-400 text-white shadow-sm shadow-amber-500/10"
-                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between w-full mb-1">
-                <span className="text-xs font-extrabold text-amber-300">⚡ Короткий</span>
-                {responseStyleMode === "short" && <Check className="h-3 w-3 text-amber-400" />}
-              </div>
-              <span className="text-[9.5px] leading-tight text-gray-400">
-                Сжатая выжимка: уровни, сигнал и GEX
+          {/* 1. AI Provider Selection */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-gray-300">Активная нейросеть (AI Provider):</span>
+              <span className="text-[9px] font-mono font-bold text-cyan-400">
+                {providerSettings.provider === "deepseek"
+                  ? (providerSettings.deepSeekApiKey ? "🟢 DeepSeek (sk-...)" : "⚠️ sk-... не введен")
+                  : providerSettings.provider === "gemini"
+                  ? "✨ Gemini"
+                  : providerSettings.provider === "qwen"
+                  ? "🌐 Qwen"
+                  : "⚡ QUANTEX Local"}
               </span>
-            </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 font-mono">
+              <button
+                type="button"
+                onClick={() => handleSelectAiProvider("deepseek")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between ${
+                  providerSettings.provider === "deepseek"
+                    ? "bg-purple-600/25 border-purple-400 text-white font-extrabold shadow-sm"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-[11px] text-purple-300">🤖 DeepSeek (V3/R1)</div>
+                  <div className="text-[9px] text-gray-400">Без блокировок</div>
+                </div>
+                {providerSettings.provider === "deepseek" && <Check className="h-3.5 w-3.5 text-purple-400 shrink-0" />}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleSelectResponseMode("detailed")}
-              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
-                responseStyleMode === "detailed"
-                  ? "bg-cyan-500/20 border-cyan-400 text-white shadow-sm shadow-cyan-500/10"
-                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between w-full mb-1">
-                <span className="text-xs font-extrabold text-cyan-300">📊 Развёрнутый</span>
-                {responseStyleMode === "detailed" && <Check className="h-3 w-3 text-cyan-400" />}
-              </div>
-              <span className="text-[9.5px] leading-tight text-gray-400">
-                Полный макро-разбор, ФРС, DXY и план
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={() => handleSelectAiProvider("gemini")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between ${
+                  providerSettings.provider === "gemini"
+                    ? "bg-cyan-600/25 border-cyan-400 text-white font-extrabold shadow-sm"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-[11px] text-cyan-300">✨ Google Gemini</div>
+                  <div className="text-[9px] text-gray-400">Live Web Search</div>
+                </div>
+                {providerSettings.provider === "gemini" && <Check className="h-3.5 w-3.5 text-cyan-400 shrink-0" />}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handleSelectResponseMode("autonomous")}
-              className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
-                responseStyleMode === "autonomous"
-                  ? "bg-purple-500/20 border-purple-400 text-white shadow-sm shadow-purple-500/10"
-                  : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
-              }`}
-            >
-              <div className="flex items-center justify-between w-full mb-1">
-                <span className="text-xs font-extrabold text-purple-300">🤖 Автономный</span>
-                {responseStyleMode === "autonomous" && <Check className="h-3 w-3 text-purple-400" />}
+              <button
+                type="button"
+                onClick={() => handleSelectAiProvider("qwen")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between ${
+                  providerSettings.provider === "qwen"
+                    ? "bg-indigo-600/25 border-indigo-400 text-white font-extrabold shadow-sm"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-[11px] text-indigo-300">🌐 Qwen (Aliyun)</div>
+                  <div className="text-[9px] text-gray-400">DashScope Cloud</div>
+                </div>
+                {providerSettings.provider === "qwen" && <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectAiProvider("autonomous")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between ${
+                  providerSettings.provider === "autonomous"
+                    ? "bg-emerald-600/25 border-emerald-400 text-white font-extrabold shadow-sm"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-[11px] text-emerald-300">⚡ QUANTEX Квант</div>
+                  <div className="text-[9px] text-gray-400">Встроенный офлайн</div>
+                </div>
+                {providerSettings.provider === "autonomous" && <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
+              </button>
+            </div>
+
+            {/* Live Web toggle indicator if deepseek or gemini */}
+            {(providerSettings.provider === "deepseek" || providerSettings.provider === "gemini") && (
+              <div className="flex items-center justify-between p-2 rounded-lg bg-cyan-950/25 border border-cyan-500/30">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs">🌐</span>
+                  <div className="text-[10px]">
+                    <span className="font-bold text-cyan-300">
+                      {providerSettings.provider === "deepseek" ? "Выход в интернет DeepSeek" : "Google Search Grounding"}
+                    </span>
+                    <span className="text-gray-400 block text-[9px]">
+                      {providerSettings.provider === "deepseek"
+                        ? "Мировые новости, инфляция CPI, ФРС и консенсус Wall Street"
+                        : "Прямой поиск в Google Search"}
+                    </span>
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
+                  <input
+                    type="checkbox"
+                    checked={
+                      providerSettings.provider === "deepseek"
+                        ? providerSettings.deepSeekWebSearch !== false
+                        : providerSettings.enableWebSearch !== false
+                    }
+                    onChange={e => {
+                      const val = e.target.checked;
+                      const next = {
+                        ...providerSettings,
+                        ...(providerSettings.provider === "deepseek" ? { deepSeekWebSearch: val } : { enableWebSearch: val })
+                      };
+                      setProviderSettings(next);
+                      try {
+                        localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
+                      } catch {}
+                      fetch("/api/settings/unified", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          ai: {
+                            activeProvider: next.provider,
+                            ...(providerSettings.provider === "deepseek" ? { deepSeekWebSearch: val } : { enableWebSearch: val })
+                          }
+                        })
+                      }).catch(() => {});
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-8 h-4 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-cyan-500"></div>
+                </label>
               </div>
-              <span className="text-[9.5px] leading-tight text-gray-400">
-                Встроенный квант-движок без внешних API
-              </span>
-            </button>
+            )}
+          </div>
+
+          {/* 2. Response Style Format */}
+          <div className="space-y-1.5 pt-1 border-t border-gray-800/80">
+            <span className="text-[10px] font-bold text-gray-300 block">Формат и глубина ответа:</span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleSelectResponseMode("short")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                  responseStyleMode === "short"
+                    ? "bg-amber-500/20 border-amber-400 text-white shadow-sm shadow-amber-500/10"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div className="flex items-center justify-between w-full mb-1">
+                  <span className="text-xs font-extrabold text-amber-300">⚡ Короткий</span>
+                  {responseStyleMode === "short" && <Check className="h-3 w-3 text-amber-400" />}
+                </div>
+                <span className="text-[9.5px] leading-tight text-gray-400">
+                  Сжатая выжимка: уровни, сигнал и GEX
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectResponseMode("detailed")}
+                className={`p-2 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                  responseStyleMode === "detailed"
+                    ? "bg-cyan-500/20 border-cyan-400 text-white shadow-sm shadow-cyan-500/10"
+                    : "bg-[#0a0f1d] border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-200"
+                }`}
+              >
+                <div className="flex items-center justify-between w-full mb-1">
+                  <span className="text-xs font-extrabold text-cyan-300">📊 Развёрнутый</span>
+                  {responseStyleMode === "detailed" && <Check className="h-3 w-3 text-cyan-400" />}
+                </div>
+                <span className="text-[9.5px] leading-tight text-gray-400">
+                  Полный разбор, факты, теория и план
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       )}

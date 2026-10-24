@@ -169,6 +169,7 @@ export interface UnifiedSettingsData {
     geminiModel: string;
     geminiEndpoint?: string;
     proxyUrl?: string;
+    deepSeekWebSearch?: boolean;
     enableWebSearch?: boolean;
     temperature: number;
   };
@@ -257,6 +258,7 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       geminiModel: "gemini-3.1-flash-lite",
       geminiEndpoint: "",
       proxyUrl: "",
+      deepSeekWebSearch: true,
       enableWebSearch: true,
       temperature: 0.3
     },
@@ -378,6 +380,8 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
               deepSeekApiKey: settings.ai.deepSeekApiKey,
               deepSeekModel: settings.ai.deepSeekModel,
               deepSeekEndpoint: settings.ai.deepSeekEndpoint,
+              deepSeekWebSearch: settings.ai.deepSeekWebSearch !== false,
+              enableWebSearch: settings.ai.enableWebSearch !== false,
               qwenApiKey: settings.ai.qwenApiKey,
               qwenModel: settings.ai.qwenModel,
               qwenEndpoint: settings.ai.qwenEndpoint,
@@ -486,8 +490,52 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
       });
       const data = await res.json();
       const statusObj = res.ok && data.success
-        ? { ok: true, msg: `${data.message || "ИИ отвечает корректно!"}` }
+        ? { ok: true, msg: `✅ ${data.message || "ИИ отвечает корректно!"} Провайдер активирован и сохранен на сервере!` }
         : { ok: false, msg: `❌ Ошибка: ${data.error || "Проверьте введенный API ключ"}` };
+
+      if (res.ok && data.success) {
+        // 🚀 Automatically activate this verified provider and persist settings across station!
+        const updatedAi = {
+          ...settings.ai,
+          activeProvider: provider as any,
+          ...(provider === "deepseek" ? { deepSeekApiKey: apiKey, deepSeekModel: model } : {}),
+          ...(provider === "qwen" ? { qwenApiKey: apiKey, qwenModel: model } : {}),
+          ...(provider === "gemini" ? { geminiApiKey: apiKey, geminiModel: model } : {})
+        };
+        const updatedSettings = {
+          ...settings,
+          ai: updatedAi
+        };
+        setSettings(updatedSettings);
+
+        // Save to server
+        fetch("/api/settings/unified", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedSettings)
+        }).catch(() => {});
+
+        // Save to localStorage & broadcast
+        try {
+          localStorage.setItem(
+            "st_ai_provider_settings",
+            JSON.stringify({
+              provider: provider,
+              deepSeekApiKey: updatedAi.deepSeekApiKey,
+              deepSeekModel: updatedAi.deepSeekModel,
+              deepSeekEndpoint: updatedAi.deepSeekEndpoint,
+              deepSeekWebSearch: updatedAi.deepSeekWebSearch !== false,
+              enableWebSearch: updatedAi.enableWebSearch !== false,
+              qwenApiKey: updatedAi.qwenApiKey,
+              qwenModel: updatedAi.qwenModel,
+              qwenEndpoint: updatedAi.qwenEndpoint,
+              geminiApiKey: updatedAi.geminiApiKey,
+              geminiModel: updatedAi.geminiModel
+            })
+          );
+          window.dispatchEvent(new CustomEvent("station_settings_updated"));
+        } catch {}
+      }
 
       if (provider === "gemini") setGeminiTestStatus(statusObj);
       else if (provider === "deepseek") setDeepSeekTestStatus(statusObj);
@@ -1051,12 +1099,33 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                           type="radio"
                           name="ai_provider"
                           checked={settings.ai.activeProvider === prov.id}
-                          onChange={() =>
-                            setSettings(prev => ({
-                              ...prev,
-                              ai: { ...prev.ai, activeProvider: prov.id as any }
-                            }))
-                          }
+                          onChange={() => {
+                            const updatedAi = { ...settings.ai, activeProvider: prov.id as any };
+                            const updated = { ...settings, ai: updatedAi };
+                            setSettings(updated);
+                            fetch("/api/settings/unified", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify(updated)
+                            }).catch(() => {});
+                            try {
+                              localStorage.setItem(
+                                "st_ai_provider_settings",
+                                JSON.stringify({
+                                  provider: prov.id,
+                                  deepSeekApiKey: updatedAi.deepSeekApiKey,
+                                  deepSeekModel: updatedAi.deepSeekModel,
+                                  deepSeekEndpoint: updatedAi.deepSeekEndpoint,
+                                  qwenApiKey: updatedAi.qwenApiKey,
+                                  qwenModel: updatedAi.qwenModel,
+                                  qwenEndpoint: updatedAi.qwenEndpoint,
+                                  geminiApiKey: updatedAi.geminiApiKey,
+                                  geminiModel: updatedAi.geminiModel
+                                })
+                              );
+                              window.dispatchEvent(new CustomEvent("station_settings_updated"));
+                            } catch {}
+                          }}
                           className="text-purple-500 focus:ring-0"
                         />
                       </div>
@@ -1073,13 +1142,53 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                     <span className="font-bold text-xs text-cyan-300 flex items-center gap-1.5">
                       <span>🤖 DeepSeek API (api.deepseek.com)</span>
                     </span>
-                    {settings.ai.activeProvider === "deepseek" && (
-                      <span className="px-2 py-0.5 rounded text-[10px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-mono">
-                        Активный провайдер
+                    {settings.ai.activeProvider === "deepseek" ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
+                        🟢 Активный провайдер
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400 border border-gray-700 font-mono">
+                        Вторичный
                       </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
+                    {settings.ai.activeProvider !== "deepseek" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updatedAi = { ...settings.ai, activeProvider: "deepseek" as any };
+                          const updated = { ...settings, ai: updatedAi };
+                          setSettings(updated);
+                          fetch("/api/settings/unified", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(updated)
+                          }).catch(() => {});
+                          try {
+                            localStorage.setItem(
+                              "st_ai_provider_settings",
+                              JSON.stringify({
+                                provider: "deepseek",
+                                deepSeekApiKey: updatedAi.deepSeekApiKey,
+                                deepSeekModel: updatedAi.deepSeekModel,
+                                deepSeekEndpoint: updatedAi.deepSeekEndpoint,
+                                qwenApiKey: updatedAi.qwenApiKey,
+                                qwenModel: updatedAi.qwenModel,
+                                qwenEndpoint: updatedAi.qwenEndpoint,
+                                geminiApiKey: updatedAi.geminiApiKey,
+                                geminiModel: updatedAi.geminiModel
+                              })
+                            );
+                            window.dispatchEvent(new CustomEvent("station_settings_updated"));
+                          } catch {}
+                          setDeepSeekTestStatus({ ok: true, msg: "✅ DeepSeek активирован как основной ИИ станции!" });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition cursor-pointer flex items-center gap-1 shadow-sm"
+                      >
+                        ⚡ Сделать основным ИИ
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => testSpecificProvider("deepseek")}
@@ -1107,12 +1216,39 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                     <input
                       type={showTokens ? "text" : "password"}
                       value={settings.ai.deepSeekApiKey}
-                      onChange={e =>
+                      onChange={e => {
+                        const val = e.target.value;
                         setSettings(prev => ({
                           ...prev,
-                          ai: { ...prev.ai, deepSeekApiKey: e.target.value }
-                        }))
-                      }
+                          ai: { ...prev.ai, deepSeekApiKey: val }
+                        }));
+                      }}
+                      onBlur={() => {
+                        if (settings.ai.deepSeekApiKey) {
+                          fetch("/api/settings/unified", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(settings)
+                          }).catch(() => {});
+                          try {
+                            localStorage.setItem(
+                              "st_ai_provider_settings",
+                              JSON.stringify({
+                                provider: settings.ai.activeProvider,
+                                deepSeekApiKey: settings.ai.deepSeekApiKey,
+                                deepSeekModel: settings.ai.deepSeekModel,
+                                deepSeekEndpoint: settings.ai.deepSeekEndpoint,
+                                qwenApiKey: settings.ai.qwenApiKey,
+                                qwenModel: settings.ai.qwenModel,
+                                qwenEndpoint: settings.ai.qwenEndpoint,
+                                geminiApiKey: settings.ai.geminiApiKey,
+                                geminiModel: settings.ai.geminiModel
+                              })
+                            );
+                            window.dispatchEvent(new CustomEvent("station_settings_updated"));
+                          } catch {}
+                        }
+                      }}
                       placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
                       className="w-full bg-[#161c30] border border-gray-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-cyan-500"
                     />
@@ -1134,6 +1270,55 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
                       <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek-R1, Глубокий анализ)</option>
                     </select>
                   </div>
+                </div>
+
+                {/* Live Web Search & Global Macro Thinking Toggle for DeepSeek */}
+                <div className="flex items-center justify-between p-3 rounded-xl bg-cyan-950/25 border border-cyan-500/40 hover:border-cyan-500/60 transition shadow-sm">
+                  <div className="space-y-0.5 pr-2">
+                    <div className="text-xs font-bold text-cyan-300 flex items-center gap-1.5 flex-wrap">
+                      <span>🌐 Живой выход в интернет (Live Web Search) и мировые новости</span>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 font-mono font-bold">
+                        {settings.ai.deepSeekWebSearch !== false ? "🟢 Live Web ВКЛ" : "⚪ Offline"}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-300 leading-relaxed">
+                      DeepSeek анализирует реальный интернет: свежие мировые новости, данные по инфляции США (CPI/PCE), решения ФРС, консенсус-прогнозы аналитиков Wall Street к концу года и геополитику
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
+                    <input
+                      type="checkbox"
+                      checked={settings.ai.deepSeekWebSearch !== false}
+                      onChange={e => {
+                        const val = e.target.checked;
+                        setSettings(prev => {
+                          const updated = {
+                            ...prev,
+                            ai: { ...prev.ai, deepSeekWebSearch: val }
+                          };
+                          fetch("/api/settings/unified", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(updated)
+                          }).catch(() => {});
+                          try {
+                            localStorage.setItem(
+                              "st_ai_provider_settings",
+                              JSON.stringify({
+                                ...updated.ai,
+                                provider: updated.ai.activeProvider,
+                                deepSeekWebSearch: val
+                              })
+                            );
+                            window.dispatchEvent(new CustomEvent("station_settings_updated"));
+                          } catch {}
+                          return updated;
+                        });
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500 shadow-inner"></div>
+                  </label>
                 </div>
 
                 {deepSeekTestStatus && (

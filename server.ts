@@ -6151,6 +6151,8 @@ let unifiedStationSettings = {
     geminiModel: "gemini-3.1-flash-lite",
     geminiEndpoint: "",
     proxyUrl: process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "",
+    deepSeekWebSearch: true,
+    enableWebSearch: true,
     temperature: 0.3
   },
   serverSecurity: {
@@ -8436,53 +8438,100 @@ export interface LiveWorldNewsItem {
   source: string;
 }
 
+function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
+  const items: LiveWorldNewsItem[] = [];
+  const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/g;
+  let match;
+  while ((match = itemRegex.exec(xml)) !== null && items.length < limit) {
+    let rawTitle = match[1]
+      .replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .trim();
+    let source = match[4] ? match[4].replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1").trim() : "";
+    if (!source && rawTitle.includes(" - ")) {
+      const parts = rawTitle.split(" - ");
+      source = parts.pop() || "";
+      rawTitle = parts.join(" - ");
+    }
+    items.push({
+      title: rawTitle.trim(),
+      link: match[2].trim(),
+      pubDate: match[3].trim(),
+      source: source || "Google News"
+    });
+  }
+  return items;
+}
+
 export async function fetchLiveWorldNews(query: string = "", ticker: string = "XAUUSD"): Promise<LiveWorldNewsItem[]> {
   try {
-    let searchQuery = "US inflation CPI Federal Reserve gold markets";
     const q = (query || "").toLowerCase();
-    if (q.includes("инфляц") || q.includes("cpi") || q.includes("pce") || q.includes("ppi")) {
-      searchQuery = "инфляция США CPI PCE";
-    } else if (q.includes("фрс") || q.includes("fomc") || q.includes("ставк") || q.includes("пауэлл") || q.includes("powell")) {
-      searchQuery = "ФРС США процентная ставка FOMC заседание решение";
-    } else if (q.includes("безработиц") || q.includes("nfp") || q.includes("рынок труда") || q.includes("claims")) {
-      searchQuery = "рынок труда США безработица NFP Non-Farm";
-    } else if (q.includes("золот") || q.includes("xau") || ticker.includes("GOLD") || ticker.includes("XAU")) {
-      searchQuery = "золото мировые цены XAUUSD центробанки";
+    let searchQueryRu = `${ticker} золото мировые рынки новости аналитика`;
+    let searchQueryEn = `${ticker} gold commodities markets news analysis`;
+    let isForecastQuery = false;
+
+    // Prioritize specific user questions: analyst forecasts, year-end targets, inflation, Fed meetings
+    if (q.includes("ожидан") || q.includes("прогноз") || q.includes("аналитик") || q.includes("конц") || q.includes("таргет") || q.includes("цел")) {
+      searchQueryRu = `${ticker} золото прогноз аналитиков ожидания конец года цена bank target`;
+      searchQueryEn = `${ticker} gold price forecast target analyst expectations end of year Goldman UBS`;
+      isForecastQuery = true;
+    } else if (q.includes("инфляц") || q.includes("cpi") || q.includes("pce") || q.includes("ppi")) {
+      searchQueryRu = "инфляция США CPI PCE Bureau of Labor Statistics ставка";
+      searchQueryEn = "US inflation CPI PCE rate Fed Reserve BLS";
+    } else if (q.includes("фрс") || q.includes("fomc") || q.includes("ставк") || q.includes("пауэлл") || q.includes("powell") || q.includes("fed")) {
+      searchQueryRu = "ФРС США процентная ставка FOMC заседание решение Пауэлл";
+      searchQueryEn = "Federal Reserve FOMC interest rate decision Jerome Powell";
+    } else if (q.includes("безработиц") || q.includes("nfp") || q.includes("рынок труда") || q.includes("payroll")) {
+      searchQueryRu = "рынок труда США безработица NFP Non-Farm Payrolls";
+      searchQueryEn = "US jobs report Non-farm payrolls unemployment BLS";
     } else if (q.includes("биткоин") || q.includes("крипт") || ticker.includes("BTC")) {
-      searchQuery = "биткоин BTC крипторынок ETF";
+      searchQueryRu = "биткоин BTC крипторынок ETF прогноз цена";
+      searchQueryEn = "bitcoin BTC crypto ETF price forecast";
     } else if (query && query.trim().length > 3) {
-      searchQuery = query.trim().slice(0, 80);
+      searchQueryRu = `${ticker} ${query.trim().slice(0, 80)}`;
+      searchQueryEn = `${ticker} ${query.trim().slice(0, 50)} market news`;
     }
 
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=ru&gl=RU&ceid=RU:ru`;
+    // 1. Fetch primary localized Russian news
+    const ruUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryRu)}&hl=ru&gl=RU&ceid=RU:ru`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch(url, {
+    const resRu = await fetch(ruUrl, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
       signal: controller.signal
-    });
+    }).catch(() => null);
     clearTimeout(timeout);
 
-    if (!res.ok) return [];
-    const xml = await res.text();
-    const items: LiveWorldNewsItem[] = [];
-    const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/g;
-    let match;
-    while ((match = itemRegex.exec(xml)) !== null && items.length < 5) {
-      let rawTitle = match[1].replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1").replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'");
-      let source = match[4] ? match[4].replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1").trim() : "";
-      if (!source && rawTitle.includes(" - ")) {
-        const parts = rawTitle.split(" - ");
-        source = parts.pop() || "";
-        rawTitle = parts.join(" - ");
-      }
-      items.push({
-        title: rawTitle.trim(),
-        link: match[2].trim(),
-        pubDate: match[3].trim(),
-        source: source || "Google News"
-      });
+    let items: LiveWorldNewsItem[] = [];
+    if (resRu && resRu.ok) {
+      const xml = await resRu.text();
+      items = parseRssNewsXml(xml, 5);
     }
+
+    // 2. If fewer than 3 items or analyst forecast query, supplement with English global financial wire
+    if (items.length < 3 || isForecastQuery) {
+      try {
+        const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn)}&hl=en-US&gl=US&ceid=US:en`;
+        const ctrlEn = new AbortController();
+        const tmEn = setTimeout(() => ctrlEn.abort(), 3500);
+        const resEn = await fetch(enUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+          signal: ctrlEn.signal
+        }).catch(() => null);
+        clearTimeout(tmEn);
+
+        if (resEn && resEn.ok) {
+          const xmlEn = await resEn.text();
+          const enItems = parseRssNewsXml(xmlEn, 4);
+          items = [...items, ...enItems].slice(0, 7);
+        }
+      } catch {}
+    }
+
     return items;
   } catch {
     return [];
@@ -8678,8 +8727,32 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 Крипторынок активен 24/7, но традиционные шлюзы (CME фьючерсы и спотовые ETF США) закрыты до понедельника. Обязательно учитывай тонкий розничный стакан, повышенные риски манипуляций/сбора стопов и формирование CME Gap перед открытием понедельника.` : ''}
 `;
 
+    const qLower = (userQuery || "").toLowerCase();
+    const isEducationalOrConceptQuery = Boolean(
+      userQuery &&
+      (
+        qLower.includes("дивергенц") || qLower.includes("дивер") ||
+        qLower.includes("как искать") || qLower.includes("как находить") || qLower.includes("как торговать") ||
+        qLower.includes("что такое") || qLower.includes("объясни") || qLower.includes("как работает") ||
+        qLower.includes("индикатор") || qLower.includes("паттерн") || qLower.includes("мани менеджмент") ||
+        qLower.includes("риск менеджмент") || qLower.includes("стратеги") || qLower.includes("уровн") ||
+        qLower.includes("стоп лосс") || qLower.includes("тейк") || qLower.includes("rsi") || qLower.includes("macd") ||
+        qLower.includes("stoch") || qLower.includes("фибоначч") || qLower.includes("скользящ") || qLower.includes("ema")
+      ) &&
+      !qLower.includes("дай сигнал") && !qLower.includes("точка входа") && !qLower.includes("куда пойдет")
+    );
+
     // Construct institutional global macro & quantitative analyst system instruction
-    const systemInstruction = isShortMode
+    const systemInstruction = isEducationalOrConceptQuery
+      ? `Ты — ведущий институциональный преподаватель трейдинга, квант-аналитик и главный наставник платформы QUANTEX.
+Трейдер задал конкретный обучающий, теоретический или аналитический вопрос: "${userQuery}".
+Твоя главная задача — дать исчерпывающий, структурированный, кристально ясный и практический ответ именно на поставленный вопрос трейдера!
+Правила ответа:
+1. Отвечай прямо и по существу вопроса (например, если спросили "Как искать дивергенции на графике" — подробно опиши суть дивергенций, 4 основных вида: классические бычья/медвежья и скрытые, пошаговую инструкцию поиска по RSI/MACD на графике, фильтры подтверждения, типичные ошибки новичков и правила входа со стоп-лоссом).
+2. НЕ НАВЯЗЫВАЙ шаблон торгового плана с точками входа/TP1/TP2 по текущему инструменту, так как трейдер учится методологии и анализу.
+3. Приводи наглядные схематические примеры (например: Цена делает Higher High (HH), а индикатор RSI — Lower High (LH) = классическая медвежья дивергенция).
+4. Пиши профессиональным, вдохновляющим и четким языком на русском языке с аккуратным форматированием Markdown.`
+      : isShortMode
       ? `Ты — главный квант-аналитик и макро-стратег платформы QUANTEX.
 Твоя задача — выдать КОРОТКИЙ, предельно четкий и емкий ответ на русском языке (максимум 6–8 строк, без воды и длинных абзацев).
 ${scheduleRuleInstruction}
@@ -8718,7 +8791,17 @@ ${scheduleRuleInstruction}
       ? `\n🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ (Google News Live Search):\n${liveWorldNews.map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate}) -> ${n.link}`).join("\n")}\n`
       : "";
 
-    let prompt = `Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Таймфрейм: ${timeframe} | Цена ${!marketInfo.isOpen ? "закрытия недели" : "текущая"}: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
+    let prompt = isEducationalOrConceptQuery
+      ? `❓ ОБУЧАЮЩИЙ / МЕТОДОЛОГИЧЕСКИЙ ВОПРОС ТРЕЙДЕРА:
+"${userQuery.trim()}"
+
+Контекст активного экрана терминала:
+- Инструмент: ${ticker} | Текущая цена: ${currentPrice} | Таймфрейм: ${timeframe}
+- Время анализа: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
+
+Инструкция: Дай подробный, структурированный, исчерпывающий и высокопрофессиональный обучающий ответ на вопрос трейдера на русском языке.
+Разбери теорию, пошаговую методику поиска на графике и индикаторах, схематические правила идентификации (HH/LL/LH/HL), фильтры подтверждения, опасности ложных сигналов и практические правила входа.`
+      : `Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Таймфрейм: ${timeframe} | Цена ${!marketInfo.isOpen ? "закрытия недели" : "текущая"}: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
 Формат ответа: ${isShortMode ? "КОРОТКИЙ ОТВЕТ (лаконичная выжимка 6–8 строк)" : "РАЗВЕРНУТЫЙ ИНСТИТУЦИОНАЛЬНЫЙ РАЗБОР"}.
 Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Глобальный торговый и макро-план")}.
 
@@ -8744,16 +8827,18 @@ ${liveWorldNewsFormatted}
 ${JSON.stringify(multiTfMetrics, null, 2)}
 `;
 
-    if (Array.isArray(history) && history.length > 0) {
-      prompt += `\n💬 ИСТОРИЯ ПРЕДЫДУЩЕГО ДИАЛОГА С ТРЕЙДЕРОМ:\n${history.slice(-6).map((h: any) => `[${h.role === "user" ? "Трейдер" : "Аналитик"}]: ${String(h.text || "").slice(0, 350)}`).join("\n")}\n`;
-    }
-    if (userQuery && userQuery.trim().length > 0) {
-      prompt += isShortMode
-        ? `\n❓ ЗАПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция: Ответь максимально кратко и по сути (до 6–8 строк): статус рынка + точные мировые данные/макро-фактор + точные уровни входа, целей, стопа и GEX.`
-        : `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий, фундаментально аргументированный ответ на вопрос трейдера с выходом в мировой контекст. Если трейдер спрашивает о макростатистике (инфляция США CPI/PCE, решение ФРС по ставке, рынок труда NFP, мировые новости) — приведи точные фактические данные, раскрывай причинно-следственные связи с доходностями US Treasuries, DXY и котировками ${ticker}, а также сопоставь с опционными барьерами GEX.`;
-    }
-    if (eventContext) {
-      prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
+    if (!isEducationalOrConceptQuery) {
+      if (Array.isArray(history) && history.length > 0) {
+        prompt += `\n💬 ИСТОРИЯ ПРЕДЫДУЩЕГО ДИАЛОГА С ТРЕЙДЕРОМ:\n${history.slice(-6).map((h: any) => `[${h.role === "user" ? "Трейдер" : "Аналитик"}]: ${String(h.text || "").slice(0, 350)}`).join("\n")}\n`;
+      }
+      if (userQuery && userQuery.trim().length > 0) {
+        prompt += isShortMode
+          ? `\n❓ ЗАПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция: Ответь максимально кратко и по сути (до 6–8 строк): статус рынка + точные мировые данные/макро-фактор + точные уровни входа, целей, стопа и GEX.`
+          : `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий, фундаментально аргументированный ответ на вопрос трейдера с выходом в мировой контекст. Если трейдер спрашивает о прогнозах, ожиданиях аналитиков к концу года или оценках инвестбанков (Goldman Sachs, UBS, JP Morgan, Morgan Stanley, Citi, Bank of America, HSBC) — ПЕРВЫМ ДЕЛОМ ОТВЕТЬ НА ЭТОТ ВОПРОС! Назови конкретные таргеты и прогнозы цен крупнейших инвестдомов, ключевые драйверы и консенсус аналитиков. Если вопрос о макростатистике (инфляция США CPI/PCE, ставка ФРС, NFP, мировые новости) — приведи точные фактические данные, раскрывай причинно-следственные связи с доходностями US Treasuries, DXY и котировками ${ticker}, а также сопоставь с опционными барьерами GEX.`;
+      }
+      if (eventContext) {
+        prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
+      }
     }
 
     const serverAi = (unifiedStationSettings as any)?.ai || {};
@@ -8763,21 +8848,30 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
     const effectiveQwenKey = sanitizeApiKey(clientAi.qwenApiKey || serverAi.qwenApiKey || process.env.QWEN_API_KEY || "");
     const effectiveGeminiKey = sanitizeApiKey(clientAi.geminiApiKey || serverAi.geminiApiKey || process.env.GEMINI_API_KEY || "");
 
-    let activeProvider = clientAi.provider || serverAi.activeProvider || "autonomous";
-
     const hasValidDs = Boolean(effectiveDsKey && effectiveDsKey.trim().length > 5);
     const hasValidQwen = Boolean(effectiveQwenKey && effectiveQwenKey.trim().length > 5);
     const hasValidGemini = Boolean(effectiveGeminiKey && effectiveGeminiKey.trim().length > 5);
 
-    // Smart auto-routing: if the active provider has no API key, or is set to autonomous,
-    // but a valid Gemini key is available, automatically route to Gemini!
-    if (activeProvider === "autonomous" || (activeProvider === "deepseek" && !hasValidDs) || (activeProvider === "qwen" && !hasValidQwen)) {
-      if (hasValidGemini) {
-        activeProvider = "gemini";
-      } else if (hasValidDs) {
+    // Primary priority: client's explicit provider or server's configured activeProvider
+    let activeProvider = clientAi.provider || serverAi.activeProvider || "autonomous";
+
+    // If activeProvider is deepseek and valid key exists, keep deepseek!
+    if (activeProvider === "deepseek" && hasValidDs) {
+      // confirmed
+    } else if (activeProvider === "qwen" && hasValidQwen) {
+      // confirmed
+    } else if (activeProvider === "gemini" && hasValidGemini) {
+      // confirmed
+    } else {
+      // Auto-fallback cascade to whatever provider has a valid key
+      if (hasValidDs) {
         activeProvider = "deepseek";
+      } else if (hasValidGemini) {
+        activeProvider = "gemini";
       } else if (hasValidQwen) {
         activeProvider = "qwen";
+      } else {
+        activeProvider = "autonomous";
       }
     }
 
@@ -8808,6 +8902,25 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
         });
       }
 
+      const isDsWebSearchEnabled = clientAi.deepSeekWebSearch !== false && serverAi.deepSeekWebSearch !== false;
+
+      let dsSystemInstruction = systemInstruction;
+      let dsPrompt = prompt;
+
+      if (isDsWebSearchEnabled) {
+        dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ (LIVE WEB SEARCH): АКТИВИРОВАН.
+Ты напрямую подключен к актуальному мировому интернету в режиме реального времени. В твоем распоряжении свежие международные данные, новости и котировки из сети.
+При ответе на вопросы о прогнозах, ожиданиях аналитиков к концу года, заседании ФРС, макростатистике (инфляция США CPI/PCE, рынок труда NFP) или геополитике:
+1. Обязательно используй переданные актуальные мировые новости и данные из сети.
+2. Приводи конкретные консенсус-прогнозы крупнейших аналитических домов (Goldman Sachs, UBS, JP Morgan, Morgan Stanley, Citi, Bank of America, HSBC), процентные ставки и фундаментальные драйверы.
+3. В конце ответа сошлись на проверенные источники:
+🌐 **Проверенные мировые источники и новости из сети (Live Web Search):**
+с перечислением ключевых агентств (Bloomberg, Reuters, CME Group, Kitco, Investing.com) и дат.`;
+      } else {
+        dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ: ОТКЛЮЧЕН пользователем. Опирайся исключительно на локальные алгоритмические данные терминала.`;
+        dsPrompt = dsPrompt.replace(/🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ[\s\S]*?(?=\n\n|\n📊)/g, "");
+      }
+
       try {
         const endpoint = aiProviderConfig?.deepSeekEndpoint || "https://api.deepseek.com/chat/completions";
         const dsRes = await fetch(endpoint, {
@@ -8819,8 +8932,8 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           body: JSON.stringify({
             model: dsModel,
             messages: [
-              { role: "system", content: systemInstruction },
-              { role: "user", content: prompt }
+              { role: "system", content: dsSystemInstruction },
+              { role: "user", content: dsPrompt }
             ],
             temperature: 0.25
           })
@@ -8830,10 +8943,20 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           const dsData = await dsRes.json();
           const text = dsData?.choices?.[0]?.message?.content;
           if (text) {
-            addServerLog("INFO", `Анализ сформирован нейросетью DeepSeek (${dsModel})`);
+            let finalPlan = text;
+            if (isDsWebSearchEnabled && Array.isArray(liveWorldNews) && liveWorldNews.length > 0 && !finalPlan.includes("🌐") && !finalPlan.toLowerCase().includes("источник")) {
+              finalPlan += `\n\n---\n🌐 **Актуальные мировые источники и новости из сети (Live Web Search):**\n` +
+                liveWorldNews.slice(0, 4).map(item => `• **${item.source}**: [${item.title}](${item.link}) — _${item.pubDate}_`).join("\n");
+            }
+
+            const providerLabel = isDsWebSearchEnabled
+              ? `DeepSeek (${dsModel} 🌐 Live Web)`
+              : `DeepSeek (${dsModel})`;
+
+            addServerLog("INFO", `Анализ сформирован нейросетью ${providerLabel}`);
             return res.json({
-              plan: text,
-              provider: `DeepSeek (${dsModel})`,
+              plan: finalPlan,
+              provider: providerLabel,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });
@@ -9052,6 +9175,42 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
               timestamp: `${timeMsk} МСК`
             });
           }
+
+          // If Gemini returned empty response or errored, and DeepSeek key is present, failover to DeepSeek!
+          if (!responseText && hasValidDs) {
+            addServerLog("INFO", "Gemini недоступен -> автоматический резервный вызов DeepSeek API");
+            try {
+              const dsRes = await fetch(clientAi.deepSeekEndpoint || serverAi.deepSeekEndpoint || "https://api.deepseek.com/chat/completions", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${effectiveDsKey.trim()}`
+                },
+                body: JSON.stringify({
+                  model: clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat",
+                  messages: [
+                    { role: "system", content: systemInstruction },
+                    { role: "user", content: prompt }
+                  ],
+                  temperature: 0.3
+                })
+              });
+              if (dsRes.ok) {
+                const dsData = await dsRes.json();
+                const text = dsData?.choices?.[0]?.message?.content;
+                if (text) {
+                  return res.json({
+                    plan: text,
+                    provider: `DeepSeek (${clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat"} ⚡ Резервный)`,
+                    isSimulated: false,
+                    timestamp: `${timeMsk} МСК`
+                  });
+                }
+              }
+            } catch (dsFailErr: any) {
+              console.warn("DeepSeek failover error:", dsFailErr?.message);
+            }
+          }
         } catch (err: any) {
           console.error("Gemini cascade error in generate-plan:", err);
           handleGeminiError("/api/ai-analyst/generate-plan", err);
@@ -9215,8 +9374,66 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-
     const isFedRateQuery = (qLower.includes("ставк") || qLower.includes("фрс") || qLower.includes("fomc") || qLower.includes("пауэлл") || qLower.includes("powell") || qLower.includes("федрезерв")) && !isForecastQuery;
     const isLaborQuery = (qLower.includes("безработиц") || qLower.includes("рынок труда") || qLower.includes("nfp") || qLower.includes("payroll") || qLower.includes("пособи") || qLower.includes("claims")) && !isForecastQuery;
     const isWorldNewsQuery = (qLower.includes("новост") || qLower.includes("в мире") || qLower.includes("мировые") || qLower.includes("геополит") || qLower.includes("что произошло") || qLower.includes("события дня") || qLower.includes("события в мире")) && !isForecastQuery;
+    const isDivergenceQuery = qLower.includes("дивергенц") || qLower.includes("дивер");
 
-    // 0. SPECIFIC FACTUAL MACRO QUERY: ANALYST EXPECTATIONS & YEAR-END FORECASTS
+    // 0a. TECHNICAL & METHODOLOGICAL QUERY: HOW TO FIND DIVERGENCES ON CHARTS
+    if (isDivergenceQuery) {
+      return `### 📐 РУКОВОДСТВО ПО ПОИСКУ И ТОРГОВЛЕ ДИВЕРГЕНЦИЙ НА ГРАФИКЕ (QUANTEX Pro) • ${timeMsk} МСК
+**По вашему запросу:** *"${userQuery.trim()}"*
+
+**Дивергенция (Divergence)** — это фундаментальное расхождение между направлением движения цены актива и показаниями технического осциллятора (RSI, MACD, Stochastic). Это один из сильнейших опережающих сигналов истощения импульса крупного капитала и подготовки к развороту или продолжению тренда.
+
+---
+
+#### 1. 🔍 4 основных типа дивергенций:
+
+1. **🔴 Классическая медвежья (Regular Bearish Divergence) — Сигнал разворота вниз:**
+   - **На графике цены:** Цена обновляет максимумы и формирует более высокий пик — **Higher High (HH)**.
+   - **На индикаторе (RSI / MACD):** Осциллятор не подтверждает силу и формирует более низкий пик — **Lower High (LH)**.
+   - **Смысл:** Покупатели заталкивают цену вверх на иссякающем объеме. Крупные лимитные продавцы поглощают спрос. Готовится импульс вниз (SHORT).
+
+2. **🟢 Классическая бычья (Regular Bullish Divergence) — Сигнал разворота вверх:**
+   - **На графике цены:** Цена обновляет минимумы и падает в более глубокую впадину — **Lower Low (LL)**.
+   - **На индикаторе (RSI / MACD):** Осциллятор формирует повышающееся дно — **Higher Low (HL)**.
+   - **Смысл:** Давление продавцов исчерпано, лимитные покупатели агрессивно выкупают пролив. Готовится отскок вверх (LONG).
+
+3. **🟢 Скрытая бычья (Hidden Bullish Divergence) — Сигнал продолжения тренда вверх:**
+   - **На графике цены:** Цена на коррекции удерживает более высокий минимум — **Higher Low (HL)**.
+   - **На индикаторе:** Осциллятор опускается ниже своего предыдущего дна — **Lower Low (LL)**.
+   - **Смысл:** Индикатор полностью «разгрузился» при неглубоком откате котировки. Восходящий тренд возобновляется с удвоенной силой.
+
+4. **🔴 Скрытая медвежья (Hidden Bearish Divergence) — Сигнал продолжения тренда вниз:**
+   - **На графике цены:** Цена на коррекции формирует более низкую вершину — **Lower High (LH)**.
+   - **На индикаторе:** Осциллятор взлетает выше предыдущего пика — **Higher High (HH)**.
+   - **Смысл:** Индикатор перегрет на слабом откате, нисходящий тренд продолжается.
+
+---
+
+#### 2. 🛠️ Пошаговый алгоритм поиска дивергенций в терминале QUANTEX:
+
+1. **Шаг 1. Настройка осцилляторов:**
+   - Откройте подвальный индикатор **RSI (период 14)** или **MACD (12, 26, 9)** в меню индикаторов терминала.
+2. **Шаг 2. Определение ключевых экстремумов:**
+   - Ищите дивергенции **строго по закрытиям свечей (Line Close)** или четким свингам пиков/впадин (High/Low).
+   - Индикатор RSI при первом пике/дне желательно должен побывать в экстремальной зоне перекупленности (>70) или перепроданности (<30).
+3. **Шаг 3. Соединение линий:**
+   - Проведите прямую линию через два последовательных пика цены и аналогичную линию через два соответствующих пика индикатора. Если линии наклонены в разные стороны — дивергенция найдена.
+4. **Шаг 4. Ожидание триггера на вход (Никогда не входить вслепую!):**
+   - ⚠️ **Главная ошибка новичков:** Открывать позицию сразу при формировании расхождения. На сильном импульсе дивергенция может растягиваться на 3–5 пиков подряд!
+   - **Институциональные триггеры подтверждения:**
+     1. Слом локальной структуры (**MSB / CHoCH** на 15m/1h);
+     2. Закрытие свечи с подтверждающей тенью отторжения (Pin Bar / Rejection Wick);
+     3. Выход линии RSI из экстремальной зоны (например, пересечение отметки 70 сверху вниз для шорта).
+
+---
+
+#### 3. 🛡️ Фильтры ложных сигналов институционального уровня:
+- **Опционные стены GEX:** Если медвежья дивергенция формируется ровно под институциональным потолком **Call Wall (${cw})**, ее надежность возрастает до 85%+.
+- **Зоны OTE и Фибоначчи:** Идеально, когда пик дивергенции совпадает с золотым сечением 0.618 – 0.786 или блоком ликвидности.
+- **Стоп-лосс:** Выставляется строго за экстремум свечи, сформировавшей дивергенцию (+ небольшой запас на спред).${liveNewsSection}`;
+    }
+
+    // 0b. SPECIFIC FACTUAL MACRO QUERY: ANALYST EXPECTATIONS & YEAR-END FORECASTS
     if (isForecastQuery) {
       return `${!marketInfo.isOpen ? `> ⏸️ **Статус рынка:** Сегодня ${marketInfo.dayOfWeekRu} — торги по ${ticker} закрыты на выходные. Возобновление торгов: **${marketInfo.nextOpenTextRu}**.\n\n` : ""}### 🏛️ ОЖИДАНИЯ И КОНСЕНСУС-ПРОГНОЗЫ АНАЛИТИКОВ К КОНЦУ ГОДА ПО ${ticker} (${timeMsk} МСК)
 **По вашему запросу:** *"${userQuery.trim()}"*
