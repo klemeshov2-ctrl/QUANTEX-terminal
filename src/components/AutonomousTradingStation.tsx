@@ -18,6 +18,7 @@ import {
   Layers,
   Sparkles,
   Bot,
+  Brain,
   Calendar,
   BookOpen,
   Send,
@@ -699,12 +700,14 @@ export interface AutonomousTradingStationProps {
   currentUser?: UserAccountItem;
   onUserChange?: (user: UserAccountItem) => void;
   onOpenAuthModal?: () => void;
+  onNavigateToTab?: (tab: "station" | "gold_deepseek" | "server_deploy" | "ai_learning" | "indicator_stats") => void;
 }
 
 export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> = ({
   currentUser: propUser,
   onUserChange: propOnUserChange,
-  onOpenAuthModal
+  onOpenAuthModal,
+  onNavigateToTab
 }) => {
   // Navigation & Asset State
   const [activeAsset, setActiveAsset] = useState<AssetSymbol>(() =>
@@ -5441,6 +5444,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     >
                       <BookOpen className="h-3.5 w-3.5 text-indigo-400" />
                       <span>Журнал сделок</span>
+                    </button>
+                  )}
+
+                  {onNavigateToTab && (
+                    <button
+                      onClick={() => {
+                        onNavigateToTab("indicator_stats");
+                        setIsMoreToolsOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer text-emerald-300 hover:bg-emerald-950/50 hover:text-white"
+                      title="Постоянная статистика индикатора QUANTEX Pro v8 по всем 13 тикерам"
+                    >
+                      <BarChart2 className="h-3.5 w-3.5 text-emerald-400" />
+                      <span>Статистика индикатора</span>
+                    </button>
+                  )}
+
+                  {stationUser.role === "admin" && onNavigateToTab && (
+                    <button
+                      onClick={() => {
+                        onNavigateToTab("ai_learning");
+                        setIsMoreToolsOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer text-purple-300 hover:bg-purple-950/50 hover:text-white border-t border-gray-800/80 mt-1 pt-1.5"
+                      title="Самообучение ИИ, журнал прогнозов и статистика экспирации"
+                    >
+                      <Brain className="h-3.5 w-3.5 text-purple-400" />
+                      <span>Самообучение ИИ</span>
                     </button>
                   )}
                 </div>

@@ -9,6 +9,26 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import WebSocket from "ws";
 import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts } from "./server/gexEngine";
+import {
+  recordAiForecast,
+  evaluateForecastOutcomes,
+  computeAiLearningStats,
+  getAiFeedbackLoopContext,
+  getForecastJournal,
+  updateForecastStatusManual,
+  deleteForecastRecord,
+  addLearnedRule,
+  deleteLearnedRule,
+  detectOptionExpirationHorizon
+} from "./server/aiLearningEngine";
+import {
+  recordOrUpdateIndicatorSetup,
+  evaluateIndicatorSetups,
+  computeIndicatorOverallStats,
+  getIndicatorSetupsHistory,
+  deleteIndicatorSetup,
+  resetIndicatorStats
+} from "./server/indicatorStatsEngine";
 
 dotenv.config();
 
@@ -6608,12 +6628,17 @@ app.post("/api/indicator/setups", (req, res) => {
     if (key && item && typeof item === "object") {
       activeIndicatorSetups[String(key)] = item;
       persistActiveIndicatorSetups();
+      // Record into permanent indicator setups statistics journal
+      recordOrUpdateIndicatorSetup(String(key), item);
     } else if (setups && typeof setups === "object") {
       activeIndicatorSetups = {
         ...activeIndicatorSetups,
         ...setups
       };
       persistActiveIndicatorSetups();
+      for (const [k, v] of Object.entries(setups)) {
+        recordOrUpdateIndicatorSetup(k, v);
+      }
     }
     res.json({ success: true, count: Object.keys(activeIndicatorSetups).length });
   } catch (err: any) {
@@ -6638,6 +6663,71 @@ app.delete("/api/indicator/setups", (req, res) => {
     }
     persistActiveIndicatorSetups();
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- PERMANENT INDICATOR PERFORMANCE & STATS API (ALL TICKERS) ---
+app.get("/api/indicator/stats", (_req, res) => {
+  try {
+    const stats = computeIndicatorOverallStats();
+    res.json({ success: true, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/indicator/history", (req, res) => {
+  try {
+    const ticker = req.query.ticker as string | undefined;
+    const timeframe = req.query.timeframe as string | undefined;
+    const status = req.query.status as string | undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : 150;
+    const setups = getIndicatorSetupsHistory({ ticker, timeframe, status, limit });
+    res.json({ success: true, setups, total: setups.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/indicator/evaluate-now", (req, res) => {
+  try {
+    const priceMap = req.body?.priceMap || {};
+    for (const [key, val] of oandaHistoricalSeriesMap.entries()) {
+      if (val && val.lastSpotPrice) {
+        const sym = key.split("_")[0];
+        const lastBar = val.candles?.[val.candles.length - 1];
+        if (!priceMap[sym]) {
+          priceMap[sym] = {
+            currentPrice: val.lastSpotPrice,
+            high: lastBar?.high || val.lastSpotPrice,
+            low: lastBar?.low || val.lastSpotPrice
+          };
+        }
+      }
+    }
+    const result = evaluateIndicatorSetups(priceMap);
+    const stats = computeIndicatorOverallStats();
+    res.json({ success: true, ...result, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/indicator/history/:id", (req, res) => {
+  try {
+    const ok = deleteIndicatorSetup(req.params.id);
+    res.json({ success: ok, stats: computeIndicatorOverallStats() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/indicator/reset-stats", (_req, res) => {
+  try {
+    resetIndicatorStats();
+    res.json({ success: true, stats: computeIndicatorOverallStats() });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -8673,6 +8763,29 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       ? getWeekendCalendarEvents(ticker, marketInfo.dayOfWeekRu)
       : (Array.isArray(events) && events.length > 0 ? events : []);
 
+    const autoRecordForecast = (providerNameLabel: string) => {
+      try {
+        if (indicatorForecast?.p1Entry && indicatorForecast?.p2Tp1 && indicatorForecast?.activeTrailingSl) {
+          recordAiForecast({
+            ticker,
+            timeframe,
+            direction: isBull ? "LONG" : "SHORT",
+            entryPrice: Number(indicatorForecast.p1Entry) || currentPrice,
+            tp1: Number(indicatorForecast.p2Tp1),
+            tp2: Number(indicatorForecast.p3Tp2 || (Number(indicatorForecast.p2Tp1) * 1.01)),
+            sl: Number(indicatorForecast.activeTrailingSl),
+            gexRegime: gex?.regime || "POSITIVE_GAMMA",
+            provider: providerNameLabel,
+            reasoningSummary: mode === "morning_brief" ? "Утренний макро-план" : mode === "noon_update" ? "Дневной апдейт" : "Торговый план",
+            userQuery: userQuery || "",
+            mode
+          });
+        }
+      } catch (err: any) {
+        console.warn("Notice recording AI forecast:", err.message);
+      }
+    };
+
     // 0. Fetch real-time live world news & macro releases from external web
     const liveWorldNews = await fetchLiveWorldNews(userQuery, ticker);
 
@@ -8695,9 +8808,11 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
         marketInfo,
         liveWorldNews
       });
+      const autoProvider = "🤖 Автономный ИИ QUANTEX (Мировые данные 🌐)";
+      autoRecordForecast(autoProvider);
       return res.json({
         plan: autonomousPlan,
-        provider: "🤖 Автономный ИИ QUANTEX (Мировые данные 🌐)",
+        provider: autoProvider,
         isSimulated: false,
         timestamp: `${timeMsk} МСК`
       });
@@ -8726,6 +8841,38 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 ⚠️ КРИПТОРЫНОК НА ВЫХОДНЫХ (24/7):
 Крипторынок активен 24/7, но традиционные шлюзы (CME фьючерсы и спотовые ETF США) закрыты до понедельника. Обязательно учитывай тонкий розничный стакан, повышенные риски манипуляций/сбора стопов и формирование CME Gap перед открытием понедельника.` : ''}
 `;
+
+    const dLower = marketInfo.dayOfWeekRu.toLowerCase();
+    const isFriday = dLower.includes("пятниц");
+    const isMonday = dLower.includes("понедельн");
+    const isExpiryDay = isFriday || isMonday;
+
+    const expHorizonCtx = detectOptionExpirationHorizon();
+    const expiryRuleInstruction = `
+⚖️ ПРАВИЛО УЧЕТА ГОРИЗОНТОВ ОПЦИОННОЙ ЭКСПИРАЦИИ (0DTE, НЕДЕЛЬНЫЕ, МЕСЯЧНЫЕ, КВАРТАЛЬНЫЕ):
+- Текущий горизонт: ${expHorizonCtx.horizonNameRu.toUpperCase()} (${marketInfo.dayOfWeekRu}, ${dateMsk})
+- Статус экспирации: ${expHorizonCtx.isExpiryDay ? "⚠️ ДЕНЬ ПОВЫШЕННОЙ ЭКСПИРАЦИОННОЙ ВОЛАТИЛЬНОСТИ / РОЛЛОВЕРА" : "Регулярный торговый день"}.
+- Опционный ориентир: ${expHorizonCtx.pinningTargetDesc}
+- Руководство: ${expHorizonCtx.adviceForAi}
+
+1. ⚡ ДНЕВНЫЕ ЭКСПИРАЦИИ (0DTE / Интрадей):
+   - Активны каждый рабочий день на индексах США и 24/7 в крипто-опционах.
+   - Экстремальная тета-деградация (Theta decay) и постоянная дельта-гамма ребалансировка дилеров. После 17:00 МСК дилеры ускоренно сжимают волатильность к суточному магниту.
+2. 📅 НЕДЕЛЬНЫЕ ЭКСПИРАЦИИ (Weekly OPEX - Каждая пятница):
+   - Институциональные дилеры и маркетмейкеры притягивают цену к недельному страйку Max Pain (${gex?.maxPain || "Max Pain"}) для максимального обесценения премий.
+   - Ожидай ложные пробои (Fakeouts / срыв стопов) ключевых стен Call Wall (${gex?.callWall || "Call Wall"}) и Put Wall (${gex?.putWall || "Put Wall"}). Закладывай отступ стопа +0.35%.
+3. 🗓️ МЕСЯЧНЫЕ ЭКСПИРАЦИИ (Monthly OPEX - 3-я пятница каждого месяца):
+   - Концентрация максимального открытого интереса (OI) институциональных фондов.
+   - Call/Put Wall выступают мощнейшими железобетонными барьерами. В случае истинного импульсного пробоя стены происходит каскадный Гамма-Сквиз (Gamma Squeeze).
+4. 🌪️ КВАРТАЛЬНЫЕ ЭКСПИРАЦИИ (Quadruple Witching - Март, Июнь, Сентябрь, Декабрь):
+   - Одновременная экспирация 4 классов деривативов (фьючерсы на индексы/товары и опционы). Экспирируются квартальные фьючерсы FORTS (GDZ6, SiZ6, RIZ6, BRZ6) и контракты CME.
+   - КРИТИЧЕСКИЙ ФАКТОР: Массовый ролловер (Rollover) институционалов в следующий контракт, иссякание ликвидности уходящего контракта, схлопывание базиса спот-фьючерс до 0.
+   - На следующей неделе после квартальной экспирации исторически формируется среднесрочная смена квартального тренда!
+5. 🔄 ПОНЕДЕЛЬНИКИ (Gap Fill & Ролловер):
+   - Открытие недели, балансировка спредов и закрытие ценового разрыва CME Gap. Ожидай ложный импульс Азии перед Лондоном (10:00 МСК).
+`;
+
+    const feedbackLoopContext = getAiFeedbackLoopContext(ticker);
 
     const qLower = (userQuery || "").toLowerCase();
     const isEducationalOrConceptQuery = Boolean(
@@ -8781,7 +8928,10 @@ ${scheduleRuleInstruction}
 Требования к структуре ответа:
 - Начинай с макроэкономической картины и фундаментального драйвера (что двигает рынок, статистика, ФРС/DXY).
 - Затем переходи к техническому и алгоритмическому плану (сетап QUANTEX, опционные уровни Call/Put Wall, конкретная точка входа, TP1, TP2, Trailing Stop-Loss).
-- Обязательно указывай реальный статус биржи и альтернативный План Б.`;
+- Обязательно указывай реальный статус биржи и альтернативный План Б.
+
+${expiryRuleInstruction}
+${feedbackLoopContext}`;
 
     const newsListFormatted = (Array.isArray(latestNews) && latestNews.length > 0)
       ? `\nСвежие поступающие новости и публикации ленты:\n${latestNews.slice(0, 8).map((n: any) => `- [${n.time || ""}] ${n.title || ""} [${n.impact || "Новость"}] ${n.details ? `— ${n.details}` : ""}`).join("\n")}`
@@ -8839,6 +8989,7 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
       if (eventContext) {
         prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
       }
+      prompt += `\n${expiryRuleInstruction}\n${feedbackLoopContext}\n`;
     }
 
     const serverAi = (unifiedStationSettings as any)?.ai || {};
@@ -8953,6 +9104,7 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
               ? `DeepSeek (${dsModel} 🌐 Live Web)`
               : `DeepSeek (${dsModel})`;
 
+            autoRecordForecast(providerLabel);
             addServerLog("INFO", `Анализ сформирован нейросетью ${providerLabel}`);
             return res.json({
               plan: finalPlan,
@@ -9044,10 +9196,12 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           const qwenData = await qwenRes.json();
           const text = qwenData?.choices?.[0]?.message?.content;
           if (text) {
-            addServerLog("INFO", `Анализ сформирован нейросетью Qwen (${qwenModel})`);
+            const qwenProv = `Qwen (${qwenModel})`;
+            autoRecordForecast(qwenProv);
+            addServerLog("INFO", `Анализ сформирован нейросетью ${qwenProv}`);
             return res.json({
               plan: text,
-              provider: `Qwen (${qwenModel})`,
+              provider: qwenProv,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });
@@ -9168,9 +9322,11 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
           }
 
           if (responseText) {
+            const geminiProv = `Gemini (${finalModelUsed}${webSourcesText.includes("Google Search Grounding") ? " 🌐 Live Search" : " 🌐"})`;
+            autoRecordForecast(geminiProv);
             return res.json({
               plan: responseText + webSourcesText,
-              provider: `Gemini (${finalModelUsed}${webSourcesText.includes("Google Search Grounding") ? " 🌐 Live Search" : " 🌐"})`,
+              provider: geminiProv,
               isSimulated: false,
               timestamp: `${timeMsk} МСК`
             });
@@ -9199,9 +9355,11 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
                 const dsData = await dsRes.json();
                 const text = dsData?.choices?.[0]?.message?.content;
                 if (text) {
+                  const dsFailoverProv = `DeepSeek (${clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat"} ⚡ Резервный)`;
+                  autoRecordForecast(dsFailoverProv);
                   return res.json({
                     plan: text,
-                    provider: `DeepSeek (${clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat"} ⚡ Резервный)`,
+                    provider: dsFailoverProv,
                     isSimulated: false,
                     timestamp: `${timeMsk} МСК`
                   });
@@ -9238,12 +9396,15 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
     });
 
     const isApiKeyMissingOrInvalid = !effectiveGeminiKey || effectiveGeminiKey.startsWith("AIzaSyAhY9_") || effectiveGeminiKey.length < 10;
+    const finalFallbackProv = isApiKeyMissingOrInvalid
+      ? "QUANTEX Консенсус & Мировые данные 🌐 (Автономный)"
+      : (responseStyle === "short" ? "⚡ Короткий квант-ответ" : "📊 Развёрнутый макро-план (Мировые данные 🌐)");
+
+    autoRecordForecast(finalFallbackProv);
 
     res.json({
       plan: fallbackPlan,
-      provider: isApiKeyMissingOrInvalid
-        ? "QUANTEX Консенсус & Мировые данные 🌐 (Автономный)"
-        : (responseStyle === "short" ? "⚡ Короткий квант-ответ" : "📊 Развёрнутый макро-план (Мировые данные 🌐)"),
+      provider: finalFallbackProv,
       isSimulated: true,
       timestamp: `${timeMsk} МСК`
     });
@@ -9252,6 +9413,133 @@ ${JSON.stringify(multiTfMetrics, null, 2)}
     res.status(500).json({ error: err.message || "Internal Server Error" });
   }
 });
+
+// =========================================================================
+// AI SELF-LEARNING & FORECAST JOURNAL API (FEEDBACK LOOP & OUTCOME TRACKER)
+// =========================================================================
+
+app.get("/api/ai-learning/stats", (_req, res) => {
+  try {
+    const stats = computeAiLearningStats();
+    res.json({ success: true, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/ai-learning/forecasts", (req, res) => {
+  try {
+    const ticker = req.query.ticker as string | undefined;
+    const status = req.query.status as any | undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : 150;
+    const forecasts = getForecastJournal({ ticker, status, limit });
+    res.json({ success: true, forecasts, total: forecasts.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-learning/forecasts/record", (req, res) => {
+  try {
+    const record = recordAiForecast(req.body);
+    res.json({ success: true, record });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-learning/forecasts/evaluate", (req, res) => {
+  try {
+    const priceMap = req.body.priceMap || {};
+    // Extract cached spot prices from oandaHistoricalSeriesMap
+    for (const [key, val] of oandaHistoricalSeriesMap.entries()) {
+      if (val && val.lastSpotPrice) {
+        const sym = key.split("_")[0];
+        const lastBar = val.candles?.[val.candles.length - 1];
+        if (!priceMap[sym]) {
+          priceMap[sym] = {
+            currentPrice: val.lastSpotPrice,
+            high: lastBar?.high || val.lastSpotPrice,
+            low: lastBar?.low || val.lastSpotPrice
+          };
+        }
+      }
+    }
+    const result = evaluateForecastOutcomes(priceMap);
+    res.json({ success: true, ...result, stats: computeAiLearningStats() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-learning/forecasts/update-status", (req, res) => {
+  try {
+    const { id, status, exitPrice, note } = req.body;
+    if (!id || !status) return res.status(400).json({ error: "id and status required" });
+    const ok = updateForecastStatusManual(id, status, exitPrice, note);
+    res.json({ success: ok, stats: computeAiLearningStats() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/ai-learning/forecasts/:id", (req, res) => {
+  try {
+    const ok = deleteForecastRecord(req.params.id);
+    res.json({ success: ok, stats: computeAiLearningStats() });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/api/ai-learning/rules", (_req, res) => {
+  try {
+    const stats = computeAiLearningStats();
+    res.json({ success: true, rules: stats.rules });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/ai-learning/rules/add", (req, res) => {
+  try {
+    const { rule, category = "EXPIRY", impact = "HIGH" } = req.body;
+    if (!rule || !rule.trim()) return res.status(400).json({ error: "rule text required" });
+    const newRule = addLearnedRule(rule, category, impact);
+    res.json({ success: true, rule: newRule });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/ai-learning/rules/:id", (req, res) => {
+  try {
+    const ok = deleteLearnedRule(req.params.id);
+    res.json({ success: ok });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Periodic background evaluator (runs every 15 seconds)
+setInterval(() => {
+  try {
+    const priceMap: Record<string, { currentPrice: number; high?: number; low?: number }> = {};
+    for (const [key, val] of oandaHistoricalSeriesMap.entries()) {
+      if (val && val.lastSpotPrice) {
+        const sym = key.split("_")[0];
+        const lastBar = val.candles?.[val.candles.length - 1];
+        priceMap[sym] = {
+          currentPrice: val.lastSpotPrice,
+          high: lastBar?.high || val.lastSpotPrice,
+          low: lastBar?.low || val.lastSpotPrice
+        };
+      }
+    }
+    evaluateForecastOutcomes(priceMap);
+    evaluateIndicatorSetups(priceMap);
+  } catch {}
+}, 15000);
 
 function generateAutonomousAiPlan(params: {
   ticker: string;

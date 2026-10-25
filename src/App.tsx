@@ -6,11 +6,15 @@ import {
   Zap,
   Lock,
   User,
-  Crown
+  Crown,
+  Brain,
+  BarChart3
 } from "lucide-react";
 import ServerDeploymentHub from "./components/ServerDeploymentHub";
 import { DeepSeekGoldScheduler } from "./components/DeepSeekGoldScheduler";
 import { AutonomousTradingStation } from "./components/AutonomousTradingStation";
+import { AiLearningDashboard } from "./components/AiLearningDashboard";
+import { IndicatorStatsDashboard } from "./components/IndicatorStatsDashboard";
 import { PasswordAuthModal } from "./components/PasswordAuthModal";
 import { UserAccountItem } from "./components/UnifiedStationSettings";
 
@@ -27,15 +31,15 @@ export default function App() {
       id: "usr-admin",
       username: "admin",
       role: "admin",
-      allowedTabs: ["chart", "gex", "calendar", "editor", "journal", "settings"],
+      allowedTabs: ["chart", "gex", "calendar", "editor", "journal", "settings", "ai_learning"],
       createdAt: "2026-10-21"
     };
   });
-  const [currentAppTab, setCurrentAppTab] = useState<"station" | "gold_deepseek" | "server_deploy">("station");
+  const [currentAppTab, setCurrentAppTab] = useState<"station" | "gold_deepseek" | "server_deploy" | "ai_learning" | "indicator_stats">("station");
 
   // Protect Admin-only tabs: if non-admin user logs in or switches, return immediately to station
   useEffect(() => {
-    if (currentUser.role !== "admin" && (currentAppTab === "gold_deepseek" || currentAppTab === "server_deploy")) {
+    if (currentUser.role !== "admin" && (currentAppTab === "gold_deepseek" || currentAppTab === "server_deploy" || currentAppTab === "ai_learning")) {
       setCurrentAppTab("station");
     }
   }, [currentUser.role, currentAppTab]);
@@ -105,8 +109,34 @@ export default function App() {
                   <Server className="h-3 w-3 text-cyan-300 shrink-0" />
                   <span>Сервер</span>
                 </button>
+
+                <button
+                  onClick={() => setCurrentAppTab("ai_learning")}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                    currentAppTab === "ai_learning"
+                      ? "bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white shadow-md shadow-purple-500/30 ring-1 ring-purple-400/50"
+                      : "text-gray-400 hover:text-white hover:bg-gray-800/60"
+                  }`}
+                  title="Самообучение ИИ, журнал прогнозов и статистика экспирации опционов"
+                >
+                  <Brain className="h-3 w-3 text-purple-300 shrink-0" />
+                  <span>Самообучение ИИ</span>
+                </button>
               </>
             )}
+
+            <button
+              onClick={() => setCurrentAppTab("indicator_stats")}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                currentAppTab === "indicator_stats"
+                  ? "bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white shadow-md shadow-emerald-500/30 ring-1 ring-emerald-400/50"
+                  : "text-gray-400 hover:text-white hover:bg-gray-800/60"
+              }`}
+              title="Постоянная статистика сигналов и сетапов индикатора на графике по всем 13 тикерам"
+            >
+              <BarChart3 className="h-3 w-3 text-emerald-300 shrink-0" />
+              <span>Стат. Индикатора</span>
+            </button>
           </nav>
         </div>
 
@@ -161,11 +191,28 @@ export default function App() {
           <DeepSeekGoldScheduler />
         ) : currentAppTab === "server_deploy" && currentUser.role === "admin" ? (
           <ServerDeploymentHub />
+        ) : currentAppTab === "ai_learning" && currentUser.role === "admin" ? (
+          <AiLearningDashboard
+            currentUser={currentUser}
+            onBackToTerminal={() => setCurrentAppTab("station")}
+          />
+        ) : currentAppTab === "indicator_stats" ? (
+          <IndicatorStatsDashboard
+            currentUser={currentUser}
+            onBackToTerminal={() => setCurrentAppTab("station")}
+            onSelectTicker={(ticker) => {
+              try {
+                localStorage.setItem("quantex_active_asset", ticker);
+              } catch {}
+              setCurrentAppTab("station");
+            }}
+          />
         ) : (
           <AutonomousTradingStation
             currentUser={currentUser}
             onUserChange={handleUserChange}
             onOpenAuthModal={() => setIsAuthenticated(false)}
+            onNavigateToTab={(tab) => setCurrentAppTab(tab as any)}
           />
         )}
       </main>
