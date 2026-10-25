@@ -99,20 +99,37 @@ function calculateOptionGreeks(
   return { gamma, delta, vanna, charm };
 }
 
-// Helper to compute exact expiration date string with Moscow Time
+// Helper to compute exact expiration date string with Moscow Time (handles weekends & session roll)
 export function getHorizonExpirationDateString(horizon: ExpiryHorizon = "WEEK"): string {
   const now = new Date();
   const mskOffset = 3 * 60; // UTC+3
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
   const mskDate = new Date(utc + (mskOffset * 60000));
   const monthNames = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  const dayOfWeek = mskDate.getDay(); // 0 is Sun, 5 is Fri, 6 is Sat
 
   if (horizon === "DAY") {
-    return `${mskDate.getDate()} ${monthNames[mskDate.getMonth()]}, 18:45 MSK (0DTE)`;
+    let targetDate = new Date(mskDate.getTime());
+    let note = "0DTE";
+
+    if (dayOfWeek === 6) { // Saturday -> next trading day is Monday (+2 days)
+      targetDate = new Date(mskDate.getTime() + 2 * 86400000);
+      note = "Пн, 0DTE • Выходной";
+    } else if (dayOfWeek === 0) { // Sunday -> next trading day is Monday (+1 day)
+      targetDate = new Date(mskDate.getTime() + 1 * 86400000);
+      note = "Пн, 0DTE • Выходной";
+    } else if (dayOfWeek === 5 && mskDate.getHours() >= 19) { // Friday after 19:00 MSK -> Monday (+3 days)
+      targetDate = new Date(mskDate.getTime() + 3 * 86400000);
+      note = "Пн, 0DTE";
+    } else if (mskDate.getHours() >= 19) { // Weekdays after 19:00 MSK -> tomorrow
+      targetDate = new Date(mskDate.getTime() + 1 * 86400000);
+      note = "0DTE (След. сессия)";
+    }
+
+    return `${targetDate.getDate()} ${monthNames[targetDate.getMonth()]}, 18:45 MSK (${note})`;
   }
 
   if (horizon === "WEEK") {
-    const dayOfWeek = mskDate.getDay(); // 0 is Sun, 5 is Fri
     let daysUntilFriday = (5 - dayOfWeek + 7) % 7;
     if (daysUntilFriday === 0 && mskDate.getHours() >= 19) {
       daysUntilFriday = 7;
@@ -143,6 +160,7 @@ export function getHorizonExpirationDateString(horizon: ExpiryHorizon = "WEEK"):
 
   return `${mskDate.getDate()} ${monthNames[mskDate.getMonth()]}, 18:45 MSK`;
 }
+
 
 // In-memory cache to prevent spamming exchanges
 const gexCache: Record<string, { data: GexMarketReport; cachedAt: number }> = {};

@@ -728,6 +728,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [isMobileTfOpen, setIsMobileTfOpen] = useState<boolean>(false);
   const [isGexHorizonDropdownOpen, setIsGexHorizonDropdownOpen] = useState<boolean>(false);
   const assetDropdownRef = useRef<HTMLDivElement | null>(null);
+  const mobileAssetDropdownRef = useRef<HTMLDivElement | null>(null);
+  const indicatorsDropdownRef = useRef<HTMLDivElement | null>(null);
+  const mobileIndicatorsDropdownRef = useRef<HTMLDivElement | null>(null);
   const moreToolsRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
   const mobileTfRef = useRef<HTMLDivElement | null>(null);
@@ -894,9 +897,20 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (assetDropdownRef.current && !assetDropdownRef.current.contains(e.target as Node)) {
+      const isInsideAsset =
+        (assetDropdownRef.current && assetDropdownRef.current.contains(e.target as Node)) ||
+        (mobileAssetDropdownRef.current && mobileAssetDropdownRef.current.contains(e.target as Node));
+      if (!isInsideAsset) {
         setIsAssetDropdownOpen(false);
       }
+
+      const isInsideIndicators =
+        (indicatorsDropdownRef.current && indicatorsDropdownRef.current.contains(e.target as Node)) ||
+        (mobileIndicatorsDropdownRef.current && mobileIndicatorsDropdownRef.current.contains(e.target as Node));
+      if (!isInsideIndicators) {
+        setIsIndicatorsModalOpen(false);
+      }
+
       if (moreToolsRef.current && !moreToolsRef.current.contains(e.target as Node)) {
         setIsMoreToolsOpen(false);
       }
@@ -4813,9 +4827,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const data = await res.json();
       const answer = data.report?.planMarkdown || 
         `📊 **Анализ по сетапу QUANTEX Premium v8 (${activeAsset})**:\n` +
-        `• Спот: ${candles[candles.length - 1]?.close || 4165.0}\n` +
+        `• Спот: ${candles[candles.length - 1]?.close || 3995.8}\n` +
         `• Режим Гаммы: ${gexReport?.netGexRegime || "POSITIVE_GAMMA"}\n` +
-        `• Call Wall (Потолок): ${gexReport?.callWall || 4200} | Put Wall (Поддержка): ${gexReport?.putWall || 4100}\n` +
+        `• Call Wall (Потолок): ${gexReport?.callWall || 4028} | Put Wall (Поддержка): ${gexReport?.putWall || 3979}\n` +
         `• Рекомендация: Поиск лонг-реакции в зоне OTE с первичной целью на 0.50 EQ и расширением к Call Wall.`;
 
       setAiChatMessages(prev => [
@@ -4987,6 +5001,469 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const activeThemeMeta = STATION_THEMES.find(t => t.id === stationTheme) || STATION_THEMES[0];
   const curPalette = THEME_PALETTES[stationTheme] || THEME_PALETTES["cyber_dark"];
 
+  // 📋 Reusable Dropdown Content: Ticker Selection (13 Instruments)
+  const renderTickerDropdownContent = (isMobile = false) => {
+    const tickersList: {
+      id: AssetSymbol;
+      category: string[];
+      code: string;
+      badge: string;
+      badgeTone: string;
+      name: string;
+      sub: string;
+      price: string;
+      meta: string;
+    }[] = [
+      {
+        id: "XAUUSD",
+        category: ["GOLD"],
+        code: "OANDA:XAUUSD",
+        badge: "OANDA SPOT",
+        badgeTone: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+        name: "Золото Спот (1 oz USD)",
+        sub: "Эталон TradingView • symbols/XAUUSD",
+        price: `$${(oandaData?.price || (activeAsset === "XAUUSD" && latestCandle ? latestCandle.close : 4132.35)).toFixed(2)}`,
+        meta: `Bid/Ask: ${(oandaData?.bid || 4132.01).toFixed(2)}/${(oandaData?.ask || 4132.37).toFixed(2)}`
+      },
+      {
+        id: "PAXGUSDT",
+        category: ["GOLD", "CRYPTO"],
+        code: "BINANCE:PAXGUSDT",
+        badge: "SPOT 24/7",
+        badgeTone: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",
+        name: "Крипто-золото PAX Gold",
+        sub: "Binance Spot • 1 токен = 1 тройская унция",
+        price: activeAsset === "PAXGUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$4135.40",
+        meta: "Торги 24/7"
+      },
+      {
+        id: "MOEX_GOLD",
+        category: ["GOLD", "MOEX"],
+        code: `MOEX:${moexContracts?.large?.secId || "GDZ6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
+        sub: "МосБиржа • Контракт 1 унция (USD)",
+        price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
+        meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "MOEX_MINI",
+        category: ["GOLD", "MOEX"],
+        code: `MOEX:${moexContracts?.mini?.secId || "GNZ6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
+        sub: "МосБиржа • Мини-контракт 0.1 унции (USD)",
+        price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
+        meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "GLDRUBF",
+        category: ["GOLD", "MOEX"],
+        code: "MOEX:GLDRUBF",
+        badge: "MOEX ВЕЧНЫЙ",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: "Вечный фьючерс Золото (₽/г)",
+        sub: "МосБиржа • Рублевое золото за 1 грамм",
+        price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
+        meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "MOEX_SI",
+        category: ["MOEX"],
+        code: `MOEX:${moexContracts?.si?.secId || "SiZ6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Фьючерс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
+        sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
+        price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
+        meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "MOEX_RI",
+        category: ["MOEX"],
+        code: `MOEX:${moexContracts?.ri?.secId || "RIZ6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
+        sub: "МосБиржа • Индексный фьючерс (пункты)",
+        price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
+        meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "MOEX_BR",
+        category: ["MOEX"],
+        code: `MOEX:${moexContracts?.br?.secId || "BRX6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
+        sub: "МосБиржа • Товарный фьючерс (10 баррелей)",
+        price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
+        meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "MOEX_NG",
+        category: ["MOEX"],
+        code: `MOEX:${moexContracts?.ng?.secId || "NGV6"}`,
+        badge: "MOEX FORTS",
+        badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
+        name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
+        sub: "МосБиржа • Товарный фьючерс (100 MMBtu)",
+        price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
+        meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
+      },
+      {
+        id: "BTCUSDT",
+        category: ["CRYPTO"],
+        code: "BINANCE:BTCUSDT",
+        badge: "SPOT 24/7",
+        badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+        name: "Bitcoin Спот (BTC/USDT)",
+        sub: "Binance Spot • Профиль Deribit GEX",
+        price: activeAsset === "BTCUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$82,200",
+        meta: "24/7 Онлайн"
+      },
+      {
+        id: "ETHUSDT",
+        category: ["CRYPTO"],
+        code: "BINANCE:ETHUSDT",
+        badge: "SPOT 24/7",
+        badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+        name: "Ethereum Спот (ETH/USDT)",
+        sub: "Binance Spot • Профиль Deribit GEX",
+        price: activeAsset === "ETHUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$2,430",
+        meta: "24/7 Онлайн"
+      },
+      {
+        id: "SOLUSDT",
+        category: ["CRYPTO"],
+        code: "BINANCE:SOLUSDT",
+        badge: "SPOT 24/7",
+        badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+        name: "Solana Спот (SOL/USDT)",
+        sub: "Binance Spot • Профиль GEX",
+        price: activeAsset === "SOLUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$185.00",
+        meta: "24/7 Онлайн"
+      },
+      {
+        id: "XRPUSDT",
+        category: ["CRYPTO"],
+        code: "BINANCE:XRPUSDT",
+        badge: "SPOT 24/7",
+        badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
+        name: "Ripple Спот (XRP/USDT)",
+        sub: "Binance Spot • Профиль GEX",
+        price: activeAsset === "XRPUSDT" && latestCandle ? `$${latestCandle.close.toFixed(4)}` : "$1.3000",
+        meta: "24/7 Онлайн"
+      }
+    ];
+
+    const filtered = tickersList.filter(
+      (item) => popoverActiveTab === "ALL" || item.category.includes(popoverActiveTab)
+    );
+
+    return (
+      <div className="flex flex-col max-h-[70vh] select-none text-left font-sans">
+        {/* Category Filter Header */}
+        <div className="p-2 border-b border-gray-800 bg-[#0d121f] shrink-0 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wide">
+              Инструменты ({filtered.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsAssetDropdownOpen(false)}
+              className="text-gray-400 hover:text-white p-0.5 rounded cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="flex items-center gap-1 bg-[#070a12] p-0.5 rounded-lg border border-gray-800">
+            {[
+              { id: "ALL" as const, label: "Все" },
+              { id: "GOLD" as const, label: "🥇 Золото" },
+              { id: "MOEX" as const, label: "🇷🇺 MOEX" },
+              { id: "CRYPTO" as const, label: "⚡ Крипто" }
+            ].map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setPopoverActiveTab(cat.id)}
+                className={`flex-1 py-1 px-1 rounded text-[10.5px] font-bold transition cursor-pointer text-center whitespace-nowrap ${
+                  popoverActiveTab === cat.id
+                    ? "bg-amber-500/25 text-amber-300 border border-amber-500/50"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Tickers Scroll List */}
+        <div className="p-1.5 space-y-1 overflow-y-auto flex-1 min-h-0 divide-y divide-gray-800/40">
+          {filtered.map((item) => {
+            const isSelected = activeAsset === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  handleSelectAsset(item.id);
+                  setIsAssetDropdownOpen(false);
+                }}
+                className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition cursor-pointer border ${
+                  isSelected
+                    ? "bg-amber-500/15 border-amber-500/60 text-white"
+                    : "bg-[#0f1422]/60 hover:bg-[#161d30] border-transparent text-gray-300"
+                }`}
+              >
+                <div className="flex flex-col gap-0.5 min-w-0 pr-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-xs text-white truncate">{item.code}</span>
+                    <span className={`text-[8.5px] font-mono px-1 py-0.2 rounded border ${item.badgeTone}`}>
+                      {item.badge}
+                    </span>
+                    {isSelected && <Check className="h-3 w-3 text-amber-400 shrink-0" />}
+                  </div>
+                  <span className="text-[10px] text-gray-400 truncate">{item.name}</span>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-mono font-bold text-xs text-white">{item.price}</div>
+                  <div className="font-mono text-[9px] text-amber-400/90">{item.meta}</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  // 🎛️ Reusable Dropdown Content: Indicator Toggles & Overlays
+  const renderIndicatorsDropdownContent = (isMobile = false) => {
+    return (
+      <div className="flex flex-col max-h-[70vh] select-none text-left font-sans">
+        {/* Dropdown Header */}
+        <div className="p-2.5 border-b border-gray-800 bg-[#0d121f] shrink-0 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Sliders className="h-4 w-4 text-cyan-400" />
+            <span className="text-xs font-bold text-white uppercase tracking-wider">Индикаторы &amp; Оверлеи</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsIndicatorsModalOpen(false)}
+            className="text-gray-400 hover:text-white p-0.5 rounded cursor-pointer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Scrollable Categories */}
+        <div className="p-2.5 space-y-3 overflow-y-auto flex-1 min-h-0 text-xs">
+          {/* Section 1: Trend EMA */}
+          <div className="space-y-1.5">
+            <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+              <TrendingUp className="h-3 w-3 text-cyan-400" />
+              <span>Скользящие средние (EMA)</span>
+            </span>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowEma50(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showEma50 ? "bg-cyan-500/20 border-cyan-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#38bdf8]" />
+                  <span className="font-bold text-[11px]">EMA 50</span>
+                </div>
+                <span className="text-[9px] font-mono mt-0.5">{showEma50 ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowEma100(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showEma100 ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#f59e0b]" />
+                  <span className="font-bold text-[11px]">EMA 100</span>
+                </div>
+                <span className="text-[9px] font-mono mt-0.5">{showEma100 ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowEma200(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showEma200 ? "bg-pink-500/20 border-pink-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#ec4899]" />
+                  <span className="font-bold text-[11px]">EMA 200</span>
+                </div>
+                <span className="text-[9px] font-mono mt-0.5">{showEma200 ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 2: Oscillators */}
+          <div className="space-y-1.5">
+            <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+              <Activity className="h-3 w-3 text-indigo-400" />
+              <span>Осцилляторы (Подвальные)</span>
+            </span>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowMacdPane(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showMacdPane ? "bg-indigo-500/20 border-indigo-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">MACD</span>
+                <span className="text-[9px] font-mono text-gray-400">{showMacdPane ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowRsiPane(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showRsiPane ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">RSI (6 &amp; 14)</span>
+                <span className="text-[9px] font-mono text-gray-400">{showRsiPane ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowStochPane(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showStochPane ? "bg-rose-500/20 border-rose-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Стохастик</span>
+                <span className="text-[9px] font-mono text-gray-400">{showStochPane ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 3: GEX & Smart Money */}
+          <div className="space-y-1.5">
+            <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+              <Shield className="h-3 w-3 text-purple-400" />
+              <span>Гамма GEX &amp; SMC Оверлеи</span>
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowGexWalls(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showGexWalls ? "bg-purple-500/20 border-purple-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">GEX Стены</span>
+                <span className="text-[9px] font-mono">{showGexWalls ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowForecast(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showForecast ? "bg-emerald-500/20 border-emerald-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Прогноз TP/SL</span>
+                <span className="text-[9px] font-mono">{showForecast ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowOb(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showOb ? "bg-blue-500/20 border-blue-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Ордер-блоки (OB)</span>
+                <span className="text-[9px] font-mono">{showOb ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowFvg(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showFvg ? "bg-teal-500/20 border-teal-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">FVG Имбаланс</span>
+                <span className="text-[9px] font-mono">{showFvg ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowReversal(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showReversal ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Зоны OTE (0.618)</span>
+                <span className="text-[9px] font-mono">{showReversal ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowTables(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showTables ? "bg-cyan-500/20 border-cyan-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">HUD Таблица</span>
+                <span className="text-[9px] font-mono">{showTables ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Dropdown Footer Actions */}
+        <div className="p-2 border-t border-gray-800 bg-[#0d121f] shrink-0 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => {
+              setShowEma50(false);
+              setShowEma100(false);
+              setShowEma200(false);
+              setShowRsiPane(false);
+              setShowStochPane(false);
+              setShowMacdPane(true);
+              setShowGexWalls(true);
+              setShowOb(true);
+              setShowFvg(true);
+              setShowTables(true);
+            }}
+            className="px-2.5 py-1 rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold text-[10px] cursor-pointer transition"
+          >
+            Сброс
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsIndicatorsModalOpen(false)}
+            className="px-3 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[10px] cursor-pointer transition"
+          >
+            Готово
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div
       className="flex flex-col flex-1 text-gray-100 min-h-0 h-full overflow-hidden font-sans transition-colors duration-200"
@@ -4995,24 +5472,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       
       {/* 🧭 MOBILE TOP BAR: Ultra-compact single row (height ~42px) tailored for ~6" phones */}
       <div
-        className="md:hidden border-b px-2 py-1.5 flex items-center justify-between gap-1.5 shrink-0 transition-colors duration-200 select-none z-30 relative"
+        className="md:hidden border-b px-2 py-1.5 flex items-center justify-between gap-1.5 shrink-0 transition-colors duration-200 select-none z-50 relative overflow-visible"
         style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
       >
-        {/* Left: Compact Ticker Trigger (e.g. XAUUSD, GDZ6, SiZ6) */}
+        {/* Left: Compact Ticker Trigger (e.g. XAUUSD, GDZ6, SiZ6) as Dropdown */}
         <div className="flex items-center gap-1.5 min-w-0">
-          <button
-            type="button"
-            onClick={() => setIsAssetDropdownOpen(true)}
-            onTouchEnd={(e) => {
-              e.preventDefault();
-              setIsAssetDropdownOpen(true);
-            }}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#121622] hover:bg-[#1a2030] active:bg-[#20273c] border border-amber-500/60 text-amber-300 text-xs font-mono font-extrabold transition cursor-pointer shadow-xs shrink-0"
-            title="Выбор торгового инструмента (нажмите для смены тикера)"
-          >
-            <span>{getShortAssetLabel(activeAsset)}</span>
-            <ChevronDown className={`h-3 w-3 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
-          </button>
+          <div className="relative shrink-0 z-50" ref={mobileAssetDropdownRef}>
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsAssetDropdownOpen(prev => !prev);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#121622] hover:bg-[#1a2030] active:bg-[#20273c] border border-amber-500/60 text-amber-300 text-xs font-mono font-extrabold transition cursor-pointer shadow-xs shrink-0"
+              title="Выбор торгового инструмента (нажмите для смены тикера)"
+            >
+              <span>{getShortAssetLabel(activeAsset)}</span>
+              <ChevronDown className={`h-3 w-3 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+            {isAssetDropdownOpen && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                className="absolute top-full left-0 mt-1 z-50 w-[330px] max-w-[94vw] max-h-[75vh] flex flex-col bg-[#0c0f18] border border-amber-500/80 rounded-xl shadow-2xl overflow-hidden shadow-black/95 font-sans ring-1 ring-amber-500/50 animate-in fade-in slide-in-from-top-1 duration-150"
+              >
+                {renderTickerDropdownContent(true)}
+              </div>
+            )}
+          </div>
 
           {/* Live Price + Change % */}
           {latestCandle && (
@@ -5216,15 +5703,20 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
       {/* 🧭 DESKTOP TOP QUANTEX TERMINAL HEADER (Full rich controls for screens >= md / tablets / PCs) */}
       <div
-        className="hidden md:flex border-b px-2 sm:px-3 py-1.5 items-center justify-between gap-2 flex-wrap shrink-0 transition-colors duration-200"
+        className="hidden md:flex border-b px-2 sm:px-3 py-1.5 items-center justify-between gap-2 flex-wrap shrink-0 transition-colors duration-200 relative z-40 overflow-visible"
         style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
       >
         
-        {/* Left: Unified Ticker Selector Popup Trigger + Live Price & Market Status */}
+        {/* Left: Unified Ticker Selector Dropdown Trigger + Live Price & Market Status */}
         <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-wrap">
-          <div className="relative shrink-0" ref={assetDropdownRef}>
+          <div className="relative shrink-0 z-50" ref={assetDropdownRef}>
             <button
-              onClick={() => setIsAssetDropdownOpen(prev => !prev)}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsAssetDropdownOpen(prev => !prev);
+              }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#121622] hover:bg-[#1a2030] border border-amber-500/50 text-amber-300 text-xs font-bold transition cursor-pointer shadow-sm"
               title="Выбор торгового инструмента (Единый стандарт тикеров QUANTEX)"
             >
@@ -5244,6 +5736,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               <ChevronDown className={`h-3.5 w-3.5 text-amber-400 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
             </button>
 
+            {isAssetDropdownOpen && (
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                className="absolute top-full left-0 mt-1 z-50 w-[440px] max-w-[95vw] max-h-[75vh] flex flex-col bg-[#0c0f18] border border-amber-500/80 rounded-xl shadow-2xl overflow-hidden shadow-black/95 font-sans ring-1 ring-amber-500/50 animate-in fade-in slide-in-from-top-1 duration-150"
+              >
+                {renderTickerDropdownContent(false)}
+              </div>
+            )}
           </div>
 
           {/* Live Price + Change % + Trading Status */}
@@ -5482,263 +5982,6 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         </div>
       </div>
 
-      {/* 📋 GLOBAL UNIFIED ASSET SELECTOR MODAL (Universal for Mobile & Desktop) */}
-      {isAssetDropdownOpen && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150 select-none"
-          onClick={() => setIsAssetDropdownOpen(false)}
-        >
-          <div
-            ref={assetDropdownRef}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg max-h-[85vh] flex flex-col bg-[#0c0f18] border border-amber-500/50 rounded-2xl shadow-2xl overflow-hidden shadow-black/95"
-          >
-            {/* Popover Header & Category Filters */}
-            <div className="flex flex-col gap-2 p-3 pb-2 border-b border-gray-800/90 bg-[#0f1422] shrink-0">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs sm:text-sm font-extrabold text-amber-300 tracking-wide uppercase">
-                    Выбор инструмента ({popoverActiveTab === "ALL" ? "13" : popoverActiveTab})
-                  </span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
-                    Стандарт БИРЖА:ТИКЕР
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsAssetDropdownOpen(false)}
-                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-800/60 cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              {/* Category Filter Pills */}
-              <div className="flex items-center gap-1 bg-[#121622] p-0.5 rounded-lg border border-gray-800 flex-wrap">
-                {[
-                  { id: "ALL" as const, label: "Все (13)" },
-                  { id: "GOLD" as const, label: "🥇 Золото (5)" },
-                  { id: "MOEX" as const, label: "🇷🇺 Фьючерсы РФ (7)" },
-                  { id: "CRYPTO" as const, label: "⚡ Крипто 24/7 (5)" }
-                ].map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => setPopoverActiveTab(cat.id)}
-                    className={`flex-1 px-2 py-1 rounded text-[11px] font-bold transition cursor-pointer whitespace-nowrap text-center ${
-                      popoverActiveTab === cat.id
-                        ? "bg-amber-500/25 text-amber-300 border border-amber-500/50"
-                        : "text-gray-400 hover:text-white"
-                    }`}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Unified Table Column Headers */}
-            <div className="grid grid-cols-12 gap-2 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-gray-400 border-b border-gray-800/60 bg-[#0c0f18] shrink-0">
-              <div className="col-span-5">Стандарт Тикера</div>
-              <div className="col-span-4">Инструмент / Рынок</div>
-              <div className="col-span-3 text-right">Котировка / ОИ</div>
-            </div>
-
-            {/* Standardized Ticker Rows */}
-            <div className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
-              {[
-                {
-                  id: "XAUUSD" as AssetSymbol,
-                  category: ["GOLD"],
-                  code: "OANDA:XAUUSD",
-                  badge: "OANDA SPOT",
-                  badgeTone: "bg-amber-500/20 text-amber-300 border-amber-500/40",
-                  name: "Золото Спот (1 oz USD)",
-                  sub: "Эталон TradingView • symbols/XAUUSD/?exchange=OANDA",
-                  price: `$${(oandaData?.price || (activeAsset === "XAUUSD" && latestCandle ? latestCandle.close : 4132.35)).toFixed(2)}`,
-                  meta: `Bid/Ask: ${(oandaData?.bid || 4132.01).toFixed(2)}/${(oandaData?.ask || 4132.37).toFixed(2)}`
-                },
-                {
-                  id: "PAXGUSDT" as AssetSymbol,
-                  category: ["GOLD", "CRYPTO"],
-                  code: "BINANCE:PAXGUSDT",
-                  badge: "SPOT 24/7",
-                  badgeTone: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40",
-                  name: "Крипто-золото PAX Gold",
-                  sub: "Binance Spot • 1 токен = 1 тройская унция (24/7)",
-                  price: activeAsset === "PAXGUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$4135.40",
-                  meta: "Торги 24/7 без выходных"
-                },
-                {
-                  id: "MOEX_GOLD" as AssetSymbol,
-                  category: ["GOLD", "MOEX"],
-                  code: `MOEX:${moexContracts?.large?.secId || "GDZ6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
-                  sub: "МосБиржа • Срочный контракт (1 унция, USD)",
-                  price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
-                  meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "MOEX_MINI" as AssetSymbol,
-                  category: ["GOLD", "MOEX"],
-                  code: `MOEX:${moexContracts?.mini?.secId || "GNZ6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
-                  sub: "МосБиржа • Мини-контракт (0.1 унции, USD)",
-                  price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
-                  meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "GLDRUBF" as AssetSymbol,
-                  category: ["GOLD", "MOEX"],
-                  code: "MOEX:GLDRUBF",
-                  badge: "MOEX ВЕЧНЫЙ",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: "Вечный фьючерс Золото (₽/г)",
-                  sub: "МосБиржа • Рублевое золото за 1 грамм (RUB)",
-                  price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
-                  meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "MOEX_SI" as AssetSymbol,
-                  category: ["MOEX"],
-                  code: `MOEX:${moexContracts?.si?.secId || "SiZ6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Фьючерс Курс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
-                  sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
-                  price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
-                  meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "MOEX_RI" as AssetSymbol,
-                  category: ["MOEX"],
-                  code: `MOEX:${moexContracts?.ri?.secId || "RIZ6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
-                  sub: "МосБиржа • Индексный фьючерс (пункты)",
-                  price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
-                  meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "MOEX_BR" as AssetSymbol,
-                  category: ["MOEX"],
-                  code: `MOEX:${moexContracts?.br?.secId || "BRX6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
-                  sub: "МосБиржа • Товарный фьючерс (10 баррелей, USD)",
-                  price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
-                  meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "MOEX_NG" as AssetSymbol,
-                  category: ["MOEX"],
-                  code: `MOEX:${moexContracts?.ng?.secId || "NGV6"}`,
-                  badge: "MOEX FORTS",
-                  badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
-                  name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
-                  sub: "МосБиржа • Товарный фьючерс (100 MMBtu, USD)",
-                  price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
-                  meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
-                },
-                {
-                  id: "BTCUSDT" as AssetSymbol,
-                  category: ["CRYPTO"],
-                  code: "BINANCE:BTCUSDT",
-                  badge: "SPOT 24/7",
-                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                  name: "Bitcoin Спот (BTC/USDT)",
-                  sub: "Binance Spot • Опционный профиль Deribit GEX",
-                  price: activeAsset === "BTCUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$82,200",
-                  meta: "24/7 Онлайн"
-                },
-                {
-                  id: "ETHUSDT" as AssetSymbol,
-                  category: ["CRYPTO"],
-                  code: "BINANCE:ETHUSDT",
-                  badge: "SPOT 24/7",
-                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                  name: "Ethereum Спот (ETH/USDT)",
-                  sub: "Binance Spot • Опционный профиль Deribit GEX",
-                  price: activeAsset === "ETHUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$2,430",
-                  meta: "24/7 Онлайн"
-                },
-                {
-                  id: "SOLUSDT" as AssetSymbol,
-                  category: ["CRYPTO"],
-                  code: "BINANCE:SOLUSDT",
-                  badge: "SPOT 24/7",
-                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                  name: "Solana Спот (SOL/USDT)",
-                  sub: "Binance Spot • Институциональный профиль GEX",
-                  price: activeAsset === "SOLUSDT" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : "$185.00",
-                  meta: "24/7 Онлайн"
-                },
-                {
-                  id: "XRPUSDT" as AssetSymbol,
-                  category: ["CRYPTO"],
-                  code: "BINANCE:XRPUSDT",
-                  badge: "SPOT 24/7",
-                  badgeTone: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-                  name: "Ripple Спот (XRP/USDT)",
-                  sub: "Binance Spot • Институциональный профиль GEX",
-                  price: activeAsset === "XRPUSDT" && latestCandle ? `$${latestCandle.close.toFixed(4)}` : "$1.3000",
-                  meta: "24/7 Онлайн"
-                }
-              ]
-                .filter((item) => popoverActiveTab === "ALL" || item.category.includes(popoverActiveTab))
-                .map((item) => {
-                  const isSelected = activeAsset === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        handleSelectAsset(item.id);
-                        setIsAssetDropdownOpen(false);
-                      }}
-                      className={`w-full grid grid-cols-12 gap-2 items-center px-2.5 py-2.5 rounded-xl text-left transition cursor-pointer border ${
-                        isSelected
-                          ? "bg-amber-500/15 border-amber-500 text-white shadow-sm"
-                          : "bg-[#121622]/85 hover:bg-[#1a2030] active:bg-[#20273c] border-gray-800/80 text-gray-300"
-                      }`}
-                    >
-                      {/* Col 1: Standard Ticker Code + Feed Badge */}
-                      <div className="col-span-5 flex flex-col gap-0.5 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono font-extrabold text-xs text-white truncate">
-                            {item.code}
-                          </span>
-                          {isSelected && <Check className="h-3.5 w-3.5 text-amber-400 shrink-0" />}
-                        </div>
-                        <span className={`inline-flex w-fit text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${item.badgeTone}`}>
-                          {item.badge}
-                        </span>
-                      </div>
-
-                      {/* Col 2: Standardized Instrument Name */}
-                      <div className="col-span-4 flex flex-col min-w-0">
-                        <span className="text-[11px] font-bold text-gray-100 truncate">{item.name}</span>
-                        <span className="text-[9.5px] text-gray-400 truncate">{item.sub}</span>
-                      </div>
-
-                      {/* Col 3: Price & Open Interest / Status */}
-                      <div className="col-span-3 text-right flex flex-col items-end min-w-0">
-                        <span className="font-mono font-extrabold text-xs text-white whitespace-nowrap">{item.price}</span>
-                        <span className="font-mono text-[9.5px] text-amber-400/90 whitespace-nowrap truncate max-w-full">{item.meta}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 🚀 MAIN CONTENT AREA */}
       <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden relative">
@@ -5822,14 +6065,35 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   )}
                 </div>
 
-                <button
-                  onClick={() => setIsIndicatorsModalOpen(true)}
-                  className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 cursor-pointer"
-                  title="Индикаторы и уровни"
-                >
-                  <Sliders className="h-3 w-3 text-cyan-400" />
-                  <span>Индик.</span>
-                </button>
+                <div className="relative shrink-0 z-50" ref={mobileIndicatorsDropdownRef}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsIndicatorsModalOpen(prev => !prev);
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10.5px] font-bold flex items-center gap-1 cursor-pointer border ${
+                      isIndicatorsModalOpen
+                        ? "bg-cyan-500/30 text-white border-cyan-400 shadow-sm"
+                        : "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
+                    }`}
+                    title="Индикаторы и уровни"
+                  >
+                    <Sliders className="h-3 w-3 text-cyan-400" />
+                    <span>Индик.</span>
+                    <ChevronDown className={`h-2.5 w-2.5 text-cyan-400 transition-transform ${isIndicatorsModalOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {isIndicatorsModalOpen && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute top-full right-0 mt-1.5 z-50 w-[320px] max-w-[92vw] max-h-[70vh] flex flex-col bg-[#0c0f18] border border-cyan-500/80 rounded-xl shadow-2xl overflow-hidden shadow-black/95 font-sans ring-1 ring-cyan-500/50 animate-in fade-in slide-in-from-top-1 duration-150"
+                    >
+                      {renderIndicatorsDropdownContent(true)}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => setIsAiPanelCollapsed(!isAiPanelCollapsed)}
                   className={`px-2 py-0.5 rounded-md text-[10.5px] font-bold flex items-center gap-1 border cursor-pointer ${
@@ -5938,15 +6202,36 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   )}
                 </div>
 
-                {/* Single Centralized Indicators Popup Modal Button */}
-                <button
-                  onClick={() => setIsIndicatorsModalOpen(true)}
-                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-cyan-500/20 text-cyan-300 hover:text-white border border-cyan-500/40 hover:bg-cyan-500/30 transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
-                  title="Окно индикаторов (EMA 50/100/200, MACD, RSI, Стохастик, GEX, SMC, HUD)"
-                >
-                  <Sliders className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>Индикаторы</span>
-                </button>
+                {/* Centralized Indicators Dropdown */}
+                <div className="relative shrink-0 z-50" ref={indicatorsDropdownRef}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsIndicatorsModalOpen(prev => !prev);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-sm border ${
+                      isIndicatorsModalOpen
+                        ? "bg-cyan-500/30 text-white border-cyan-400 ring-1 ring-cyan-400/50"
+                        : "bg-cyan-500/20 text-cyan-300 hover:text-white border-cyan-500/40 hover:bg-cyan-500/30"
+                    }`}
+                    title="Раскрыть список индикаторов и оверлеев (EMA, MACD, RSI, Стохастик, GEX, SMC, HUD)"
+                  >
+                    <Sliders className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Индикаторы</span>
+                    <ChevronDown className={`h-3 w-3 text-cyan-400 transition-transform ${isIndicatorsModalOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {isIndicatorsModalOpen && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute top-full right-0 mt-1 z-50 w-[380px] sm:w-[460px] max-w-[95vw] max-h-[75vh] flex flex-col bg-[#0c0f18] border border-cyan-500/80 rounded-xl shadow-2xl overflow-hidden shadow-black/95 font-sans ring-1 ring-cyan-500/50 animate-in fade-in slide-in-from-top-1 duration-150"
+                    >
+                      {renderIndicatorsDropdownContent(false)}
+                    </div>
+                  )}
+                </div>
 
 
                 {/* Settings Tab Button for admins/privileged users */}
@@ -7157,6 +7442,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   candles={candles}
                   activeAsset={activeAsset}
                   activeTf={activeTf}
+                  marketStatus={marketStatus}
                 />
 
                 {/* ======================================================== */}
@@ -7324,6 +7610,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     const flip = gexReport.gammaFlip;
                     const mp = gexReport.maxPain;
 
+                    const nowMsk = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
+                    const dayOfWeek = nowMsk.getDay(); // 0 is Sunday, 6 is Saturday
+                    const isWeekendNow = dayOfWeek === 0 || dayOfWeek === 6;
+                    const isMarketClosed = Boolean(
+                      !marketStatus?.isOpen ||
+                      isWeekendNow ||
+                      (marketStatus?.statusBadge && (marketStatus.statusBadge.includes("Выходной") || marketStatus.statusBadge.includes("Закрыт")))
+                    );
+
                     const range = Math.max(1, cw - pw);
                     const distToPw = Math.abs(spot - pw);
                     const distToCw = Math.abs(spot - cw);
@@ -7338,32 +7633,64 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
                     if (spot < flip) {
                       dynamicType = "BREAK_FLIP";
-                      dynamicVerdict = "Пробой границы гаммы! Начинается режим паники. Тренд вниз.";
-                      dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) пробила вниз Zero-Flip ($${flip}). Рынок перешел в зону отрицательной гаммы. Дилеры перестали поддерживать рынок и обязаны продавать физический актив, ускоряя падение. Ожидаем быстрое движение вниз прямо к уровню поддержки Put Wall ($${pw}).`;
-                      dynamicBadge = "🚨 Режим паники: Тренд вниз";
-                      dynamicCardBorder = "border-rose-500/80 shadow-rose-950/50 shadow-lg";
-                      dynamicCardBg = "bg-rose-950/20";
+                      if (isMarketClosed) {
+                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована под Zero-Flip ($${flip}). В фокусе открытия в Пн: поддержка $${pw}.`;
+                        dynamicExplanation = `Биржевые торги сейчас закрыты (выходной день). В пятницу сессия завершилась на отметке $${spot.toFixed(1)}, оставшись под рубежом Zero-Flip ($${flip}). Активной распродажи и паники в выходные нет — котировки заморожены. К открытию торгов в понедельник ключевой защитной стеной и ориентиром дилеров выступает поддержка Put Wall ($${pw}).`;
+                        dynamicBadge = "💤 Рынок закрыт • В фокусе открытия в Пн";
+                        dynamicCardBorder = "border-amber-500/60 shadow-amber-950/40 shadow-lg";
+                        dynamicCardBg = "bg-amber-950/20";
+                      } else {
+                        dynamicVerdict = "Пробой границы гаммы! Начинается режим паники. Тренд вниз.";
+                        dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) пробила вниз Zero-Flip ($${flip}). Рынок перешел в зону отрицательной гаммы. Дилеры перестали поддерживать рынок и обязаны продавать физический актив, ускоряя падение. Ожидаем быстрое движение вниз прямо к уровню поддержки Put Wall ($${pw}).`;
+                        dynamicBadge = "🚨 Режим паники: Тренд вниз";
+                        dynamicCardBorder = "border-rose-500/80 shadow-rose-950/50 shadow-lg";
+                        dynamicCardBg = "bg-rose-950/20";
+                      }
                     } else if (distToPw <= proximityThreshold || spot <= pw) {
                       dynamicType = "AT_PW";
-                      dynamicVerdict = `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`;
-                      dynamicExplanation = `Цена подошла вплотную к полу рынка (Put Wall $${pw}). Здесь сосредоточена максимальная концентрация страховок от падения. Маркетмейкеры обязаны агрессивно покупать базовый актив для дельта-хеджирования, выталкивая цену обратно вверх к уровню Max Pain ($${mp}).`;
-                      dynamicBadge = "🛡️ Зона покупки: Отскок от поддержки";
-                      dynamicCardBorder = "border-emerald-500/80 shadow-emerald-950/50 shadow-lg";
-                      dynamicCardBg = "bg-emerald-950/20";
+                      if (isMarketClosed) {
+                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована у поддержки Put Wall ($${pw}). В фокусе открытия в Пн: отскок к $${mp}.`;
+                        dynamicExplanation = `Биржевые торги закрыты на выходные. Сессия завершилась вплотную к полу рынка ($${pw}). В понедельник при открытии ожидается реакция покупателей и маркетмейкеров с выталкиванием котировок к балансовому уровню Max Pain ($${mp}).`;
+                        dynamicBadge = "💤 Рынок закрыт • Поддержка Put Wall";
+                        dynamicCardBorder = "border-emerald-500/60 shadow-emerald-950/40 shadow-lg";
+                        dynamicCardBg = "bg-emerald-950/20";
+                      } else {
+                        dynamicVerdict = `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`;
+                        dynamicExplanation = `Цена подошла вплотную к полу рынка (Put Wall $${pw}). Здесь сосредоточена максимальная концентрация страховок от падения. Маркетмейкеры обязаны агрессивно покупать базовый актив для дельта-хеджирования, выталкивая цену обратно вверх к уровню Max Pain ($${mp}).`;
+                        dynamicBadge = "🛡️ Зона покупки: Отскок от поддержки";
+                        dynamicCardBorder = "border-emerald-500/80 shadow-emerald-950/50 shadow-lg";
+                        dynamicCardBg = "bg-emerald-950/20";
+                      }
                     } else if (distToCw <= proximityThreshold || spot >= cw) {
                       dynamicType = "AT_CW";
-                      dynamicVerdict = "Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз.";
-                      dynamicExplanation = `Цена достигла верхнего потолка рынка (Call Wall $${cw}). Дилеры хеджируют проданные опционы Call массивными продажами базового актива, принудительно гася движение. Покупать на этом уровне крайне опасно. Ждем откат вниз к Магниту ($${mp}) или фиксируем прибыль.`;
-                      dynamicBadge = "🏰 Зона фиксации: Откат от потолка";
-                      dynamicCardBorder = "border-amber-500/80 shadow-amber-950/50 shadow-lg";
-                      dynamicCardBg = "bg-amber-950/20";
+                      if (isMarketClosed) {
+                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована у потолка Call Wall ($${cw}). В фокусе открытия в Пн: откат к $${mp}.`;
+                        dynamicExplanation = `Биржевые торги закрыты на выходные. Сессия завершилась у потолка рынка ($${cw}). К открытию торгов в понедельник следим за возможным откатом к Max Pain ($${mp}) либо пробоем выше при гэпе.`;
+                        dynamicBadge = "💤 Рынок закрыт • Потолок Call Wall";
+                        dynamicCardBorder = "border-amber-500/60 shadow-amber-950/40 shadow-lg";
+                        dynamicCardBg = "bg-amber-950/20";
+                      } else {
+                        dynamicVerdict = "Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз.";
+                        dynamicExplanation = `Цена достигла верхнего потолка рынка (Call Wall $${cw}). Дилеры хеджируют проданные опционы Call массивными продажами базового актива, принудительно гася движение. Покупать на этом уровне крайне опасно. Ждем откат вниз к Магниту ($${mp}) или фиксируем прибыль.`;
+                        dynamicBadge = "🏰 Зона фиксации: Откат от потолка";
+                        dynamicCardBorder = "border-amber-500/80 shadow-amber-950/50 shadow-lg";
+                        dynamicCardBg = "bg-amber-950/20";
+                      }
                     } else {
                       dynamicType = "IN_CORRIDOR";
-                      dynamicVerdict = `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`;
-                      dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) находится в нейтральной полосе между полом $${pw} и потолком $${cw}. Дилеры сглаживают любые колебания (Штиль). Лучшая тактика — не открывать импульсивных позиций в центре, а дождаться подхода цены к одной из ключевых стен.`;
-                      dynamicBadge = "⚖️ Нейтральная зона: Торговля в диапазоне";
-                      dynamicCardBorder = "border-cyan-500/80 shadow-cyan-950/50 shadow-lg";
-                      dynamicCardBg = "bg-cyan-950/20";
+                      if (isMarketClosed) {
+                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована в коридоре ($${pw} — $${cw}). Ожидаем открытие недели.`;
+                        dynamicExplanation = `Биржевые торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)} в нейтральном коридоре между полом $${pw} и потолком $${cw}. Ожидаем открытие недели для определения направления движения.`;
+                        dynamicBadge = "💤 Рынок закрыт • Нейтральный диапазон";
+                        dynamicCardBorder = "border-cyan-500/60 shadow-cyan-950/40 shadow-lg";
+                        dynamicCardBg = "bg-cyan-950/20";
+                      } else {
+                        dynamicVerdict = `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`;
+                        dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) находится в нейтральной полосе между полом $${pw} и потолком $${cw}. Дилеры сглаживают любые колебания (Штиль). Лучшая тактика — не открывать импульсивных позиций в центре, а дождаться подхода цены к одной из ключевых стен.`;
+                        dynamicBadge = "⚖️ Нейтральная зона: Торговля в диапазоне";
+                        dynamicCardBorder = "border-cyan-500/80 shadow-cyan-950/50 shadow-lg";
+                        dynamicCardBg = "bg-cyan-950/20";
+                      }
                     }
 
                     return (
@@ -7373,10 +7700,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           <div className="space-y-1">
                             <div className="flex items-center gap-2">
                               <span className="text-[11px] font-mono font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-black/50 border border-gray-700 text-white">
-                                🎯 ТЕКУЩИЙ АКТИВНЫЙ СЦЕНАРИЙ
+                                {isMarketClosed ? "💤 БАЗОВЫЙ РАСКЛАД К ОТКРЫТИЮ В ПОНЕДЕЛЬНИК" : "🎯 ТЕКУЩИЙ АКТИВНЫЙ СЦЕНАРИЙ"}
                               </span>
                               <span className="text-[11px] font-mono text-gray-400">
-                                Спот: <b className="text-white">${spot.toFixed(1)}</b> • Flip: <b className="text-purple-400">${flip}</b>
+                                {isMarketClosed ? "Фиксация закрытия:" : "Спот:"} <b className="text-white">${spot.toFixed(1)}</b> • Flip: <b className="text-purple-400">${flip}</b>
                               </span>
                             </div>
                             <div className="text-sm font-bold text-white pt-0.5">
@@ -7387,8 +7714,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                             </p>
                           </div>
                           <div className="shrink-0 px-3 py-2 rounded-xl bg-black/60 border border-gray-700 text-right">
-                            <span className="text-[10px] text-gray-400 block uppercase font-mono">Статус дилеров:</span>
-                            <span className="font-bold text-xs text-cyan-300 block">{dynamicBadge}</span>
+                            <span className="text-[10px] text-gray-400 block uppercase font-mono">
+                              {isMarketClosed ? "Статус биржи:" : "Статус дилеров:"}
+                            </span>
+                            <span className={`font-bold text-xs block ${isMarketClosed ? "text-amber-300" : "text-cyan-300"}`}>
+                              {dynamicBadge}
+                            </span>
                           </div>
                         </div>
 
@@ -7398,7 +7729,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           {/* Scenario 1: Range Trading (Main) */}
                           <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
                             dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW"
-                              ? "bg-[#0d141e] border-2 border-emerald-500 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-500/40"
+                              ? isMarketClosed
+                                ? "bg-[#0d141e] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
+                                : "bg-[#0d141e] border-2 border-emerald-500 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-500/40"
                               : "bg-[#0e121c] border border-gray-800 opacity-80"
                           }`}>
                             <div className="flex items-center justify-between">
@@ -7406,9 +7739,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                                 📈 Сценарий 1 (Коридор / Отскок)
                               </span>
                               {dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW" ? (
-                                <span className="text-[10px] bg-emerald-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                  АКТИВЕН СЕЙЧАС
-                                </span>
+                                isMarketClosed ? (
+                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
+                                    В ФОКУСЕ НА ПН
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] bg-emerald-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                    АКТИВЕН СЕЙЧАС
+                                  </span>
+                                )
                               ) : (
                                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded">
                                   Вероятность 70%
@@ -7421,7 +7760,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                                 : `Коридорное движение между $${pw} и $${cw}`}
                             </h5>
                             <p>
-                              {dynamicType === "AT_PW"
+                              {isMarketClosed
+                                ? `Торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)}. В понедельник ключевым диапазоном остается интервал $${pw} — $${cw}.`
+                                : dynamicType === "AT_PW"
                                 ? `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`
                                 : `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`}
                             </p>
@@ -7437,7 +7778,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           {/* Scenario 2: Call Wall Ceiling / Squeeze */}
                           <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
                             dynamicType === "AT_CW"
-                              ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500/40"
+                              ? isMarketClosed
+                                ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
+                                : "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500/40"
                               : "bg-[#0e121c] border border-gray-800 opacity-80"
                           }`}>
                             <div className="flex items-center justify-between">
@@ -7445,9 +7788,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                                 🏰 Сценарий 2 (Потолок Call Wall)
                               </span>
                               {dynamicType === "AT_CW" ? (
-                                <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                  АКТИВЕН СЕЙЧАС
-                                </span>
+                                isMarketClosed ? (
+                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
+                                    В ФОКУСЕ НА ПН
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                    АКТИВЕН СЕЙЧАС
+                                  </span>
+                                )
                               ) : (
                                 <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded">
                                   Вероятность 15%
@@ -7458,7 +7807,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                               Откат вниз от потолка либо гамма-сквиз
                             </h5>
                             <p>
-                              Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз. Если свеча H1 пробьет ${cw} — начнется шорт-сквиз.
+                              {isMarketClosed
+                                ? `В понедельник при подходе к ${cw} дилеры будут защищать потолок. При закреплении H1 выше ${cw} вероятен шорт-сквиз.`
+                                : `Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз. Если свеча H1 пробьет ${cw} — начнется шорт-сквиз.`}
                             </p>
                             <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
                               <div><b>Основной исход:</b> Откат вниз к Магниту ${mp}.</div>
@@ -7472,17 +7823,25 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           {/* Scenario 3: Waterfall Dump / Flip Breakdown */}
                           <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
                             dynamicType === "BREAK_FLIP"
-                              ? "bg-[#180a0e] border-2 border-rose-500 shadow-lg shadow-rose-950/50 ring-1 ring-rose-500/40"
+                              ? isMarketClosed
+                                ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
+                                : "bg-[#180a0e] border-2 border-rose-500 shadow-lg shadow-rose-950/50 ring-1 ring-rose-500/40"
                               : "bg-[#0e121c] border border-gray-800 opacity-80"
                           }`}>
                             <div className="flex items-center justify-between">
                               <span className="font-extrabold text-rose-400 text-sm flex items-center gap-1.5">
-                                🩸 Сценарий 3 (Срыв под Zero-Flip)
+                                🩸 Сценарий 3 ({isMarketClosed ? "Рубеж Zero-Flip" : "Срыв под Zero-Flip"})
                               </span>
                               {dynamicType === "BREAK_FLIP" ? (
-                                <span className="text-[10px] bg-rose-500 text-white font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                  АКТИВЕН СЕЙЧАС
-                                </span>
+                                isMarketClosed ? (
+                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
+                                    В ФОКУСЕ НА ПН
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] bg-rose-500 text-white font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
+                                    АКТИВЕН СЕЙЧАС
+                                  </span>
+                                )
                               ) : (
                                 <span className="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-1.5 py-0.5 rounded">
                                   Вероятность 15%
@@ -7490,16 +7849,20 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                               )}
                             </div>
                             <h5 className="font-bold text-white text-xs">
-                              Пробой границы гаммы (Паника дилеров)
+                              {isMarketClosed ? "Фиксация под Zero-Flip перед выходными" : "Пробой границы гаммы (Паника дилеров)"}
                             </h5>
                             <p>
-                              Пробой границы гаммы! Начинается режим паники. Тренд вниз. Дилеры сбрасывают лонги и усиливают падение.
+                              {isMarketClosed
+                                ? `Торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)} ниже Zero-Flip ($${flip}). В понедельник следим за реакцией на Put Wall ($${pw}).`
+                                : `Пробой границы гаммы! Начинается режим паники. Тренд вниз. Дилеры сбрасывают лонги и усиливают падение.`}
                             </p>
                             <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
                               <div><b>Триггер активации:</b> Цена ниже ${flip}.</div>
-                              <div><b>Ориентир падения:</b> Поддержка Put Wall ${pw}.</div>
-                              <div className="text-rose-300 font-semibold pt-1 border-t border-gray-800">
-                                👉 <b>Торговый план:</b> Не ловить ножи! Лонги только после теста ${pw}.
+                              <div><b>Ориентир поддержки:</b> Стена Put Wall ${pw}.</div>
+                              <div className="text-amber-300 font-semibold pt-1 border-t border-gray-800">
+                                {isMarketClosed
+                                  ? `👉 Торговый план: В выходные торгов нет. На открытии в Пн: покупки только при подтвержденном тесте Put Wall $${pw}.`
+                                  : `👉 Торговый план: Не ловить ножи! Лонги только после теста $${pw}.`}
                               </div>
                             </div>
                           </div>
@@ -8626,291 +8989,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           </div>
         )}
 
-        {/* ======================================================== */}
-        {/* 🎛️ INDICATORS POPUP MODAL (Toggle any indicator on/off)  */}
-        {/* ======================================================== */}
-        {isIndicatorsModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-            <div
-              className="border rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4 font-sans text-xs relative overflow-hidden"
-              style={{ backgroundColor: curPalette.surface, borderColor: curPalette.border }}
-            >
-              {/* Header */}
-              <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: curPalette.border }}>
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-cyan-500/20 rounded-lg border border-cyan-500/40">
-                    <Sliders className="h-4 w-4 text-cyan-400" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-white text-sm">Настройки индикаторов графика</h3>
-                    <p className="text-[10.5px] text-gray-400">
-                      Включение, отключение и параметры графических оверлеев
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsIndicatorsModalOpen(false)}
-                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
 
-              {/* Indicator Categories */}
-              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
-                {/* 1. Скользящие средние (EMA) */}
-                <div className="space-y-2">
-                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <TrendingUp className="h-3.5 w-3.5 text-cyan-400" />
-                    <span>Трендовые Скользящие Средние (EMA)</span>
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {/* EMA 50 */}
-                    <button
-                      type="button"
-                      onClick={() => setShowEma50(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showEma50
-                          ? "bg-cyan-500/20 border-cyan-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#38bdf8] shadow-sm" />
-                        <span className="font-bold">EMA 50</span>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showEma50 ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-
-                    {/* EMA 100 */}
-                    <button
-                      type="button"
-                      onClick={() => setShowEma100(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showEma100
-                          ? "bg-amber-500/20 border-amber-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#f59e0b] shadow-sm" />
-                        <span className="font-bold">EMA 100</span>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showEma100 ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-
-                    {/* EMA 200 */}
-                    <button
-                      type="button"
-                      onClick={() => setShowEma200(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showEma200
-                          ? "bg-pink-500/20 border-pink-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#ec4899] shadow-sm" />
-                        <span className="font-bold">EMA 200</span>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showEma200 ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* 2. Осцилляторы и подвальные индикаторы */}
-                <div className="space-y-2">
-                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Activity className="h-3.5 w-3.5 text-indigo-400" />
-                    <span>Подвальные индикаторы и Осцилляторы</span>
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {/* MACD */}
-                    <button
-                      type="button"
-                      onClick={() => setShowMacdPane(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showMacdPane
-                          ? "bg-indigo-500/20 border-indigo-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold">MACD (12, 26, 9)</div>
-                        <div className="text-[9.5px] text-gray-400">DIF / DEA / Hist</div>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showMacdPane ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-
-                    {/* RSI */}
-                    <button
-                      type="button"
-                      onClick={() => setShowRsiPane(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showRsiPane
-                          ? "bg-amber-500/20 border-amber-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold">RSI (6 & 14)</div>
-                        <div className="text-[9.5px] text-gray-400">Зоны 70 / 30</div>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showRsiPane ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-
-                    {/* Stochastic */}
-                    <button
-                      type="button"
-                      onClick={() => setShowStochPane(prev => !prev)}
-                      className={`p-2.5 rounded-xl border flex items-center justify-between transition cursor-pointer ${
-                        showStochPane
-                          ? "bg-rose-500/20 border-rose-400 text-white shadow-sm"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400 hover:border-gray-700"
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold">Стохастик</div>
-                        <div className="text-[9.5px] text-gray-400">%K 14 / %D 3 (80/20)</div>
-                      </div>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-950/80">
-                        {showStochPane ? "ВКЛ" : "ВЫКЛ"}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* 3. GEX & SMC Оверлеи */}
-                <div className="space-y-2">
-                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Shield className="h-3.5 w-3.5 text-purple-400" />
-                    <span>Гамма-уровни GEX и Smart Money (SMC)</span>
-                  </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowGexWalls(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showGexWalls
-                          ? "bg-purple-500/20 border-purple-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">GEX Стены</span>
-                      <span className="text-[10px] font-mono">{showGexWalls ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowForecast(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showForecast
-                          ? "bg-emerald-500/20 border-emerald-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">Прогноз (TP1/TP2)</span>
-                      <span className="text-[10px] font-mono">{showForecast ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowOb(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showOb
-                          ? "bg-blue-500/20 border-blue-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">Ордер-блоки (OB)</span>
-                      <span className="text-[10px] font-mono">{showOb ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowFvg(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showFvg
-                          ? "bg-teal-500/20 border-teal-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">FVG Имбалансы</span>
-                      <span className="text-[10px] font-mono">{showFvg ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowReversal(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showReversal
-                          ? "bg-amber-500/20 border-amber-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">Зоны OTE (0.618)</span>
-                      <span className="text-[10px] font-mono">{showReversal ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowTables(prev => !prev)}
-                      className={`p-2 rounded-xl border flex items-center justify-between text-left cursor-pointer transition ${
-                        showTables
-                          ? "bg-cyan-500/20 border-cyan-400 text-white"
-                          : "bg-gray-900/60 border-gray-800 text-gray-400"
-                      }`}
-                    >
-                      <span className="font-bold">HUD Таблица</span>
-                      <span className="text-[10px] font-mono">{showTables ? "ВКЛ" : "ВЫКЛ"}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Quick Actions Footer */}
-              <div className="pt-2 border-t flex items-center justify-between gap-2" style={{ borderColor: curPalette.border }}>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowEma50(false);
-                      setShowEma100(false);
-                      setShowEma200(false);
-                      setShowRsiPane(false);
-                      setShowStochPane(false);
-                      setShowMacdPane(true);
-                      setShowGexWalls(true);
-                      setShowOb(true);
-                      setShowFvg(true);
-                      setShowTables(true);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold text-[11px] cursor-pointer transition"
-                  >
-                    По умолчанию
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsIndicatorsModalOpen(false)}
-                  className="px-4 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px] cursor-pointer transition"
-                >
-                  Готово
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* ======================================================== */}
         {/* 🎚️ HUD & DISPLAY SETTINGS MODAL (Accessible to ALL users) */}

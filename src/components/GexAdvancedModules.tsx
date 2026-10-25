@@ -27,14 +27,37 @@ export interface GexAdvancedModulesProps {
   candles: any[];
   activeAsset: string;
   activeTf: string;
+  marketStatus?: {
+    isOpen: boolean;
+    isPremarket?: boolean;
+    isClearing?: boolean;
+    sessionType?: string;
+    statusBadge?: string;
+    statusText: string;
+  };
 }
 
 export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   gexReport,
   dayGexReport,
   candles,
-  activeAsset
+  activeAsset,
+  marketStatus
 }) => {
+  // Check whether the market is currently closed or on a weekend
+  const isWeekendNow = useMemo(() => {
+    const now = new Date();
+    const day = now.getUTCDay(); // 0 is Sun, 5 is Fri, 6 is Sat
+    const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (day === 6) return true; // Saturday
+    if (day === 0 && mins < 21 * 60) return true; // Sunday before 21:00 UTC (01:00 MSK Mon)
+    if (day === 5 && mins >= 21 * 60) return true; // Friday after NY close
+    return false;
+  }, []);
+
+  const isCrypto = activeAsset === "BTC" || activeAsset === "ETH" || activeAsset === "SOL" || activeAsset.endsWith("USDT");
+  const isMarketClosed = (!isCrypto && isWeekendNow) || (marketStatus ? !marketStatus.isOpen : false);
+
   // Horizon multi-expiry state for Module 1
   const [multiExpiryData, setMultiExpiryData] = useState<{
     day: GexMarketReport | null;
@@ -258,6 +281,48 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     let isGreenZone = false;
     let pointerPercent = 50;
 
+    // A. Market Closed / Weekend state handling
+    if (isMarketClosed) {
+      isGreenZone = !isBelowFlip;
+      badgeLabel = isWeekendNow ? "ВЫХОДНОЙ (ЗАКРЫТ)" : "ТОРГИ ЗАКРЫТЫ";
+
+      let severity = 0.5;
+      if (isBelowFlip) {
+        severity = Math.min(1, Math.max(0.2, (flip - currentPrice) / Math.max(5, flip - pw)));
+        pointerPercent = 44 - severity * 22;
+      } else {
+        const calmProgress = Math.min(1, Math.max(0, (currentPrice - flip) / Math.max(5, cw - flip)));
+        pointerPercent = 56 + calmProgress * 22;
+      }
+
+      regimeTitle = isWeekendNow
+        ? `Рынок закрыт на выходные • Фиксация: ${isBelowFlip ? "Ниже Flip 🔴" : "Выше Flip 🟢"}`
+        : `Торги приостановлены • Статус: ${isBelowFlip ? "Ниже Flip 🔴" : "Выше Flip 🟢"}`;
+
+      regimeSimpleText = isWeekendNow
+        ? `Сейчас выходные — спот-рынок ${activeAsset} закрыт до понедельника. Цена зафиксирована по закрытию пятницы ($${currentPrice.toFixed(1)}). ${
+            isBelowFlip
+              ? `Закрытие произошло ниже рубежа Zero-Flip ($${flip}). Позиции дилеров находятся в отрицательной гамме, поэтому на открытии недели в понедельник возможен импульсный тест поддержки Put Wall $${pw}. Активного падения прямо сейчас нет, торги откроются в понедельник.`
+              : `Закрытие произошло выше рубежа Zero-Flip ($${flip}). Рынок остался в зоне гашения колебаний. Ближайший магнит — Max Pain $${gexReport.maxPain}.`
+          }`
+        : `Биржевая сессия сейчас закрыта. Котировка $${currentPrice.toFixed(1)} зафиксирована до открытия следующих торгов.`;
+
+      return {
+        flip,
+        currentPrice,
+        isGreenZone,
+        badgeLabel,
+        pointerPercent: Math.max(14, Math.min(86, pointerPercent)),
+        regimeTitle,
+        regimeSimpleText,
+        recentChangePct,
+        dayChangePct,
+        atrRatio,
+        isDumping: false,
+        isMarketClosed: true
+      };
+    }
+
     if (isBelowFlip || isDumping) {
       // STORM ZONE 🔴 (Top half of thermometer: 12% to 44%)
       isGreenZone = false;
@@ -312,9 +377,10 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       recentChangePct,
       dayChangePct,
       atrRatio,
-      isDumping
+      isDumping,
+      isMarketClosed: false
     };
-  }, [gexReport, currentPrice, candles]);
+  }, [gexReport, currentPrice, candles, isMarketClosed, isWeekendNow, activeAsset]);
 
   // ============================================================================
   // 📈 MODULE 3: HORIZONTAL GAMMA PROFILE (CANVAS ENGINE)
@@ -345,11 +411,12 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     ctx.fillStyle = "#090d16";
     ctx.fillRect(0, 0, w, h);
 
-    // Padding
-    const padTop = 30;
+    // Responsive Padding
+    const isMobile = w < 540;
+    const padTop = 32;
     const padBottom = 25;
-    const padLeft = 70;
-    const padRight = 30;
+    const padLeft = isMobile ? 54 : 64;
+    const padRight = isMobile ? 68 : 84;
     const chartH = h - padTop - padBottom;
     const chartW = w - padLeft - padRight;
 
@@ -385,11 +452,11 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       ctx.font = "10px monospace";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText(`$${Math.round(p)}`, padLeft - 8, y);
+      ctx.fillText(`$${Math.round(p)}`, padLeft - 6, y);
     }
     ctx.setLineDash([]);
 
-    // Draw Profile Bars (Clean without text clutter on bars)
+    // Draw Profile Bars
     const barHeight = Math.max(6, Math.min(18, chartH / sortedStrikes.length - 2));
 
     sortedStrikes.forEach((s) => {
@@ -400,7 +467,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
       // Bar fill
       if (isMaxPain) {
-        // Cyan / Gold Magnet Peak
+        // Cyan Magnet Peak
         ctx.fillStyle = "rgba(6, 182, 212, 0.85)";
         ctx.fillRect(padLeft, y - barHeight / 2, barLen, barHeight);
         ctx.strokeStyle = "#38bdf8";
@@ -413,14 +480,6 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         ctx.strokeStyle = "rgba(52, 211, 153, 0.4)";
         ctx.lineWidth = 1;
         ctx.strokeRect(padLeft, y - barHeight / 2, barLen, barHeight);
-
-        if (barLen > 48) {
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 9px monospace";
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          ctx.fillText(`+${s.netGex.toFixed(0)}M`, padLeft + 6, y);
-        }
       } else {
         // Red: Zone of acceleration (trend)
         ctx.fillStyle = "rgba(244, 63, 94, 0.7)";
@@ -428,64 +487,124 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         ctx.strokeStyle = "rgba(251, 113, 133, 0.4)";
         ctx.lineWidth = 1;
         ctx.strokeRect(padLeft, y - barHeight / 2, barLen, barHeight);
+      }
 
-        if (barLen > 48) {
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 9px monospace";
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          ctx.fillText(`${s.netGex.toFixed(0)}M`, padLeft + 6, y);
-        }
+      // Draw Net GEX label with protective shield to prevent dashed line overlap
+      if (barLen > 36) {
+        const text = isPositive ? `+${s.netGex.toFixed(0)}M` : `${s.netGex.toFixed(0)}M`;
+        ctx.font = "bold 9px monospace";
+        const tw = ctx.measureText(text).width;
+
+        // Dark background shield so dashed level lines do not strike through the text
+        ctx.fillStyle = "rgba(9, 13, 22, 0.92)";
+        ctx.fillRect(padLeft + 4, y - 6, tw + 4, 12);
+
+        ctx.fillStyle = isMaxPain ? "#38bdf8" : isPositive ? "#6ee7b7" : "#fda4af";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, padLeft + 6, y);
       }
     });
 
-    // Draw Horizontal Dashed Lines for Key Institutional Levels (No overlapping labels on bars)
+    // Draw Horizontal Dashed Lines for Key Institutional Levels with Clean Pill Badges on the Right
     // 1. Call Wall (Потолок) - Зеленая пунктирная линия
     const cwY = getY(gexReport.callWall);
     if (cwY >= padTop && cwY <= h - padBottom) {
       ctx.strokeStyle = "#10b981";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, cwY);
       ctx.lineTo(w - padRight, cwY);
       ctx.stroke();
+
+      // Right edge pill badge
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#064e3b";
+      ctx.fillRect(w - padRight + 3, cwY - 8, isMobile ? 62 : 76, 16);
+      ctx.strokeStyle = "#10b981";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(w - padRight + 3, cwY - 8, isMobile ? 62 : 76, 16);
+      ctx.fillStyle = "#ecfdf5";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(isMobile ? `CW $${gexReport.callWall}` : `Call $${gexReport.callWall}`, w - padRight + 6, cwY);
     }
 
     // 2. Put Wall (Поддержка) - Красная пунктирная линия
     const pwY = getY(gexReport.putWall);
     if (pwY >= padTop && pwY <= h - padBottom) {
       ctx.strokeStyle = "#f43f5e";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.moveTo(padLeft, pwY);
       ctx.lineTo(w - padRight, pwY);
       ctx.stroke();
+
+      // Right edge pill badge
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#4c0519";
+      ctx.fillRect(w - padRight + 3, pwY - 8, isMobile ? 62 : 76, 16);
+      ctx.strokeStyle = "#f43f5e";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(w - padRight + 3, pwY - 8, isMobile ? 62 : 76, 16);
+      ctx.fillStyle = "#fff1f2";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(isMobile ? `PW $${gexReport.putWall}` : `Put $${gexReport.putWall}`, w - padRight + 6, pwY);
     }
 
     // 3. Max Pain (Магнит) - Голубая пунктирная линия
     const mpY = getY(gexReport.maxPain);
     if (mpY >= padTop && mpY <= h - padBottom) {
       ctx.strokeStyle = "#06b6d4";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
       ctx.moveTo(padLeft, mpY);
       ctx.lineTo(w - padRight, mpY);
       ctx.stroke();
+
+      // Right edge pill badge
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#083344";
+      ctx.fillRect(w - padRight + 3, mpY - 8, isMobile ? 62 : 76, 16);
+      ctx.strokeStyle = "#06b6d4";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(w - padRight + 3, mpY - 8, isMobile ? 62 : 76, 16);
+      ctx.fillStyle = "#cffafe";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(isMobile ? `MP $${gexReport.maxPain}` : `Pain $${gexReport.maxPain}`, w - padRight + 6, mpY);
     }
 
     // 4. Current Spot Price - Желтая пунктирная линия
     const curY = getY(currentPrice);
     if (curY >= padTop && curY <= h - padBottom) {
       ctx.strokeStyle = "#facc15";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(padLeft, curY);
       ctx.lineTo(w - padRight, curY);
       ctx.stroke();
+
+      // Right edge pill badge
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#422006";
+      ctx.fillRect(w - padRight + 3, curY - 8, isMobile ? 62 : 76, 16);
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(w - padRight + 3, curY - 8, isMobile ? 62 : 76, 16);
+      ctx.fillStyle = "#fef08a";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(isMobile ? `P $${Math.round(currentPrice)}` : `Spot $${currentPrice.toFixed(1)}`, w - padRight + 6, curY);
     }
 
     ctx.setLineDash([]);
@@ -531,10 +650,12 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     const now = new Date();
     const dayIndex = now.getDay();
     const isFriday = dayIndex === 5;
+    const isWeekend = dayIndex === 0 || dayIndex === 6;
     const dayNames = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
     return {
       name: dayNames[dayIndex],
-      isFriday
+      isFriday,
+      isWeekend
     };
   }, []);
 
@@ -556,7 +677,9 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                   <span>Термометр Режима Рынка</span>
                   <span
                     className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
-                      thermometerData.isGreenZone
+                      thermometerData.isMarketClosed
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                        : thermometerData.isGreenZone
                         ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                         : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
                     }`}
@@ -622,12 +745,23 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
             <div className="space-y-3 max-w-[210px] text-xs">
               <div className="bg-[#121624] border border-gray-800 p-2.5 rounded-xl">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-gray-400 block">Текущая цена:</span>
+                  <span className="text-[10px] text-gray-400 block">
+                    {thermometerData.isMarketClosed ? "Цена закрытия:" : "Текущая цена:"}
+                  </span>
                   <span className={`text-[10px] font-mono font-bold ${thermometerData.recentChangePct < 0 ? "text-rose-400" : "text-emerald-400"}`}>
-                    {thermometerData.recentChangePct !== 0 ? `${thermometerData.recentChangePct > 0 ? "+" : ""}${thermometerData.recentChangePct.toFixed(2)}%` : ""}
+                    {thermometerData.recentChangePct !== 0
+                      ? `${thermometerData.recentChangePct > 0 ? "+" : ""}${thermometerData.recentChangePct.toFixed(2)}%`
+                      : "0.0%"}
                   </span>
                 </div>
-                <span className="font-mono text-sm font-bold text-white">${currentPrice.toFixed(1)}</span>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="font-mono text-sm font-bold text-white">${currentPrice.toFixed(1)}</span>
+                  {thermometerData.isMarketClosed && (
+                    <span className="text-[9px] text-amber-300 font-sans font-bold bg-amber-950/60 border border-amber-800/40 px-1 py-0.2 rounded">
+                      Закрыт
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center justify-between mt-1">
                   <span className="text-[10px] text-gray-400 block">Граница Flip:</span>
                   <span className="font-mono text-xs font-bold text-purple-400">${thermometerData.flip}</span>
@@ -824,7 +958,9 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                   ${multiExpiryData.day?.maxPain || gexReport.maxPain}
                 </td>
                 <td className="py-2.5 px-3 font-sans text-gray-300 text-[11.5px]">
-                  Уровни действуют только сегодня до 18:45 МСК. Сгорают вечером и перестают удерживать цену.
+                  {isMarketClosed || dayOfWeekInfo.isWeekend
+                    ? "Торги закрыты на выходные. Ближайшая экспирация 0DTE состоится в понедельник в 18:45 МСК. Уровни зафиксированы по закрытию пятницы."
+                    : "Уровни действуют только сегодня до 18:45 МСК. Сгорают вечером и перестают удерживать цену."}
                 </td>
               </tr>
 
@@ -876,7 +1012,15 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         {/* Текст вывода */}
         <div className="p-3.5 rounded-xl bg-[#0f1420] border border-amber-500/30 text-xs text-amber-200/90 leading-relaxed">
           <span className="font-bold text-amber-300 block mb-1">💡 Краткий вывод для трейдера:</span>
-          {dayOfWeekInfo.isFriday ? (
+          {isMarketClosed || dayOfWeekInfo.isWeekend ? (
+            <p>
+              Сегодня <b>выходной ({dayOfWeekInfo.name})</b> — биржевые торги закрыты. 
+              Котировка <b>${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}</b> зафиксирована по закрытию сессии в пятницу. 
+              Ближайшая экспирация 0DTE состоится <b>в понедельник в 18:45 МСК</b>. 
+              До открытия торгов в понедельник ориентируйтесь на рубеж Zero-Flip <b>${gexReport.gammaFlip}</b>, 
+              а точкой притяжения к экспирации выступает магнит Max Pain <b>${gexReport.maxPain}</b>.
+            </p>
+          ) : dayOfWeekInfo.isFriday ? (
             <p>
               Сегодня пятница — <b>день недельной экспирации опционов</b>. Большинство внутридневных и недельных уровней
               исчезнет вечером после 18:00 МСК. Если цена пробьет стену{" "}
@@ -896,8 +1040,8 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       {/* ====================================================================== */}
       {/* МОДУЛЬ 3. ГАММА-ПРОФИЛЬ (ГОРИЗОНТАЛЬНАЯ ГИСТОГРАММА ПО ЦЕНЕ)           */}
       {/* ====================================================================== */}
-      <div className="bg-[#0b0e17] border border-gray-800 rounded-2xl p-4 sm:p-5 space-y-3 shadow-xl">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-800/80 pb-3">
+      <div className="bg-[#0b0e17] border border-gray-800 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-800/80 pb-3">
           <div className="flex items-center gap-2">
             <div className="p-1.5 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white shadow-sm">
               <Activity className="h-4 w-4" />
@@ -915,58 +1059,48 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
             </div>
           </div>
 
-          {/* Легенда уровней в правом верхнем углу */}
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11px] font-mono">
-            {hoveredStrike && (
-              <div className="bg-[#121829] border border-cyan-500/50 px-2.5 py-1 rounded-lg text-xs font-mono text-cyan-300 flex items-center gap-2">
-                <span>Страйк: <b>${hoveredStrike.strike}</b></span>
-                <span>Net GEX: <b>{hoveredStrike.netGex > 0 ? `+${hoveredStrike.netGex}` : hoveredStrike.netGex}M</b></span>
-              </div>
-            )}
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
-              <span className="inline-block w-3 border-b-2 border-dashed border-emerald-400" />
-              <span>Потолок: <b>${gexReport.callWall}</b></span>
+          {/* Компактная полоса ключевых уровней (адаптивная сетка, не ломает верстку) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px] font-mono">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+              <span className="w-2.5 h-0.5 border-b-2 border-dashed border-emerald-400 shrink-0" />
+              <span className="truncate">Потолок: <b>${gexReport.callWall}</b></span>
             </div>
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-300">
-              <span className="inline-block w-3 border-b-2 border-dashed border-rose-400" />
-              <span>Поддержка: <b>${gexReport.putWall}</b></span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300">
+              <span className="w-2.5 h-0.5 border-b-2 border-dashed border-rose-400 shrink-0" />
+              <span className="truncate">Поддержка: <b>${gexReport.putWall}</b></span>
             </div>
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
-              <span className="inline-block w-3 border-b-2 border-dashed border-cyan-400" />
-              <span>Магнит: <b>${gexReport.maxPain}</b></span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
+              <span className="w-2.5 h-0.5 border-b-2 border-dashed border-cyan-400 shrink-0" />
+              <span className="truncate">Магнит: <b>${gexReport.maxPain}</b></span>
             </div>
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300">
-              <span className="inline-block w-3 border-b-2 border-dashed border-amber-400" />
-              <span>Спот: <b>${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}</b></span>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300">
+              <span className="w-2.5 h-0.5 border-b-2 border-dashed border-amber-400 shrink-0" />
+              <span className="truncate">Спот: <b>${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}</b></span>
             </div>
           </div>
         </div>
 
         {/* Интерактивная полоса расшифровки цветов и уровней */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-[#0e1320] border border-gray-800 rounded-xl text-[11px]">
-          <div className="flex items-center gap-3">
-            <span className="text-gray-400 font-medium">Обозначение линий:</span>
-            <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
-              <span className="w-3 border-b-2 border-dashed border-emerald-400 inline-block"></span> Потолок (CW)
+          <div className="flex flex-wrap items-center gap-2.5 text-gray-300">
+            <span className="text-gray-400 font-medium">Столбики:</span>
+            <span className="flex items-center gap-1 text-emerald-400 font-medium">
+              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span> +GEX (Торможение)
             </span>
-            <span className="flex items-center gap-1.5 text-rose-400 font-mono">
-              <span className="w-3 border-b-2 border-dashed border-rose-400 inline-block"></span> Поддержка (PW)
+            <span className="flex items-center gap-1 text-rose-400 font-medium">
+              <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span> -GEX (Разгон)
             </span>
-            <span className="flex items-center gap-1.5 text-cyan-300 font-mono">
-              <span className="w-3 border-b-2 border-dashed border-cyan-400 inline-block"></span> Магнит (Max Pain)
-            </span>
-            <span className="flex items-center gap-1.5 text-amber-300 font-mono">
-              <span className="w-3 border-b-2 border-dashed border-amber-400 inline-block"></span> Спот цена
-            </span>
-          </div>
-          <div className="flex items-center gap-3 text-gray-400">
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span> +GEX (Торможение / Флэт)
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span> -GEX (Разгон / Тренд)
+            <span className="hidden sm:inline-block text-gray-600">|</span>
+            <span className="text-gray-400 font-medium hidden sm:inline-block">Линии:</span>
+            <span className="hidden sm:inline-flex items-center gap-1 text-cyan-300 font-mono">
+              <span className="w-2.5 border-b-2 border-dashed border-cyan-400 inline-block"></span> Max Pain
             </span>
           </div>
+          {hoveredStrike && (
+            <div className="bg-[#121829] border border-cyan-500/50 px-2 py-0.5 rounded text-[11px] font-mono text-cyan-300">
+              Страйк: <b>${hoveredStrike.strike}</b> (Net GEX: <b>{hoveredStrike.netGex > 0 ? `+${hoveredStrike.netGex}` : hoveredStrike.netGex}M</b>)
+            </div>
+          )}
         </div>
 
         {/* High-Performance Canvas Container */}
@@ -979,13 +1113,30 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
           />
         </div>
 
-        {/* Обязательный текст под графиком */}
-        <div className="p-3.5 rounded-xl bg-[#0e121d] border border-gray-800 text-xs text-gray-300 leading-relaxed">
-          <p className="font-medium">
-            <span className="text-cyan-300 font-bold">🎯 Самый длинный столбик (пик)</span> — это <b>Магнит (Max Pain)</b>. Цена стремится к нему.{" "}
-            <span className="text-emerald-400 font-bold">🟢 Зеленые столбики</span> — зоны торможения (флэт).{" "}
-            <span className="text-rose-400 font-bold">🔴 Красные</span> — зоны разгона (тренд).
-          </p>
+        {/* Понятное и 100% точное руководство под графиком */}
+        <div className="p-3.5 rounded-xl bg-[#0e121d] border border-gray-800 text-xs text-gray-300 space-y-2">
+          <div className="font-bold text-white flex items-center gap-2">
+            <Info className="h-4 w-4 text-cyan-400" />
+            <span>Как правильно читать гистограмму Гамма-Профиля:</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11.5px] leading-relaxed">
+            <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
+              <span className="text-emerald-400 font-bold block mb-0.5">🟢 Зеленые столбики (+GEX):</span>
+              Зоны торможения цены и флэта. <b>Самый длинный зеленый столбик</b> — это <span className="text-emerald-300 font-bold">Потолок (Call Wall ${gexReport.callWall})</span>, где дилеры сдерживают рост.
+            </div>
+            <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
+              <span className="text-rose-400 font-bold block mb-0.5">🔴 Красные столбики (-GEX):</span>
+              Зоны ускорения цены и тренда. <b>Самый длинный красный столбик</b> — это <span className="text-rose-300 font-bold">Поддержка (Put Wall ${gexReport.putWall})</span>, где сосредоточена защита от падения.
+            </div>
+            <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
+              <span className="text-cyan-300 font-bold block mb-0.5">🎯 Голубая линия — Магнит (Max Pain ${gexReport.maxPain}):</span>
+              Страйк наименьших выплат опционов. Цена стремится к этой линии ближе к экспирации («эффект магнита»).
+            </div>
+            <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
+              <span className="text-amber-300 font-bold block mb-0.5">🟡 Желтая линия — Спот цена (${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}):</span>
+              Текущее положение цены относительно стен и магнита.
+            </div>
+          </div>
         </div>
       </div>
     </div>
