@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Brain,
   TrendingUp,
@@ -133,6 +133,9 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
   const [newRuleText, setNewRuleText] = useState<string>("");
   const [newRuleCategory, setNewRuleCategory] = useState<"EXPIRY" | "GEX" | "MACRO" | "SMC">("EXPIRY");
   const [newRuleImpact, setNewRuleImpact] = useState<"CRITICAL" | "HIGH" | "MEDIUM">("HIGH");
+  const [isMobileKpiCollapsed, setIsMobileKpiCollapsed] = useState<boolean>(false);
+
+  const journalRef = useRef<HTMLDivElement>(null);
 
   // Load stats and forecasts on mount
   useEffect(() => {
@@ -269,71 +272,100 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
   const uniqueTickers = Array.from(new Set(forecasts.map(f => f.ticker)));
 
+  const scrollToJournal = () => {
+    if (journalRef.current) {
+      journalRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   return (
-    <div className="h-full flex flex-col bg-[#07090e] text-gray-100 overflow-hidden font-sans">
+    <div className="h-full flex flex-col bg-[#07090e] text-gray-100 overflow-y-auto md:overflow-hidden font-sans touch-pan-y overscroll-contain">
       {/* 🚀 TOP HERO BAR */}
-      <div className="bg-[#0b0e17] border-b border-gray-800 px-4 py-2.5 flex items-center justify-between gap-3 shrink-0 flex-wrap">
-        <div className="flex items-center gap-2.5">
+      <div className="bg-[#0b0e17] border-b border-gray-800 px-3 sm:px-4 py-2.5 flex items-center justify-between gap-2 shrink-0 flex-wrap">
+        <div className="flex items-center gap-2 sm:gap-2.5">
           <div className="bg-gradient-to-tr from-purple-600 via-indigo-600 to-cyan-500 p-1.5 rounded-xl shadow-lg shadow-purple-500/20 border border-purple-400/40">
             <Brain className="h-5 w-5 text-white animate-pulse" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="font-extrabold text-sm sm:text-base text-white tracking-tight flex items-center gap-1.5">
-                <span>База Самообучения ИИ & Журнал Прогнозов</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold">
-                  Feedback Loop Active ⚡
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="font-extrabold text-xs sm:text-base text-white tracking-tight flex items-center gap-1.5">
+                <span>База Самообучения ИИ & Журнал</span>
+                <span className="text-[9.5px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold">
+                  Feedback Loop ⚡
                 </span>
               </h2>
             </div>
-            <p className="text-[11px] text-gray-400 hidden sm:block">
-              Автоматическая верификация TP/SL по тикам • Обучение на ошибках • Учет опционных экспираций (Пятница/Понедельник)
+            <p className="text-[10px] sm:text-[11px] text-gray-400 hidden sm:block">
+              Автоматическая верификация TP/SL по тикам • Обучение на ошибках • Учет опционных экспираций
             </p>
           </div>
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {actionNotice && (
-            <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 animate-fadeIn">
+            <span className="text-xs font-mono font-bold px-2 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 animate-fadeIn">
               {actionNotice}
             </span>
           )}
+
+          {/* Quick jump to journal on mobile */}
+          <button
+            type="button"
+            onClick={scrollToJournal}
+            className="md:hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 border border-purple-500/40 text-purple-200 text-[11px] font-bold cursor-pointer"
+            title="Перейти вниз к списку прогнозов"
+          >
+            <BookOpen className="h-3 w-3" />
+            <span>К сделкам</span>
+          </button>
+
+          {/* Toggle KPI metrics on mobile */}
+          <button
+            type="button"
+            onClick={() => setIsMobileKpiCollapsed(!isMobileKpiCollapsed)}
+            className="md:hidden flex items-center gap-1 px-2 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-[11px] font-semibold border border-gray-700"
+            title="Свернуть/развернуть карточки метрик"
+          >
+            <span>{isMobileKpiCollapsed ? "Метрики" : "Скрыть"}</span>
+          </button>
 
           <button
             type="button"
             onClick={handleManualEvaluate}
             disabled={isEvaluating}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition cursor-pointer"
+            className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 text-[11px] sm:text-xs font-bold transition cursor-pointer"
             title="Принудительно сопоставить цены с уровнями TP/SL для всех сделок в ожидании"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${isEvaluating ? "animate-spin text-cyan-400" : ""}`} />
-            <span className="hidden sm:inline">{isEvaluating ? "Проверка котировок..." : "Проверить TP/SL"}</span>
+            <RefreshCw className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${isEvaluating ? "animate-spin text-cyan-400" : ""}`} />
+            <span className="hidden sm:inline">{isEvaluating ? "Проверка..." : "Проверить TP/SL"}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsAddRuleOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition cursor-pointer shadow-md shadow-purple-600/20"
+            className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-[11px] sm:text-xs font-bold transition cursor-pointer shadow-md shadow-purple-600/20"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>Добавить правило ИИ</span>
+            <span className="hidden sm:inline">Добавить правило ИИ</span>
+            <span className="sm:hidden">Правило</span>
           </button>
 
           {onBackToTerminal && (
             <button
               type="button"
               onClick={onBackToTerminal}
-              className="px-3 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold transition cursor-pointer border border-gray-700"
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 text-[11px] sm:text-xs font-bold transition cursor-pointer border border-gray-700"
             >
-              В терминал →
+              Терминал →
             </button>
           )}
         </div>
       </div>
 
       {/* 📊 KPI METRICS ROW */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 p-3 shrink-0 bg-[#080b12] border-b border-gray-800/80">
+      {!isMobileKpiCollapsed && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 p-2.5 sm:p-3 shrink-0 bg-[#080b12] border-b border-gray-800/80">
         {/* KPI 1: Win Rate */}
         <div className="p-3 rounded-xl bg-[#0f1422] border border-gray-800 flex items-center justify-between">
           <div>
@@ -431,6 +463,7 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {/* 🧭 NAVIGATION SUB-TABS */}
       <div className="px-3 pt-2 bg-[#0b0e17] border-b border-gray-800 flex items-center justify-between shrink-0">
@@ -527,7 +560,7 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
       {/* 🚀 TAB 1: INTERACTIVE FORECAST JOURNAL */}
       {activeSubTab === "journal" && (
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div ref={journalRef} className="flex-1 overflow-y-auto p-3 space-y-2 overscroll-contain touch-pan-y">
           {filteredForecasts.length === 0 ? (
             <div className="text-center py-16 text-gray-500 space-y-2">
               <BookOpen className="h-8 w-8 mx-auto opacity-30 text-gray-400" />

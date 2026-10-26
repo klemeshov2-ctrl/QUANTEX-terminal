@@ -186,7 +186,7 @@ export default function App() {
       )}
 
       {/* 🚀 MAIN CONTENT BODY */}
-      <main className="flex-1 overflow-hidden min-h-0 bg-[#07090e]">
+      <main className={`flex-1 min-h-0 bg-[#07090e] ${currentAppTab === "indicator_stats" || currentAppTab === "ai_learning" ? "overflow-y-auto md:overflow-hidden touch-pan-y overscroll-contain" : "overflow-hidden"}`}>
         {currentAppTab === "gold_deepseek" && currentUser.role === "admin" ? (
           <DeepSeekGoldScheduler />
         ) : currentAppTab === "server_deploy" && currentUser.role === "admin" ? (

@@ -892,18 +892,124 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }).format(new Date());
   }, []);
 
-  // Multi-Timeframe Consolidated Context
+  // Multi-Timeframe Consolidated Context across all 6 key timeframes: 5m, 15m, 30m, 1h, 4h, 1d
   const multiTfSummary = useMemo(() => {
+    const isBull = indicatorOutput?.forecast?.isBull ?? true;
+    const basePrice = currentPrice || candles[candles.length - 1]?.close || 4006.0;
+    const trailingStr = indicatorOutput?.forecast?.trailingStageStr || "🛡️ Начальный SL";
+
     const list = [
-      { tf: "1D", trend: "BULLISH", bias: "Институциональный лонг", rsi: 58, keyLevel: "Put Wall / POC 1D" },
-      { tf: "4H", trend: "BULLISH", bias: "Восходящая структура SMC", rsi: 54, keyLevel: "+OB 4H тест" },
-      { tf: "1H", trend: activeTf === "1h" ? "BULLISH" : "NEUTRAL", bias: "Консолидация у Zero Gamma", rsi: 51, keyLevel: "Zero Gamma Flip" },
-      { tf: "15m", trend: indicatorOutput?.forecast?.isBull ? "BULLISH" : "BEARISH", bias: indicatorOutput?.forecast?.trailingStageStr || "Рабочий диапазон", rsi: 48, keyLevel: indicatorOutput?.forecast?.p1Entry || currentPrice },
-      { tf: "5m", trend: "BULLISH", bias: "Импульсный свип ликвидности", rsi: 46, keyLevel: "OTE 0.618" },
-      { tf: "1m", trend: "NEUTRAL", bias: "Микроструктура входа", rsi: 50, keyLevel: "Pre-market VWAP" }
+      {
+        tf: "5m",
+        name: "M5 Скальпинг",
+        role: "Тактический вход и микроструктура",
+        trend: isBull ? "BULLISH" : "BEARISH",
+        bias: "Импульсный отскок OTE 0.618 / быстрый трейл BE+0.15",
+        entry: Number((basePrice * (isBull ? 0.9985 : 1.0015)).toFixed(2)),
+        tp1: Number((basePrice * (isBull ? 1.0035 : 0.9965)).toFixed(2)),
+        tp2: Number((basePrice * (isBull ? 1.0070 : 0.9930)).toFixed(2)),
+        sl: Number((basePrice * (isBull ? 0.9965 : 1.0035)).toFixed(2)),
+        trailingSl: Number((basePrice * (isBull ? 0.9995 : 1.0005)).toFixed(2)),
+        entryTriggered: true,
+        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
+        tp2Hit: Boolean(indicatorOutput?.forecast?.leg2Hit),
+        setupStatus: "ACTIVE",
+        rsi: isBull ? 54 : 46,
+        behaviorNote: "Быстрый отскок от зоны ликвидности M5, фиксация TP1 и перевод в безубыток"
+      },
+      {
+        tf: "15m",
+        name: "M15 Интрадей",
+        role: "Базовый рабочий таймфрейм индикатора",
+        trend: isBull ? "BULLISH" : "BEARISH",
+        bias: trailingStr,
+        entry: Number(indicatorOutput?.forecast?.p1Entry ?? (basePrice * (isBull ? 0.9970 : 1.0030)).toFixed(2)),
+        tp1: Number(indicatorOutput?.forecast?.p2Tp1 ?? (basePrice * (isBull ? 1.0080 : 0.9920)).toFixed(2)),
+        tp2: Number(indicatorOutput?.forecast?.p3Tp2 ?? (basePrice * (isBull ? 1.0160 : 0.9840)).toFixed(2)),
+        sl: Number(indicatorOutput?.forecast?.invalidLevelSl ?? (basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
+        trailingSl: Number(indicatorOutput?.forecast?.activeTrailingSl ?? (basePrice * (isBull ? 0.9975 : 1.0025)).toFixed(2)),
+        entryTriggered: Boolean(indicatorOutput?.forecast?.leg1Hit || indicatorOutput?.forecast?.p1Entry),
+        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
+        tp2Hit: Boolean(indicatorOutput?.forecast?.leg2Hit),
+        setupStatus: indicatorOutput?.forecast?.isPlanBActive ? "PLAN_B_ACTIVE" : "ACTIVE",
+        rsi: isBull ? 52 : 47,
+        behaviorNote: "Лоренцевский ML + Zero-Flip: отработка опционных стен дилеров Call/Put Wall"
+      },
+      {
+        tf: "30m",
+        name: "M30 Свинг",
+        role: "Интрадей-баланс и фильтр ложных пробоев",
+        trend: isBull ? "BULLISH" : "BEARISH",
+        bias: "Консенсус средних таймфреймов и равновесие 0.50 EQ",
+        entry: Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2)),
+        tp1: Number((basePrice * (isBull ? 1.0100 : 0.9900)).toFixed(2)),
+        tp2: Number((basePrice * (isBull ? 1.0190 : 0.9810)).toFixed(2)),
+        sl: Number((basePrice * (isBull ? 0.9920 : 1.0080)).toFixed(2)),
+        trailingSl: Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2)),
+        entryTriggered: true,
+        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
+        tp2Hit: false,
+        setupStatus: "ACTIVE",
+        rsi: isBull ? 53 : 48,
+        behaviorNote: "Удержание структуры интрадей-баланса, сглаживание шума младших ТФ"
+      },
+      {
+        tf: "1h",
+        name: "H1 Свинг",
+        role: "Институциональный поток и зоны ликвидности FVG",
+        trend: isBull ? "BULLISH" : "BEARISH",
+        bias: "OTE 0.618 + FVG Свип сессионной ликвидности",
+        entry: Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
+        tp1: Number((basePrice * (isBull ? 1.0120 : 0.9880)).toFixed(2)),
+        tp2: Number((basePrice * (isBull ? 1.0220 : 0.9780)).toFixed(2)),
+        sl: Number((basePrice * (isBull ? 0.9890 : 1.0110)).toFixed(2)),
+        trailingSl: Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
+        entryTriggered: true,
+        tp1Hit: true,
+        tp2Hit: false,
+        setupStatus: "ACTIVE",
+        rsi: isBull ? 55 : 45,
+        behaviorNote: "Свип азиатской/европейской ликвидности и продолжение трендовой волны"
+      },
+      {
+        tf: "4h",
+        name: "H4 Трендовый Свинг",
+        role: "Крупные ордерблоки SMC и EMA 200",
+        trend: "BULLISH",
+        bias: "SMC +OB Demand Zone + удержание экспоненциальной средней 200 EMA",
+        entry: Number((basePrice * 0.9900).toFixed(2)),
+        tp1: Number((basePrice * 1.0180).toFixed(2)),
+        tp2: Number((basePrice * 1.0300).toFixed(2)),
+        sl: Number((basePrice * 0.9820).toFixed(2)),
+        trailingSl: Number((basePrice * 0.9950).toFixed(2)),
+        entryTriggered: true,
+        tp1Hit: true,
+        tp2Hit: true,
+        setupStatus: "ACTIVE",
+        rsi: 56,
+        behaviorNote: "Институциональная защита трендового рубежа крупными покупателями"
+      },
+      {
+        tf: "1d",
+        name: "D1 Макро Цикл",
+        role: "Глобальный тренд и открытый интерес",
+        trend: "BULLISH",
+        bias: "Глобальный бычий макро-цикл + накопление физического металла центробанками",
+        entry: Number((basePrice * 0.9850).toFixed(2)),
+        tp1: Number((basePrice * 1.0250).toFixed(2)),
+        tp2: Number((basePrice * 1.0450).toFixed(2)),
+        sl: Number((basePrice * 0.9700).toFixed(2)),
+        trailingSl: Number((basePrice * 0.9900).toFixed(2)),
+        entryTriggered: true,
+        tp1Hit: true,
+        tp2Hit: true,
+        setupStatus: "ACTIVE",
+        rsi: 59,
+        behaviorNote: "Глобальный приток ликвидности центробанков (PBOC, Индия) удерживает восходящий тренд"
+      }
     ];
     return list;
-  }, [activeTf, indicatorOutput, currentPrice]);
+  }, [activeTf, indicatorOutput, currentPrice, candles]);
 
   // Generate Daily Trading Plan or Response from Server AI Endpoint
   const requestAiAnalysis = async (
@@ -933,10 +1039,12 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           summary: n.summary
         }));
 
+      const reliableCurrentPrice = currentPrice || candles[candles.length - 1]?.close || 4006.0;
+
       const payload = {
         ticker: activeAsset,
         timeframe: activeTf,
-        currentPrice: currentPrice || candles[candles.length - 1]?.close || 4165.0,
+        currentPrice: reliableCurrentPrice,
         multiTfMetrics: multiTfSummary,
         indicatorForecast: indicatorOutput?.forecast ? {
           isBull: indicatorOutput.forecast.isBull,
@@ -1042,7 +1150,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       const fallback = generateClientSideQuantFallback({
         ticker: activeAsset,
         timeframe: activeTf,
-        currentPrice: currentPrice || 4165.0,
+        currentPrice: currentPrice || candles[candles.length - 1]?.close || 4006.0,
         multiTfMetrics: multiTfSummary,
         indicatorForecast: indicatorOutput?.forecast,
         gex: gexReport || dayGexReport,
