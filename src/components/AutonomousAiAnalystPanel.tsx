@@ -895,15 +895,59 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
   // Multi-Timeframe Consolidated Context across all 6 key timeframes: 5m, 15m, 30m, 1h, 4h, 1d
   const multiTfSummary = useMemo(() => {
-    const isBull = indicatorOutput?.forecast?.isBull ?? true;
     const basePrice = currentPrice || candles[candles.length - 1]?.close || 4006.0;
     const trailingStr = indicatorOutput?.forecast?.trailingStageStr || "🛡️ Начальный SL";
     const fc = indicatorOutput?.forecast;
 
-    // Accurate indicator flags from the chart HUD / engine:
-    // leg1Hit = Entry reached (Вход взят ✓)
-    // leg2Hit = TP1 reached (Тейк 1 взят ✓)
-    // leg3Hit = TP2 reached (Тейк 2 взят ✓)
+    // Real technical indicator EMAs from candles
+    const closes = (candles || []).map(c => Number(c.close) || basePrice);
+    const nCloses = closes.length;
+    const calcEma = (period: number): number => {
+      if (nCloses === 0) return basePrice;
+      if (nCloses < period) return closes[nCloses - 1];
+      const k = 2 / (period + 1);
+      let ema = closes[0];
+      for (let i = 1; i < nCloses; i++) {
+        ema = closes[i] * k + ema * (1 - k);
+      }
+      return ema;
+    };
+
+    const ema20 = calcEma(20);
+    const ema50 = calcEma(50);
+    const ema100 = calcEma(100);
+    const ema200 = calcEma(200);
+
+    // Indicator HUD signal & direction (e.g. "SHORT 74%" or "LONG 82%")
+    const hudAction = String(indicatorOutput?.hud?.recActionStr || "");
+    const hudVerdict = String(indicatorOutput?.hud?.dowShortVerdict || "");
+    const isHudBearish = hudAction.includes("SHORT") || hudVerdict.includes("SHORT") || fc?.direction === "SHORT";
+    const isHudBullish = hudAction.includes("LONG") || hudVerdict.includes("LONG") || fc?.direction === "LONG";
+
+    // 15M: Local timeframe setup (can show local bounce / OTE pullback even when macro is SHORT)
+    const m15IsBull = fc ? Boolean(fc.isBull) : basePrice > ema20;
+    const m15Trend = m15IsBull ? "BULLISH" : "BEARISH";
+
+    // 30M: Intraday equilibrium (0.50 EQ)
+    const m30IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema20;
+    const m30Trend = m30IsBull ? "BULLISH" : "BEARISH";
+
+    // 1H: Swing flow & FVG
+    const h1IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema50;
+    const h1Trend = h1IsBull ? "BULLISH" : "BEARISH";
+
+    // 4H: Major trend & 200 EMA
+    const h4IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema200;
+    const h4Trend = h4IsBull ? "BULLISH" : "BEARISH";
+
+    // 1D: Global macro cycle & GEX boundaries
+    const d1IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema200;
+    const d1Trend = d1IsBull ? "BULLISH" : "BEARISH";
+
+    // 5M: Scalping
+    const m5IsBull = m15IsBull;
+    const m5Trend = m5IsBull ? "BULLISH" : "BEARISH";
+
     const activeLeg1Hit = Boolean(fc?.leg1Hit);
     const activeLeg2Hit = Boolean(fc?.leg2Hit);
     const activeLeg3Hit = Boolean(fc?.leg3Hit);
@@ -916,185 +960,177 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     };
 
     // 15m is the primary indicator timeframe
-    const m15Entry = Number(fc?.p1Entry ?? (basePrice * (isBull ? 0.9970 : 1.0030)).toFixed(2));
-    const m15Tp1 = Number(fc?.p2Tp1 ?? (basePrice * (isBull ? 1.0080 : 0.9920)).toFixed(2));
-    const m15Tp2 = Number(fc?.p3Tp2 ?? (basePrice * (isBull ? 1.0160 : 0.9840)).toFixed(2));
-    const m15Sl = Number(fc?.invalidLevelSl ?? (basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
-    const m15Trailing = Number(fc?.activeTrailingSl ?? (basePrice * (isBull ? 0.9975 : 1.0025)).toFixed(2));
-    const m15EntryHit = activeLeg1Hit;
-    const m15Tp1Hit = activeLeg2Hit;
-    const m15Tp2Hit = activeLeg3Hit;
+    const m15Entry = Number(fc?.p1Entry ?? (basePrice * (m15IsBull ? 0.9970 : 1.0030)).toFixed(2));
+    const m15Tp1 = Number(fc?.p2Tp1 ?? (basePrice * (m15IsBull ? 1.0080 : 0.9920)).toFixed(2));
+    const m15Tp2 = Number(fc?.p3Tp2 ?? (basePrice * (m15IsBull ? 1.0160 : 0.9840)).toFixed(2));
+    const m15Sl = Number(fc?.invalidLevelSl ?? (basePrice * (m15IsBull ? 0.9940 : 1.0060)).toFixed(2));
+    const m15Trailing = Number(fc?.activeTrailingSl ?? (basePrice * (m15IsBull ? 0.9975 : 1.0025)).toFixed(2));
 
     // 5m scalping
-    const m5Entry = Number((basePrice * (isBull ? 0.9985 : 1.0015)).toFixed(2));
-    const m5Tp1 = Number((basePrice * (isBull ? 1.0035 : 0.9965)).toFixed(2));
-    const m5Tp2 = Number((basePrice * (isBull ? 1.0070 : 0.9930)).toFixed(2));
-    const m5Sl = Number((basePrice * (isBull ? 0.9965 : 1.0035)).toFixed(2));
-    const m5Trailing = Number((basePrice * (isBull ? 0.9995 : 1.0005)).toFixed(2));
-    const m5EntryHit = isBull ? basePrice >= m5Entry : basePrice <= m5Entry;
-    const m5Tp1Hit = isBull ? basePrice >= m5Tp1 : basePrice <= m5Tp1;
-    const m5Tp2Hit = isBull ? basePrice >= m5Tp2 : basePrice <= m5Tp2;
+    const m5Entry = Number((basePrice * (m5IsBull ? 0.9985 : 1.0015)).toFixed(2));
+    const m5Tp1 = Number((basePrice * (m5IsBull ? 1.0035 : 0.9965)).toFixed(2));
+    const m5Tp2 = Number((basePrice * (m5IsBull ? 1.0070 : 0.9930)).toFixed(2));
+    const m5Sl = Number((basePrice * (m5IsBull ? 0.9965 : 1.0035)).toFixed(2));
+    const m5Trailing = Number((basePrice * (m5IsBull ? 0.9995 : 1.0005)).toFixed(2));
 
     // 30m swing
-    const m30Entry = Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2));
-    const m30Tp1 = Number((basePrice * (isBull ? 1.0100 : 0.9900)).toFixed(2));
-    const m30Tp2 = Number((basePrice * (isBull ? 1.0190 : 0.9810)).toFixed(2));
-    const m30Sl = Number((basePrice * (isBull ? 0.9920 : 1.0080)).toFixed(2));
-    const m30Trailing = Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2));
-    const m30EntryHit = isBull ? basePrice >= m30Entry : basePrice <= m30Entry;
-    const m30Tp1Hit = isBull ? basePrice >= m30Tp1 : basePrice <= m30Tp1;
-    const m30Tp2Hit = isBull ? basePrice >= m30Tp2 : basePrice <= m30Tp2;
+    const m30Entry = Number((basePrice * (m30IsBull ? 0.9960 : 1.0040)).toFixed(2));
+    const m30Tp1 = Number((basePrice * (m30IsBull ? 1.0100 : 0.9900)).toFixed(2));
+    const m30Tp2 = Number((basePrice * (m30IsBull ? 1.0190 : 0.9810)).toFixed(2));
+    const m30Sl = Number((basePrice * (m30IsBull ? 0.9920 : 1.0080)).toFixed(2));
+    const m30Trailing = Number((basePrice * (m30IsBull ? 0.9960 : 1.0040)).toFixed(2));
 
     // 1h swing
-    const h1Entry = Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
-    const h1Tp1 = Number((basePrice * (isBull ? 1.0120 : 0.9880)).toFixed(2));
-    const h1Tp2 = Number((basePrice * (isBull ? 1.0220 : 0.9780)).toFixed(2));
-    const h1Sl = Number((basePrice * (isBull ? 0.9890 : 1.0110)).toFixed(2));
-    const h1Trailing = Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
-    const h1EntryHit = isBull ? basePrice >= h1Entry : basePrice <= h1Entry;
-    const h1Tp1Hit = isBull ? basePrice >= h1Tp1 : basePrice <= h1Tp1;
-    const h1Tp2Hit = isBull ? basePrice >= h1Tp2 : basePrice <= h1Tp2;
+    const h1Entry = Number((basePrice * (h1IsBull ? 0.9940 : 1.0060)).toFixed(2));
+    const h1Tp1 = Number((basePrice * (h1IsBull ? 1.0120 : 0.9880)).toFixed(2));
+    const h1Tp2 = Number((basePrice * (h1IsBull ? 1.0220 : 0.9780)).toFixed(2));
+    const h1Sl = Number((basePrice * (h1IsBull ? 0.9890 : 1.0110)).toFixed(2));
+    const h1Trailing = Number((basePrice * (h1IsBull ? 0.9940 : 1.0060)).toFixed(2));
 
     // 4h trend
-    const h4Entry = Number((basePrice * 0.9900).toFixed(2));
-    const h4Tp1 = Number((basePrice * 1.0180).toFixed(2));
-    const h4Tp2 = Number((basePrice * 1.0300).toFixed(2));
-    const h4Sl = Number((basePrice * 0.9820).toFixed(2));
-    const h4Trailing = Number((basePrice * 0.9950).toFixed(2));
-    const h4EntryHit = basePrice >= h4Entry;
-    const h4Tp1Hit = basePrice >= h4Tp1;
-    const h4Tp2Hit = basePrice >= h4Tp2;
+    const h4Entry = Number((basePrice * (h4IsBull ? 0.9900 : 1.0100)).toFixed(2));
+    const h4Tp1 = Number((basePrice * (h4IsBull ? 1.0180 : 0.9820)).toFixed(2));
+    const h4Tp2 = Number((basePrice * (h4IsBull ? 1.0300 : 0.9700)).toFixed(2));
+    const h4Sl = Number(ema200.toFixed(2));
+    const h4Trailing = Number((basePrice * (h4IsBull ? 0.9950 : 1.0050)).toFixed(2));
 
     // 1d macro
-    const d1Entry = Number((basePrice * 0.9850).toFixed(2));
-    const d1Tp1 = Number((basePrice * 1.0250).toFixed(2));
-    const d1Tp2 = Number((basePrice * 1.0450).toFixed(2));
-    const d1Sl = Number((basePrice * 0.9700).toFixed(2));
-    const d1Trailing = Number((basePrice * 0.9900).toFixed(2));
-    const d1EntryHit = basePrice >= d1Entry;
-    const d1Tp1Hit = basePrice >= d1Tp1;
-    const d1Tp2Hit = basePrice >= d1Tp2;
+    const d1Entry = Number((basePrice * (d1IsBull ? 0.9850 : 1.0150)).toFixed(2));
+    const d1Tp1 = Number(gexReport?.putWall ? (d1IsBull ? gexReport.callWall : gexReport.putWall) : (basePrice * (d1IsBull ? 1.0250 : 0.9750)).toFixed(2));
+    const d1Tp2 = Number((basePrice * (d1IsBull ? 1.0450 : 0.9550)).toFixed(2));
+    const d1Sl = Number(gexReport?.callWall ? (d1IsBull ? gexReport.putWall : gexReport.callWall) : (basePrice * (d1IsBull ? 0.9700 : 1.0300)).toFixed(2));
+    const d1Trailing = Number((basePrice * (d1IsBull ? 0.9900 : 1.0100)).toFixed(2));
 
     const list = [
       {
         tf: "5m",
         name: "M5 Скальпинг",
         role: "Тактический вход и микроструктура",
-        trend: isBull ? "BULLISH" : "BEARISH",
+        trend: m5Trend,
         bias: "Импульсный отскок OTE 0.618 / быстрый трейл BE+0.15",
         entry: m5Entry,
         tp1: m5Tp1,
         tp2: m5Tp2,
         sl: m5Sl,
         trailingSl: m5Trailing,
-        entryTriggered: m5EntryHit,
-        tp1Hit: m5Tp1Hit,
-        tp2Hit: m5Tp2Hit,
+        entryTriggered: m5IsBull ? basePrice >= m5Entry : basePrice <= m5Entry,
+        tp1Hit: m5IsBull ? basePrice >= m5Tp1 : basePrice <= m5Tp1,
+        tp2Hit: m5IsBull ? basePrice >= m5Tp2 : basePrice <= m5Tp2,
         setupStatus: "ACTIVE",
-        tradeStatusText: helperStatus(isBull, m5Entry, m5Tp1, m5Tp2, m5EntryHit, m5Tp1Hit, m5Tp2Hit),
-        rsi: isBull ? 54 : 46,
+        tradeStatusText: helperStatus(m5IsBull, m5Entry, m5Tp1, m5Tp2, basePrice >= m5Entry, basePrice >= m5Tp1, basePrice >= m5Tp2),
+        rsi: m5IsBull ? 54 : 46,
         behaviorNote: "Быстрый отскок от зоны ликвидности M5, фиксация TP1 и перевод в безубыток"
       },
       {
         tf: "15m",
         name: "M15 Интрадей",
         role: "Базовый рабочий таймфрейм индикатора",
-        trend: isBull ? "BULLISH" : "BEARISH",
+        trend: m15Trend,
         bias: trailingStr,
         entry: m15Entry,
         tp1: m15Tp1,
         tp2: m15Tp2,
         sl: m15Sl,
         trailingSl: m15Trailing,
-        entryTriggered: m15EntryHit,
-        tp1Hit: m15Tp1Hit,
-        tp2Hit: m15Tp2Hit,
+        level: m15Entry,
+        levelDescription: m15IsBull ? "Локальный отскок OTE на 15M" : "Сопротивление 15M",
+        entryTriggered: activeLeg1Hit,
+        tp1Hit: activeLeg2Hit,
+        tp2Hit: activeLeg3Hit,
         setupStatus: fc?.isPlanBActive ? "PLAN_B_ACTIVE" : "ACTIVE",
         tradeStatusText: fc?.isPlanBActive
           ? "⚡ План Б — слом SL, жди разворот"
-          : helperStatus(isBull, m15Entry, m15Tp1, m15Tp2, m15EntryHit, m15Tp1Hit, m15Tp2Hit),
-        rsi: isBull ? 52 : 47,
+          : helperStatus(m15IsBull, m15Entry, m15Tp1, m15Tp2, activeLeg1Hit, activeLeg2Hit, activeLeg3Hit),
+        rsi: m15IsBull ? 52 : 47,
         behaviorNote: "Лоренцевский ML + Zero-Flip: отработка опционных стен дилеров Call/Put Wall"
       },
       {
         tf: "30m",
         name: "M30 Свинг",
         role: "Интрадей-баланс и фильтр ложных пробоев",
-        trend: isBull ? "BULLISH" : "BEARISH",
+        trend: m30Trend,
         bias: "Консенсус средних таймфреймов и равновесие 0.50 EQ",
         entry: m30Entry,
         tp1: m30Tp1,
         tp2: m30Tp2,
         sl: m30Sl,
         trailingSl: m30Trailing,
-        entryTriggered: m30EntryHit,
-        tp1Hit: m30Tp1Hit,
-        tp2Hit: m30Tp2Hit,
+        level: Number(ema20.toFixed(2)),
+        levelDescription: "Равновесие 0.50 EQ на 30M",
+        entryTriggered: m30IsBull ? basePrice >= m30Entry : basePrice <= m30Entry,
+        tp1Hit: m30IsBull ? basePrice >= m30Tp1 : basePrice <= m30Tp1,
+        tp2Hit: m30IsBull ? basePrice >= m30Tp2 : basePrice <= m30Tp2,
         setupStatus: "ACTIVE",
-        tradeStatusText: helperStatus(isBull, m30Entry, m30Tp1, m30Tp2, m30EntryHit, m30Tp1Hit, m30Tp2Hit),
-        rsi: isBull ? 53 : 48,
+        tradeStatusText: helperStatus(m30IsBull, m30Entry, m30Tp1, m30Tp2, basePrice >= m30Entry, basePrice >= m30Tp1, basePrice >= m30Tp2),
+        rsi: m30IsBull ? 53 : 48,
         behaviorNote: "Удержание структуры интрадей-баланса, сглаживание шума младших ТФ"
       },
       {
         tf: "1h",
         name: "H1 Свинг",
         role: "Институциональный поток и зоны ликвидности FVG",
-        trend: isBull ? "BULLISH" : "BEARISH",
+        trend: h1Trend,
         bias: "OTE 0.618 + FVG Свип сессионной ликвидности",
         entry: h1Entry,
         tp1: h1Tp1,
         tp2: h1Tp2,
         sl: h1Sl,
         trailingSl: h1Trailing,
-        entryTriggered: h1EntryHit,
-        tp1Hit: h1Tp1Hit,
-        tp2Hit: h1Tp2Hit,
+        level: Number(ema50.toFixed(2)),
+        levelDescription: h1IsBull ? "Поддержка FVG на 1H" : "Сопротивление FVG на 1H",
+        entryTriggered: h1IsBull ? basePrice >= h1Entry : basePrice <= h1Entry,
+        tp1Hit: h1IsBull ? basePrice >= h1Tp1 : basePrice <= h1Tp1,
+        tp2Hit: h1IsBull ? basePrice >= h1Tp2 : basePrice <= h1Tp2,
         setupStatus: "ACTIVE",
-        tradeStatusText: helperStatus(isBull, h1Entry, h1Tp1, h1Tp2, h1EntryHit, h1Tp1Hit, h1Tp2Hit),
-        rsi: isBull ? 55 : 45,
+        tradeStatusText: helperStatus(h1IsBull, h1Entry, h1Tp1, h1Tp2, basePrice >= h1Entry, basePrice >= h1Tp1, basePrice >= h1Tp2),
+        rsi: h1IsBull ? 55 : 45,
         behaviorNote: "Свип азиатской/европейской ликвидности и продолжение трендовой волны"
       },
       {
         tf: "4h",
         name: "H4 Трендовый Свинг",
         role: "Крупные ордерблоки SMC и EMA 200",
-        trend: "BULLISH",
-        bias: "SMC +OB Demand Zone + удержание экспоненциальной средней 200 EMA",
+        trend: h4Trend,
+        bias: h4IsBull ? "SMC +OB Demand Zone + удержание экспоненциальной средней 200 EMA" : "SMC -OB Supply Zone + сопротивление 200 EMA",
         entry: h4Entry,
         tp1: h4Tp1,
         tp2: h4Tp2,
         sl: h4Sl,
         trailingSl: h4Trailing,
-        entryTriggered: h4EntryHit,
-        tp1Hit: h4Tp1Hit,
-        tp2Hit: h4Tp2Hit,
+        level: Number(ema200.toFixed(2)),
+        levelDescription: "EMA 200 на 4H",
+        entryTriggered: h4IsBull ? basePrice >= h4Entry : basePrice <= h4Entry,
+        tp1Hit: h4IsBull ? basePrice >= h4Tp1 : basePrice <= h4Tp1,
+        tp2Hit: h4IsBull ? basePrice >= h4Tp2 : basePrice <= h4Tp2,
         setupStatus: "ACTIVE",
-        tradeStatusText: helperStatus(true, h4Entry, h4Tp1, h4Tp2, h4EntryHit, h4Tp1Hit, h4Tp2Hit),
-        rsi: 56,
-        behaviorNote: "Институциональная защита трендового рубежа крупными покупателями"
+        tradeStatusText: helperStatus(h4IsBull, h4Entry, h4Tp1, h4Tp2, basePrice >= h4Entry, basePrice >= h4Tp1, basePrice >= h4Tp2),
+        rsi: h4IsBull ? 56 : 44,
+        behaviorNote: h4IsBull ? "Институциональная защита трендового рубежа крупными покупателями" : "Медвежье давление ниже EMA 200 на 4H"
       },
       {
         tf: "1d",
         name: "D1 Макро Цикл",
         role: "Глобальный тренд и открытый интерес",
-        trend: "BULLISH",
-        bias: "Глобальный бычий макро-цикл + накопление физического металла центробанками",
+        trend: d1Trend,
+        bias: d1IsBull ? "Глобальный бычий макро-цикл" : "Медвежья фаза цикла / давление продавцов ниже страйка Max Pain",
         entry: d1Entry,
         tp1: d1Tp1,
         tp2: d1Tp2,
         sl: d1Sl,
         trailingSl: d1Trailing,
-        entryTriggered: d1EntryHit,
-        tp1Hit: d1Tp1Hit,
-        tp2Hit: d1Tp2Hit,
+        level: Number(gexReport?.putWall || (basePrice * (d1IsBull ? 0.985 : 1.015)).toFixed(2)),
+        levelDescription: d1IsBull ? "Put Wall 1D (поддержка)" : "Put Wall 1D (цель TP2) / Call Wall 1D",
+        entryTriggered: d1IsBull ? basePrice >= d1Entry : basePrice <= d1Entry,
+        tp1Hit: d1IsBull ? basePrice >= d1Tp1 : basePrice <= d1Tp1,
+        tp2Hit: d1IsBull ? basePrice >= d1Tp2 : basePrice <= d1Tp2,
         setupStatus: "ACTIVE",
-        tradeStatusText: helperStatus(true, d1Entry, d1Tp1, d1Tp2, d1EntryHit, d1Tp1Hit, d1Tp2Hit),
-        rsi: 59,
-        behaviorNote: "Глобальный приток ликвидности центробанков (PBOC, Индия) удерживает восходящий тренд"
+        tradeStatusText: helperStatus(d1IsBull, d1Entry, d1Tp1, d1Tp2, basePrice >= d1Entry, basePrice >= d1Tp1, basePrice >= d1Tp2),
+        rsi: d1IsBull ? 59 : 41,
+        behaviorNote: d1IsBull ? "Глобальный приток ликвидности удерживает восходящий тренд" : "Отток институциональной ликвидности и фиксация позиций"
       }
     ];
     return list;
-  }, [activeTf, indicatorOutput, currentPrice, candles]);
+  }, [activeTf, indicatorOutput, currentPrice, candles, gexReport]);
 
   // Generate Daily Trading Plan or Response from Server AI Endpoint
   const requestAiAnalysis = async (

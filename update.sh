@@ -22,8 +22,8 @@ echo "🔄 4. Перезапуск процесса приложения..."
 echo "=========================================="
 # Если используется PM2:
 if command -v pm2 &> /dev/null; then
-    pm2 restart all || pm2 start dist/server.cjs --name "gold-server"
-    echo "✅ PM2 успешно перезапущен!"
+    pm2 restart ecosystem.config.cjs --update-env 2>/dev/null || pm2 restart all --update-env 2>/dev/null || pm2 start ecosystem.config.cjs --env production
+    echo "✅ PM2 успешно перезапущен в режиме production!"
 # Если используется systemd сервис:
 elif systemctl is-active --quiet gold-server; then
     sudo systemctl restart gold-server

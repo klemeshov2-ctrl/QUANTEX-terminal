@@ -143,7 +143,7 @@ case $CHOICE in
       npm install -g pm2
     fi
     pm2 delete "$APP_NAME" >/dev/null 2>&1 || true
-    pm2 start ecosystem.config.cjs
+    pm2 start ecosystem.config.cjs --env production
     pm2 save
     echo -e "${GREEN}✓ Сервер запущен под управлением PM2!${NC}"
     pm2 status

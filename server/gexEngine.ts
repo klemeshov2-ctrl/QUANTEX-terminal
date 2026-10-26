@@ -860,6 +860,39 @@ let moexContractsCache: {
   cachedAt: number;
 } | null = null;
 
+export async function fetchMoexWithRetry(
+  url: string,
+  init?: RequestInit,
+  maxRetries = 1,
+  timeoutMs = 7000,
+  retryDelayMs = 3500
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    try {
+      attempt++;
+      const res = await fetch(url, {
+        ...init,
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", ...(init?.headers || {}) },
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      return res;
+    } catch (err: any) {
+      const isTimeoutOrAbort =
+        err?.name === "AbortError" ||
+        err?.name === "TimeoutError" ||
+        String(err?.message || "").toLowerCase().includes("aborted") ||
+        String(err?.message || "").toLowerCase().includes("timeout");
+      if (attempt <= maxRetries && isTimeoutOrAbort) {
+        console.warn(`[GEX Engine] MOEX запрос к ${url.slice(0, 80)}... прерван по таймауту (${err.message}). Повторная попытка через ${retryDelayMs / 1000} сек (попытка ${attempt + 1}/${maxRetries + 1})...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export async function fetchMoexFrontQuarterlyContracts(): Promise<{
   large: MoexContractMeta;
   mini: MoexContractMeta;
@@ -1011,9 +1044,12 @@ export async function fetchMoexFrontQuarterlyContracts(): Promise<{
   };
 
   try {
-    const res = await fetch(
+    const res = await fetchMoexWithRetry(
       "https://iss.moex.com/iss/engines/futures/markets/forts/boards/RFUD/securities.json?iss.meta=off&iss.only=securities,marketdata",
-      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(4500) }
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      1,
+      7000,
+      3500
     );
     if (res.ok) {
       const j = await res.json();
@@ -1209,9 +1245,12 @@ export async function calculateMoexGoldGex(horizon: ExpiryHorizon = "WEEK"): Pro
   let totalPutVol = 0;
 
   try {
-    const resOpt = await fetch(
+    const resOpt = await fetchMoexWithRetry(
       "https://iss.moex.com/iss/engines/futures/markets/options/boards/ROPD/securities.json?iss.meta=off&iss.only=securities,marketdata&securities.columns=SECID,ASSETCODE,STRIKE,OPTIONTYPE&marketdata.columns=SECID,OPENPOSITION,VOLTODAY",
-      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) }
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      1,
+      7000,
+      3500
     );
     if (resOpt.ok) {
       const optJson = await resOpt.json();
@@ -1442,9 +1481,12 @@ export async function calculateMoexMiniGex(horizon: ExpiryHorizon = "WEEK"): Pro
   let totalPutVol = 0;
 
   try {
-    const resOpt = await fetch(
+    const resOpt = await fetchMoexWithRetry(
       "https://iss.moex.com/iss/engines/futures/markets/options/boards/ROPD/securities.json?iss.meta=off&iss.only=securities,marketdata&securities.columns=SECID,ASSETCODE,STRIKE,OPTIONTYPE&marketdata.columns=SECID,OPENPOSITION,VOLTODAY",
-      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) }
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      1,
+      7000,
+      3500
     );
     if (resOpt.ok) {
       const optJson = await resOpt.json();

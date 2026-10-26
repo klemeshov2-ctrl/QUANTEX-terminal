@@ -8,7 +8,7 @@ import dotenv from "dotenv";
 import { exec } from "child_process";
 import { promisify } from "util";
 import WebSocket from "ws";
-import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts } from "./server/gexEngine";
+import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts, fetchMoexWithRetry } from "./server/gexEngine";
 import {
   recordAiForecast,
   evaluateForecastOutcomes,
@@ -814,9 +814,12 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
   let gldRubf = 11281.9;
 
   try {
-    const resMoex = await fetch(
+    const resMoex = await fetchMoexWithRetry(
       "https://iss.moex.com/iss/engines/futures/markets/forts/boards/RFUD/securities.json?iss.meta=off&iss.only=marketdata,securities&marketdata.columns=SECID,LAST,OPEN,HIGH,LOW,SETTLEPRICE,OPENPOSITION,NUMTRADES,VOLTODAY,VALTODAY,UPDATETIME,BID,OFFER&securities.columns=SECID,SHORTNAME,SECNAME,LASTTRADEDATE,PREVPRICE",
-      { headers: { "User-Agent": "Mozilla/5.0" } }
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      1,
+      7000,
+      3500
     );
     if (resMoex.ok) {
       const dataMoex = await resMoex.json();
@@ -2612,21 +2615,34 @@ ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТ
    - Стоп-лосс (SL): [Цена] (обязательно привяжи к Call Wall или Put Wall).
    - Тейк-профит (TP1 / TP2): [Цены].
    - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-   - План Б: При пробое уровня [Уровень] в обратную сторону, ищем вход с целями [Цены].`}`
+    - План Б: При пробое уровня [Уровень] в обратную сторону, ищем вход с целями [Цены].`}`
           },
           {
             role: "user",
             content: prompt
           }
         ],
-        tools: [{ type: "web_search" }],
         temperature: 0.3
       };
 
-      console.log(`[DeepSeek Background API] 🌐 Отправка запроса в DeepSeek API (${modelUsed}) с tools: [{ type: "web_search" }]...`);
-      addServerLog("INFO", `[DeepSeek API] Отправка фонового анализа с tools: [{ type: "web_search" }] для ${pair}`);
+      // Direct Live Search beforehand without tools parameter in chat completions to prevent HTTP 422
+      try {
+        const bgSearchQuery = buildCleanMacroSearchQuery(pair, prompt);
+        console.log(`[DeepSeek Background Search] 🔍 Прямой поиск перед запросом: "${bgSearchQuery}"...`);
+        const bgResults = await fetchDeepSeekSearchApi(apiKey, bgSearchQuery, 4);
+        if (bgResults.length > 0) {
+          dsBody.messages[1].content += `\n\n🌐 РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ЖИВОГО ПОИСКА В ИНТЕРНЕТЕ ИЗ ПОИСКОВОЙ СИСТЕМЫ DEEPSEEK (Search API):\n` +
+            bgResults.map(s => `• [${s.title}](${s.url}) — ${s.snippet || ""}`).join("\n");
+          console.log(`[DeepSeek Background Search] ✅ Интегрировано ${bgResults.length} результатов поиска в фоновый анализ.`);
+        }
+      } catch (sErr: any) {
+        console.warn(`[DeepSeek Background Search] Заметка поиска: ${sErr.message}`);
+      }
 
-      let dsRes = await fetch(endpoint, {
+      console.log(`[DeepSeek Background API] 🌐 Отправка запроса в DeepSeek API (${modelUsed}) без параметра tools...`);
+      addServerLog("INFO", `[DeepSeek API] Отправка фонового анализа для ${pair}`);
+
+      const dsRes = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2634,21 +2650,6 @@ ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТ
         },
         body: JSON.stringify(dsBody)
       });
-
-      // Fallback if tools parameter rejected by endpoint
-      if (!dsRes.ok && dsBody.tools) {
-        const errText = await dsRes.text();
-        console.warn(`[DeepSeek Background API] Эндпоинт отклонил tools: ${errText.slice(0, 140)}. Повтор без параметра tools...`);
-        delete dsBody.tools;
-        dsRes = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey.trim()}`
-          },
-          body: JSON.stringify(dsBody)
-        });
-      }
 
       if (dsRes.ok) {
         const dsData = await dsRes.json();
@@ -4284,9 +4285,12 @@ app.get("/api/market/candles", async (req, res) => {
     const fromDateStr = new Date(Date.now() - lookbackDays * 86400 * 1000).toISOString().slice(0, 10);
 
     try {
-      const cRes = await fetch(
+      const cRes = await fetchMoexWithRetry(
         `https://iss.moex.com/iss/engines/futures/markets/forts/boards/RFUD/securities/${activeSecId}/candles.json?from=${fromDateStr}&iss.reverse=true&interval=${moexTf}&iss.meta=off`,
-        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(6000) }
+        { headers: { "User-Agent": "Mozilla/5.0" } },
+        1,
+        7000,
+        3500
       );
       if (cRes.ok) {
         const cJson = await cRes.json();
@@ -8456,18 +8460,35 @@ export interface LiveWorldNewsItem {
   source: string;
 }
 
-// Strict Language & Quality Filter: allow ONLY Russian (Cyrillic) and English (Latin)
+// Strict Language & Quality Filter: allow ONLY Russian (Cyrillic) and pure English (ASCII Latin)
 export function isValidRuEnNews(text: string): boolean {
   if (!text || typeof text !== "string") return false;
-  // Reject Arabic, Persian, Urdu scripts
-  if (/[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff]/.test(text)) return false;
-  // Reject East Asian scripts: Chinese, Japanese, Korean
-  if (/[\u4e00-\u9fa5\u3040-\u30ff\u3400-\u4dbf\uac00-\ud7af]/.test(text)) return false;
-  // Reject Thai, Hebrew, Devanagari (Hindi) and other non-target scripts
-  if (/[\u0e00-\u0e7f\u0590-\u05ff\u0900-\u097f]/.test(text)) return false;
-  // Must contain Russian Cyrillic or English Latin letters
-  const hasRu = /[а-яА-ЯёЁ]/.test(text);
-  const hasEn = /[a-zA-Z]/.test(text);
+  const clean = text.trim();
+  if (clean.length < 5) return false;
+
+  // 1. Reject Non-Target Scripts: Arabic, Persian, Urdu
+  if (/[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff]/.test(clean)) return false;
+  // Reject East Asian: Chinese, Japanese, Korean
+  if (/[\u4e00-\u9fa5\u3040-\u30ff\u3400-\u4dbf\uac00-\ud7af]/.test(clean)) return false;
+  // Reject Thai, Hebrew, Devanagari (Hindi) and others
+  if (/[\u0e00-\u0e7f\u0590-\u05ff\u0900-\u0d7f]/.test(clean)) return false;
+
+  // 2. Reject Foreign Latin Diacritics: Vietnamese, Portuguese, Spanish, Italian, German, French, etc.
+  // Standard English uses clean ASCII [a-zA-Z]. Vietnamese and Romance languages use accented letters.
+  // Ranges: Latin-1 Supplement (C0-FF), Latin Extended-A/B (0100-024F), Vietnamese Extensions (1EA0-1EF9)
+  if (/[\u00C0-\u024F\u1EA0-\u1EF9¿¡]/.test(clean)) {
+    return false;
+  }
+
+  // 3. Stopword guard against unaccented Portuguese/Spanish/Vietnamese/German/Italian/French financial news
+  const foreignStopwords = /\b(dos|das|para|com|sobre|mercado|preço|precos|preco|inflação|inflacao|unidos|eua|pelo|pela|uma|como|mais|não|nao|ontem|hoje|segundo|taxa|taxas|juros|ouro|dólar|dolar|banco central|del|los|las|por|una|inflación|inflacion|eeuu|tasa|tasas|interés|interes|của|cua|trong|các|cac|cho|về|ve|người|nguoi|ngày|ngay|khi|được|duoc|với|voi|này|nay|kinh tế|kinh te|giá vàng|gia vang|lãi suất|lai suat|mỹ|my|lạm phát|lam phat|della|delle|degli|nella|nelle|stati uniti|und|nicht|eine|einer|zinsen|goldpreis|pour|dans|avec|sur|états-unis|etats-unis)\b/i;
+  if (foreignStopwords.test(clean)) {
+    return false;
+  }
+
+  // 4. Must contain Russian Cyrillic (at least 3 Cyrillic letters) OR clean English Latin (at least 3 ASCII letters)
+  const hasRu = /[а-яА-ЯёЁ]{3,}/.test(clean);
+  const hasEn = /[a-zA-Z]{3,}/.test(clean);
   return hasRu || hasEn;
 }
 
@@ -8479,7 +8500,7 @@ export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery:
   // If user asked a specific educational/factual search question, focus on it while keeping it clean
   if (q.length > 3 && !q.toLowerCase().includes("дай план") && !q.toLowerCase().includes("сетап")) {
     const cleanUserQ = q.replace(/[^\w\sа-яА-ЯёЁ\-\.\$]/gi, " ").replace(/\s+/g, " ").trim();
-    const combined = `${t} ${cleanUserQ.slice(0, 50)} ФРС инфляция ставка CPI`;
+    const combined = `${t} ${cleanUserQ.slice(0, 42)} ФРС инфляция ставка CPI lang:ru OR lang:en`;
     return combined.slice(0, 120);
   }
 
@@ -8487,13 +8508,13 @@ export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery:
   const isGold = t.includes("XAU") || t.includes("GOLD") || t.includes("GLD");
 
   if (isBtc) {
-    // 1. Ticker priority -> 2. Crypto focus -> 3. Correlation -> 4. Macro keywords
-    return `${t} Bitcoin BTC криптовалюта gold crypto correlation ФРС инфляция ставка CPI`.slice(0, 120);
+    // 1. Ticker priority -> 2. Crypto focus -> 3. Correlation -> 4. Macro keywords + RU/EN language filter
+    return `${t} Bitcoin BTC криптовалюта gold correlation ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
   } else if (isGold) {
-    // 1. Ticker priority -> 2. Gold focus -> 3. Correlation -> 4. Macro keywords
-    return `${t} Gold XAUUSD золото биткоин корреляция ФРС инфляция ставка CPI`.slice(0, 120);
+    // 1. Ticker priority -> 2. Gold focus -> 3. Correlation -> 4. Macro keywords + RU/EN language filter
+    return `${t} Gold XAUUSD золото биткоин корреляция ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
   } else {
-    return `${t} рынок финансы биткоин корреляция ФРС инфляция ставка CPI`.slice(0, 120);
+    return `${t} рынок финансы биткоин корреляция ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
   }
 }
 
@@ -8921,6 +8942,312 @@ function getNearestUpcomingMacroEvent(events: any[], now: Date): string {
   return "Фон чистый";
 }
 
+// --- HONEST 5-TIMEFRAME CONSENSUS & TF-ANCHORED LEVELS ENGINE ---
+interface Honest5TfResult {
+  d1Trend: "BULL" | "BEAR";
+  h4Trend: "BULL" | "BEAR";
+  h1Trend: "BULL" | "BEAR";
+  m30Trend: "BULL" | "BEAR";
+  m15Trend: "BULL" | "BEAR";
+  d1KeyLevel: string;
+  h4KeyLevel: string;
+  h1KeyLevel: string;
+  m30KeyLevel: string;
+  m15KeyLevel: string;
+  d1LevelDesc: string;
+  h4LevelDesc: string;
+  h1LevelDesc: string;
+  m30LevelDesc: string;
+  m15LevelDesc: string;
+  bullTfCount: number;
+  bearTfCount: number;
+  isBull: boolean;
+  dominantCount: number;
+  dominantDirectionRu: string;
+  consensus5Str: string;
+  dailyAtr: string;
+  entryPriceFormatted: string;
+  entryRationale: string;
+  slFormatted: string;
+  slRationale: string;
+  tp1Formatted: string;
+  tp1Rationale: string;
+  tp2Formatted: string;
+  tp2Rationale: string;
+}
+
+function computeHonest5TfConsensus(
+  multiTfMetrics: any[],
+  indicatorForecast: any,
+  currentPrice: number,
+  gex: any,
+  dec: number,
+  ticker: string = "XAUUSD"
+): Honest5TfResult {
+  const hudStatusRaw = String(indicatorForecast?.currentStatusText || indicatorForecast?.hudStatus || "");
+  const hudActionRaw = String(indicatorForecast?.hudAction || indicatorForecast?.recActionStr || indicatorForecast?.dowShortVerdict || "");
+  const isHudExplicitShort = hudStatusRaw.toUpperCase().includes("SHORT") || hudActionRaw.toUpperCase().includes("SHORT") || indicatorForecast?.direction === "SHORT";
+  const isHudExplicitLong = hudStatusRaw.toUpperCase().includes("LONG") || hudActionRaw.toUpperCase().includes("LONG") || indicatorForecast?.direction === "LONG";
+
+  // Fallback bias: if HUD indicates short, market default is BEAR (prevents artificial default green bias)
+  const fallbackBias: "BULL" | "BEAR" = isHudExplicitShort ? "BEAR" : isHudExplicitLong ? "BULL" : (indicatorForecast?.isBull === false ? "BEAR" : "BEAR");
+
+  const findTf = (name: string) => {
+    if (!Array.isArray(multiTfMetrics)) return null;
+    return multiTfMetrics.find((m: any) => {
+      const t = String(m.tf || "").toLowerCase();
+      const n = String(m.name || "").toLowerCase();
+      return t === name.toLowerCase() || n.includes(name.toLowerCase());
+    });
+  };
+
+  const d1Item = findTf("1d");
+  const h4Item = findTf("4h");
+  const h1Item = findTf("1h");
+  const m30Item = findTf("30m");
+  const m15Item = findTf("15m");
+
+  const parseTrend = (item: any, defaultBias: "BULL" | "BEAR"): "BULL" | "BEAR" => {
+    if (!item || !item.trend) return defaultBias;
+    const str = String(item.trend).toUpperCase();
+    if (str.includes("BEAR") || str.includes("SHORT") || str.includes("DOWN")) return "BEAR";
+    if (str.includes("BULL") || str.includes("LONG") || str.includes("UP")) return "BULL";
+    return defaultBias;
+  };
+
+  // 15M can reflect a local tactical bounce / OTE pullback even when higher timeframes are in a macro downtrend
+  const m15DefaultBias: "BULL" | "BEAR" = (indicatorForecast?.isBull !== undefined)
+    ? (indicatorForecast.isBull ? "BULL" : "BEAR")
+    : fallbackBias;
+
+  const d1Trend = parseTrend(d1Item, fallbackBias);
+  const h4Trend = parseTrend(h4Item, fallbackBias);
+  const h1Trend = parseTrend(h1Item, fallbackBias);
+  const m30Trend = parseTrend(m30Item, fallbackBias);
+  const m15Trend = parseTrend(m15Item, m15DefaultBias);
+
+  // Honest consensus: count each of the 5 timeframes (e.g. 4 BEAR + 1 BULL = 4 of 5 for SHORT, isBull becomes false!)
+  const fiveTfs = [
+    { tf: "1D", trend: d1Trend },
+    { tf: "4H", trend: h4Trend },
+    { tf: "1H", trend: h1Trend },
+    { tf: "30M", trend: m30Trend },
+    { tf: "15M", trend: m15Trend }
+  ];
+  const bullTfCount = fiveTfs.filter(t => t.trend === "BULL").length;
+  const bearTfCount = 5 - bullTfCount;
+  const isBull = bullTfCount >= 3;
+  const dominantCount = isBull ? bullTfCount : bearTfCount;
+  const dominantDirectionRu = isBull ? "ПОКУПКИ" : "ПРОДАЖИ";
+  const consensus5Str = `${dominantCount} из 5 ТФ за ${dominantDirectionRu}`;
+
+  // 1. Dynamic Daily ATR calculation (Average True Range / средний дневной ход)
+  const isGold = ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLD");
+  const isBtc = ticker.includes("BTC");
+  const isXrp = ticker.includes("XRP");
+  const defaultAtrPct = isGold ? 0.009 : isBtc ? 0.030 : isXrp ? 0.045 : 0.016;
+  const rawDailyAtr = Number(
+    indicatorForecast?.dailyAtr ||
+    indicatorForecast?.atr ||
+    (Number(currentPrice) * defaultAtrPct)
+  );
+  const dailyAtr = rawDailyAtr > 0 ? rawDailyAtr : (currentPrice * 0.01);
+  const dailyAtrFormatted = dailyAtr.toFixed(dec);
+
+  // Timeframe levels:
+  // 1D: Major GEX Wall (Put Wall / Call Wall)
+  const cw = gex?.callWall ? Number(gex.callWall) : Number((currentPrice * 1.015).toFixed(dec));
+  const pw = gex?.putWall ? Number(gex.putWall) : Number((currentPrice * 0.985).toFixed(dec));
+  const d1KeyLevel = (isBull ? pw : cw).toFixed(dec);
+  const d1LevelDesc = isBull ? `Put Wall ${d1KeyLevel}` : `Call Wall ${d1KeyLevel}`;
+
+  // 4H: 200 EMA / Major swing boundary
+  const h4KeyLevel = isBull
+    ? (h4Item?.level ? Number(h4Item.level).toFixed(dec) : (currentPrice * 0.992).toFixed(dec))
+    : (h4Item?.level ? Number(h4Item.level).toFixed(dec) : (currentPrice * 1.008).toFixed(dec));
+  const h4LevelDesc = isBull ? `200 EMA / Поддержка 4H` : `200 EMA / Сопротивление 4H`;
+
+  // 1H: FVG & institutional flow
+  const h1KeyLevel = isBull
+    ? (h1Item?.level ? Number(h1Item.level).toFixed(dec) : (currentPrice * 0.997).toFixed(dec))
+    : (h1Item?.level ? Number(h1Item.level).toFixed(dec) : (currentPrice * 1.003).toFixed(dec));
+  const h1LevelDesc = isBull ? `Зона поддержки 1H` : `Зона сопротивления 1H`;
+
+  // 30M: Intraday equilibrium (0.50 EQ) / intermediate target
+  const m30KeyLevel = isBull
+    ? (m30Item?.level ? Number(m30Item.level).toFixed(dec) : (currentPrice * 1.005).toFixed(dec))
+    : (m30Item?.level ? Number(m30Item.level).toFixed(dec) : (currentPrice * 0.995).toFixed(dec));
+  const m30LevelDesc = isBull ? `Сопротивление 30M` : `Поддержка 30M`;
+
+  // 15M: Immediate entry / local bounce or pullback level
+  const m15KeyLevel = (m15Item?.level
+    ? Number(m15Item.level)
+    : indicatorForecast?.p1Entry
+    ? Number(indicatorForecast.p1Entry)
+    : (isBull ? currentPrice * 0.998 : currentPrice * 1.002)
+  ).toFixed(dec);
+  const m15LevelDesc = isBull ? `Откат к поддержке на 15M` : `Откат к сопротивлению на 15M`;
+
+  // Dynamic Level Selection Based on Volatility (ATR) and Reachability:
+  const h1Num = Number(h1KeyLevel);
+  const m30Num = Number(m30KeyLevel);
+  const m15Num = Number(m15KeyLevel);
+
+  let entryPriceFormatted: string;
+  let entryRationale: string;
+  let slFormatted: string;
+  let slRationale: string;
+  let tp1Formatted: string;
+  let tp1Rationale: string;
+  let tp2Formatted: string;
+  let tp2Rationale: string;
+
+  if (!isBull) {
+    // === SHORT PLAN ===
+    // 1. Entry: from nearest resistance / pullback zone (15M / 30M / 1H)
+    if (m15Num > currentPrice) {
+      entryPriceFormatted = m15Num.toFixed(dec);
+      entryRationale = "сопротивление 15M";
+    } else if (h1Num > currentPrice && Math.abs(h1Num - currentPrice) <= dailyAtr * 0.4) {
+      entryPriceFormatted = h1Num.toFixed(dec);
+      entryRationale = "сопротивление 1H";
+    } else {
+      entryPriceFormatted = (currentPrice + dailyAtr * 0.12).toFixed(dec);
+      entryRationale = "зона отката 15M";
+    }
+    const entryVal = Number(entryPriceFormatted);
+
+    // 2. SL: behind local high, 4H 200 EMA, or Gamma Flip
+    const localHighSl = entryVal + dailyAtr * 0.28;
+    const h4Sl = Number(h4KeyLevel);
+    const slVal = Math.max(localHighSl, (h4Sl > entryVal ? h4Sl : entryVal + dailyAtr * 0.25));
+    slFormatted = slVal.toFixed(dec);
+    slRationale = (h4Sl > entryVal && Math.abs(h4Sl - slVal) < dailyAtr * 0.15)
+      ? `за локальный хай и 200 EMA на 4H`
+      : `за локальный хай`;
+
+    // 3. TP1: nearest intraday support (15M / 30M / 1H), ~0.4 - 0.7 ATR
+    if (m30Num < entryVal && (entryVal - m30Num) >= dailyAtr * 0.3 && (entryVal - m30Num) <= dailyAtr * 0.85) {
+      tp1Formatted = m30Num.toFixed(dec);
+      tp1Rationale = "поддержка 30M";
+    } else if (h1Num < entryVal && (entryVal - h1Num) >= dailyAtr * 0.3 && (entryVal - h1Num) <= dailyAtr * 0.85) {
+      tp1Formatted = h1Num.toFixed(dec);
+      tp1Rationale = "поддержка 1H";
+    } else {
+      tp1Formatted = (entryVal - dailyAtr * 0.55).toFixed(dec);
+      tp1Rationale = "локальная поддержка 15M/30M";
+    }
+
+    // 4. TP2: evaluate daily ATR distance to 1D Put Wall vs intermediate 1H/4H target
+    const distToPw = entryVal - pw;
+    const distPwInAtr = distToPw / dailyAtr;
+
+    if (distPwInAtr > 2.0) {
+      // 1D Put Wall is too far (> 2 ATR) for a single day -> choose realistic intermediate 1H/4H target
+      const intermediateTp2 = entryVal - dailyAtr * 1.25;
+      tp2Formatted = intermediateTp2.toFixed(dec);
+      tp2Rationale = "промежуточная цель 1H/4H, достижимо в рамках дня";
+    } else if (distPwInAtr < 0.35) {
+      // Price is already sitting at Put Wall -> target 4H breakout expansion
+      const breakoutTp2 = pw - dailyAtr * 0.85;
+      tp2Formatted = breakoutTp2.toFixed(dec);
+      tp2Rationale = "пробойная цель 4H, достижимо в рамках дня";
+    } else {
+      // Put Wall 1D is within 0.5 - 1.8 ATR -> achievable within today
+      tp2Formatted = pw.toFixed(dec);
+      tp2Rationale = "Put Wall 1D, достижимо в рамках дня";
+    }
+  } else {
+    // === LONG PLAN ===
+    // 1. Entry: from nearest support / pullback zone (15M / 30M / 1H)
+    if (m15Num < currentPrice) {
+      entryPriceFormatted = m15Num.toFixed(dec);
+      entryRationale = "поддержка 15M";
+    } else if (h1Num < currentPrice && Math.abs(currentPrice - h1Num) <= dailyAtr * 0.4) {
+      entryPriceFormatted = h1Num.toFixed(dec);
+      entryRationale = "поддержка 1H";
+    } else {
+      entryPriceFormatted = (currentPrice - dailyAtr * 0.12).toFixed(dec);
+      entryRationale = "зона отката 15M";
+    }
+    const entryVal = Number(entryPriceFormatted);
+
+    // 2. SL: behind local low, 4H 200 EMA, or Gamma Flip
+    const localLowSl = entryVal - dailyAtr * 0.28;
+    const h4Sl = Number(h4KeyLevel);
+    const slVal = Math.min(localLowSl, (h4Sl < entryVal ? h4Sl : entryVal - dailyAtr * 0.25));
+    slFormatted = slVal.toFixed(dec);
+    slRationale = (h4Sl < entryVal && Math.abs(entryVal - h4Sl) < dailyAtr * 0.15)
+      ? `за локальный лоу и поддержку 4H`
+      : `за локальный лоу`;
+
+    // 3. TP1: nearest intraday resistance (15M / 30M / 1H), ~0.4 - 0.7 ATR
+    if (m30Num > entryVal && (m30Num - entryVal) >= dailyAtr * 0.3 && (m30Num - entryVal) <= dailyAtr * 0.85) {
+      tp1Formatted = m30Num.toFixed(dec);
+      tp1Rationale = "сопротивление 30M";
+    } else if (h1Num > entryVal && (h1Num - entryVal) >= dailyAtr * 0.3 && (h1Num - entryVal) <= dailyAtr * 0.85) {
+      tp1Formatted = h1Num.toFixed(dec);
+      tp1Rationale = "сопротивление 1H";
+    } else {
+      tp1Formatted = (entryVal + dailyAtr * 0.55).toFixed(dec);
+      tp1Rationale = "локальное сопротивление 15M/30M";
+    }
+
+    // 4. TP2: evaluate daily ATR distance to 1D Call Wall vs intermediate 1H/4H target
+    const distToCw = cw - entryVal;
+    const distCwInAtr = distToCw / dailyAtr;
+
+    if (distCwInAtr > 2.0) {
+      // 1D Call Wall is too far (> 2 ATR) for a single day -> choose realistic intermediate 1H/4H target
+      const intermediateTp2 = entryVal + dailyAtr * 1.25;
+      tp2Formatted = intermediateTp2.toFixed(dec);
+      tp2Rationale = "промежуточная цель 1H/4H, достижимо в рамках дня";
+    } else if (distCwInAtr < 0.35) {
+      // Price is already sitting at Call Wall -> target 4H breakout expansion
+      const breakoutTp2 = cw + dailyAtr * 0.85;
+      tp2Formatted = breakoutTp2.toFixed(dec);
+      tp2Rationale = "пробойная цель 4H, достижимо в рамках дня";
+    } else {
+      // Call Wall 1D is within 0.5 - 1.8 ATR -> achievable within today
+      tp2Formatted = cw.toFixed(dec);
+      tp2Rationale = "Call Wall 1D, достижимо в рамках дня";
+    }
+  }
+
+  return {
+    d1Trend,
+    h4Trend,
+    h1Trend,
+    m30Trend,
+    m15Trend,
+    d1KeyLevel,
+    h4KeyLevel,
+    h1KeyLevel,
+    m30KeyLevel,
+    m15KeyLevel,
+    d1LevelDesc,
+    h4LevelDesc,
+    h1LevelDesc,
+    m30LevelDesc,
+    m15LevelDesc,
+    bullTfCount,
+    bearTfCount,
+    isBull,
+    dominantCount,
+    dominantDirectionRu,
+    consensus5Str,
+    dailyAtr: dailyAtrFormatted,
+    entryPriceFormatted,
+    entryRationale,
+    slFormatted,
+    slRationale,
+    tp1Formatted,
+    tp1Rationale,
+    tp2Formatted,
+    tp2Rationale
+  };
+}
+
 // --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
 app.post("/api/ai-analyst/generate-plan", async (req, res) => {
   try {
@@ -8956,19 +9283,48 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       year: "numeric"
     }).format(now);
 
-    const isBull = indicatorForecast?.isBull ?? true;
+    const dec = (ticker === "XRPUSDT") ? 4 : (ticker.includes("GOLD") || ticker.includes("MOEX") || ticker.includes("XAU")) ? 1 : 2;
+    const honestConsensus = computeHonest5TfConsensus(multiTfMetrics, indicatorForecast, Number(currentPrice), gex, dec, ticker);
+    const {
+      d1Trend,
+      h4Trend,
+      h1Trend,
+      m30Trend,
+      m15Trend,
+      d1KeyLevel,
+      h4KeyLevel,
+      h1KeyLevel,
+      m30KeyLevel,
+      m15KeyLevel,
+      d1LevelDesc,
+      h4LevelDesc,
+      h1LevelDesc,
+      m30LevelDesc,
+      m15LevelDesc,
+      bullTfCount,
+      bearTfCount,
+      isBull,
+      dominantCount,
+      dominantDirectionRu,
+      consensus5Str,
+      dailyAtr,
+      entryPriceFormatted,
+      entryRationale,
+      slFormatted,
+      slRationale,
+      tp1Formatted,
+      tp1Rationale,
+      tp2Formatted,
+      tp2Rationale
+    } = honestConsensus;
+
     const marketInfo = getAssetMarketSchedule(ticker, now);
     const effectiveEvents = marketInfo.isWeekend
       ? getWeekendCalendarEvents(ticker, marketInfo.dayOfWeekRu)
       : (Array.isArray(events) && events.length > 0 ? events : []);
 
     const isShortMode = responseStyle === "short";
-    const dec = (ticker === "XRPUSDT") ? 4 : (ticker.includes("GOLD") || ticker.includes("MOEX")) ? 1 : 2;
-    const entryPriceNum = Number(indicatorForecast?.p1Entry ?? currentPrice);
-    const entryPriceFormatted = entryPriceNum.toFixed(dec);
-    const tp1Formatted = Number(indicatorForecast?.p2Tp1 ?? (currentPrice * (isBull ? 1.008 : 0.992))).toFixed(dec);
-    const tp2Formatted = Number(indicatorForecast?.p3Tp2 ?? (currentPrice * (isBull ? 1.016 : 0.984))).toFixed(dec);
-    const slFormatted = Number(indicatorForecast?.activeTrailingSl ?? (currentPrice * (isBull ? 0.995 : 1.005))).toFixed(dec);
+    const entryPriceNum = Number(entryPriceFormatted);
     const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
 
     const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
@@ -8992,32 +9348,21 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
     const bounceRetestLevel = isBull
       ? (entryPriceNum * 0.9994).toFixed(dec)
       : (entryPriceNum * 1.0006).toFixed(dec);
-    const bounceCeilingFloorEma = isBull
-      ? (entryPriceNum * 0.9982).toFixed(dec)
-      : (entryPriceNum * 1.0018).toFixed(dec);
-    const bounceInvalidation = indicatorForecast?.invalidLevelSl
-      ? Number(indicatorForecast.invalidLevelSl).toFixed(dec)
-      : isBull
-      ? (entryPriceNum * 0.9975).toFixed(dec)
-      : (entryPriceNum * 1.0025).toFixed(dec);
+    const bounceCeilingFloorEma = h4KeyLevel;
+    const bounceInvalidation = slFormatted;
     const oteZoneRange = isBull
       ? `${(entryPriceNum * 0.9994).toFixed(dec)} – ${entryPriceFormatted}`
       : `${entryPriceFormatted} – ${(entryPriceNum * 1.0007).toFixed(dec)}`;
 
-    // Multi-Timeframe Consolidated Matrix (5m, 15m, 30m, 1h, 4h, 1d)
-    const mtfList: any[] = Array.isArray(multiTfMetrics) && multiTfMetrics.length > 0 ? multiTfMetrics : [
-      { tf: "5m", trend: isBull ? "BULLISH" : "BEARISH", role: "Скальпинг & микроструктура" },
-      { tf: "15m", trend: isBull ? "BULLISH" : "BEARISH", role: "Базовый рабочий сетап" },
-      { tf: "30m", trend: isBull ? "BULLISH" : "BEARISH", role: "Интрадей-баланс 0.50 EQ" },
-      { tf: "1h", trend: isBull ? "BULLISH" : "BEARISH", role: "Институциональный поток & FVG" },
-      { tf: "4h", trend: "BULLISH", role: "Крупные ордерблоки SMC & 200 EMA" },
-      { tf: "1d", trend: "BULLISH", role: "Глобальный цикл & спрос центробанков" }
+    // Multi-Timeframe Consolidated Matrix (1D, 4H, 1H, 30M, 15M)
+    const mtfList: any[] = [
+      { tf: "1d", trend: d1Trend === "BULL" ? "BULLISH" : "BEARISH", level: d1KeyLevel, role: "Глобальный цикл & спрос центробанков" },
+      { tf: "4h", trend: h4Trend === "BULL" ? "BULLISH" : "BEARISH", level: h4KeyLevel, role: "Крупные ордерблоки SMC & 200 EMA" },
+      { tf: "1h", trend: h1Trend === "BULL" ? "BULLISH" : "BEARISH", level: h1KeyLevel, role: "Институциональный поток & FVG" },
+      { tf: "30m", trend: m30Trend === "BULL" ? "BULLISH" : "BEARISH", level: m30KeyLevel, role: "Интрадей-баланс 0.50 EQ" },
+      { tf: "15m", trend: m15Trend === "BULL" ? "BULLISH" : "BEARISH", level: m15KeyLevel, role: "Базовый рабочий сетап индикатора" }
     ];
-    const bullCount = mtfList.filter(m => String(m.trend || "").toUpperCase() === "BULLISH").length;
-    const bearCount = mtfList.length - bullCount;
-    const confluenceVerdict = isBull
-      ? `${bullCount} из ${mtfList.length} ТФ в пользу ПОКУПОК (Bullish Confluence)`
-      : `${bearCount} из ${mtfList.length} ТФ в пользу ПРОДАЖ (Bearish Confluence интрадей при старшем макро-тренде 1D)`;
+    const confluenceVerdict = `${dominantCount} из 5 ТФ в пользу ${dominantDirectionRu} (${isBull ? "Bullish" : "Bearish"} Confluence)`;
 
     const sanitizeOpts: SanitizePlanOptions = {
       isEntryTriggered,
@@ -9175,31 +9520,13 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const imminentInfo = detectImminentMacroEvent(effectiveEvents, now);
     const nearestNewsStr = getNearestUpcomingMacroEvent(effectiveEvents, now);
 
-    // Consolidated 5 Timeframes (1D, 4H, 1H, 30M, 15M) and their key levels
-    const d1Trend = (mtfList.find(m => m.tf === "1d")?.trend || "BULLISH").toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
-    const h4Trend = (mtfList.find(m => m.tf === "4h")?.trend || "BULLISH").toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
-    const h1Trend = (mtfList.find(m => m.tf === "1h")?.trend || (isBull ? "BULLISH" : "BEARISH")).toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
-    const m30Trend = (mtfList.find(m => m.tf === "30m")?.trend || (isBull ? "BULLISH" : "BEARISH")).toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
-    const m15Trend = isBull ? "BULL" : "BEAR";
-
-    const d1KeyLevel = isBull ? (gex?.putWall || (entryPriceNum * 0.985).toFixed(dec)) : (gex?.callWall || (entryPriceNum * 1.015).toFixed(dec));
-    const h4KeyLevel = bounceCeilingFloorEma;
-    const h1KeyLevel = isBull ? (entryPriceNum * 0.999).toFixed(dec) : (entryPriceNum * 1.001).toFixed(dec);
-    const m30KeyLevel = isBull ? (entryPriceNum * 0.9995).toFixed(dec) : (entryPriceNum * 1.0005).toFixed(dec);
-    const m15KeyLevel = entryPriceFormatted;
-
     const fiveTfList = [
-      { name: "1D", trend: d1Trend, level: d1KeyLevel },
-      { name: "4H", trend: h4Trend, level: h4KeyLevel },
-      { name: "1H", trend: h1Trend, level: h1KeyLevel },
-      { name: "30M", trend: m30Trend, level: m30KeyLevel },
-      { name: "15M", trend: m15Trend, level: m15KeyLevel }
+      { name: "1D", trend: d1Trend, level: d1KeyLevel, desc: d1LevelDesc },
+      { name: "4H", trend: h4Trend, level: h4KeyLevel, desc: h4LevelDesc },
+      { name: "1H", trend: h1Trend, level: h1KeyLevel, desc: h1LevelDesc },
+      { name: "30M", trend: m30Trend, level: m30KeyLevel, desc: m30LevelDesc },
+      { name: "15M", trend: m15Trend, level: m15KeyLevel, desc: m15LevelDesc }
     ];
-    const bullTfCount = fiveTfList.filter(t => t.trend === "BULL").length;
-    const bearTfCount = 5 - bullTfCount;
-    const dominantDirection = isBull ? "ПОКУПКИ" : "ПРОДАЖИ";
-    const dominantCount = isBull ? bullTfCount : bearTfCount;
-    const consensus5Str = `${dominantCount} из 5 ТФ за ${dominantDirection}`;
 
     // Construct institutional global macro & quantitative analyst system instruction
     const systemInstruction = isEducationalOrConceptQuery
@@ -9224,8 +9551,8 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
 1. 🚨 ${imminentInfo.isImminent ? `ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Ближайшие новости: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
 2. GEX: Call ${gex?.callWall || "N/A"}, Put ${gex?.putWall || "N/A"}. Консенсус ТФ: ${consensus5Str}.
-3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} | SL: ${slFormatted} | TP1: ${tp1Formatted}.
-4. Вердикт: 1 короткое предложение (например: "Ждем отскок к ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
+3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}).
+4. Вердикт: 1 короткое предложение (например: "Ждем ${entryRationale} ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
    - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
@@ -9241,22 +9568,38 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
    Дай оценку каждому ТФ:
-   - 1D: ${d1Trend} | ${d1KeyLevel}
-   - 4H: ${h4Trend} | ${h4KeyLevel}
-   - 1H: ${h1Trend} | ${h1KeyLevel}
-   - 30M: ${m30Trend} | ${m30KeyLevel}
-   - 15M: ${m15Trend} | ${m15KeyLevel}
+   - 1D: ${d1Trend} | ${d1KeyLevel} (${d1LevelDesc})
+   - 4H: ${h4Trend} | ${h4KeyLevel} (${h4LevelDesc})
+   - 1H: ${h1Trend} | ${h1KeyLevel} (${h1LevelDesc})
+   - 30M: ${m30Trend} | ${m30KeyLevel} (${m30LevelDesc})
+   - 15M: ${m15Trend} | ${m15KeyLevel} (${m15LevelDesc})
    👉 Итоговый консенсус: ${consensus5Str}.
 
 4. 📋 Торговый план (на основе консенсуса и GEX):
    - ОБЯЗАТЕЛЬНО начни этот блок с фразы:
      "На основе консенсуса ${consensus5Str} и уровней GEX, план следующий:"
    - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
-   - Вход: ${entryPriceFormatted} (укажи, от какого уровня ТФ или GEX, например: от зоны отката 15M/1H ${bounceRetestLevel} или теста поддержки).
-   - Стоп-лосс (SL): ${slFormatted} (обязательно привяжи к ${isBull ? `Put Wall ${gex?.putWall || "поддержке"}` : `Call Wall ${gex?.callWall || "сопротивлению"}`}).
-   - Тейк-профит (TP1 / TP2): TP1: ${tp1Formatted} / TP2: ${tp2Formatted}.
+   - Вход: ${entryPriceFormatted} (${entryRationale}).
+   - Стоп-лосс (SL): ${slFormatted} (${slRationale}).
+   - Тейк 1: ${tp1Formatted} (${tp1Rationale}).
+   - Тейк 2: ${tp2Formatted} (${tp2Rationale}).
    - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-   - План Б: При пробое уровня ${bounceInvalidation} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}.`}
+   - План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}.
+
+ЖЕСТКИЕ ПРАВИЛА ВЫБОРА УРОВНЕЙ И ТЕЙКОВ (АНАЛИЗ ВОЛАТИЛЬНОСТИ ATR И ДИСПЕРСИИ):
+1. ЗАПРЕЩЕНО СЛЕПО ПРИВЯЗЫВАТЬ ТЕЙКИ К ОДНИМ И ТЕМ ЖЕ ТАЙМФРЕЙМАМ (например, всегда писать TP1 = 30M, а TP2 = 1D)! Для интрадей-торговли цели должны быть реалистичны в рамках одного дня.
+2. ТЫ ОБЯЗАН ОЦЕНИВАТЬ ДНЕВНОЙ СРЕДНИЙ ХОД (ATR: ~${dailyAtr} п.) И РАССТОЯНИЕ ДО УРОВНЕЙ:
+   - Вход: от ближайшей зоны отката (15M/30M/1H).
+   - Стоп-лосс: за локальный экстремум (хай/лоу 15M) или уровень индикатора / 200 EMA на 4H.
+   - TP1 (Ближайшая цель): ближайшая локальная поддержка/сопротивление на 15M, 30M или 1H (~0.4–0.7 ATR от входа).
+   - TP2 (Основная цель дня): следующий значимый уровень (1H, 4H или 1D), НО ТОЛЬКО ЕСЛИ он реалистично достижим внутри одного торгового дня:
+     * Если до дневного уровня 1D (Put/Call Wall) больше 2–3 ATR или цена уже стоит на нем — ВЫБИРАЙ ПРОМЕЖУТОЧНУЮ ЦЕЛЬ НА 1H ИЛИ 4H (например, цель дня в пределах 1.2–1.5 ATR)!
+     * Если уровень 1D находится в пределах нормального дневного хода (0.6–1.8 ATR) — указывай его с пометкой "(достижимо в рамках дня)".
+3. В Блоке 4 ОБЯЗАТЕЛЬНО пиши обоснование каждого уровня в скобках строго по образцу:
+   - Вход: ${entryPriceFormatted} (${entryRationale})
+   - Стоп-лосс: ${slFormatted} (${slRationale})
+   - Тейк 1: ${tp1Formatted} (${tp1Rationale})
+   - Тейк 2: ${tp2Formatted} (${tp2Rationale})`}
 
 ⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ:
 Если вход сработал, а цель TP1 ещё не достигнута:
@@ -9303,21 +9646,22 @@ ${liveWorldNewsFormatted}
 - Гамма-режим: ${gex?.regime || "Positive"}
 
 3. 📈 ДАННЫЕ ПО ВСЕМ 5 ТАЙМФРЕЙМАМ:
-- 1D: ${d1Trend} | Ключевой уровень: ${d1KeyLevel}
-- 4H: ${h4Trend} | Ключевой уровень: ${h4KeyLevel}
-- 1H: ${h1Trend} | Ключевой уровень: ${h1KeyLevel}
-- 30M: ${m30Trend} | Ключевой уровень: ${m30KeyLevel}
-- 15M: ${m15Trend} | Ключевой уровень: ${m15KeyLevel}
+- 1D: ${d1Trend} | Уровень: ${d1KeyLevel} (${d1LevelDesc})
+- 4H: ${h4Trend} | Уровень: ${h4KeyLevel} (${h4LevelDesc})
+- 1H: ${h1Trend} | Уровень: ${h1KeyLevel} (${h1LevelDesc})
+- 30M: ${m30Trend} | Уровень: ${m30KeyLevel} (${m30LevelDesc})
+- 15M: ${m15Trend} | Уровень: ${m15KeyLevel} (${m15LevelDesc})
 👉 ИТОГОВЫЙ КОНСЕНСУС: ${consensus5Str}
 
-4. 📋 ПАРАМЕТРЫ СДЕЛКИ QUANTEX:
+4. 📋 ПАРАМЕТРЫ СДЕЛКИ QUANTEX (ДИНАМИЧЕСКИЙ ВЫБОР УРОВНЕЙ С УЧЕТОМ ДНЕВНОГО ATR ~${dailyAtr} п.):
 - Направление: ${isBull ? "LONG" : "SHORT"}
-- Вход: ${entryPriceFormatted} (${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"})
-- Стоп-лосс (SL): ${slFormatted} (привязка к ${isBull ? `Put Wall ${gex?.putWall || "поддержке"}` : `Call Wall ${gex?.callWall || "сопротивлению"}`})
-- TP1: ${tp1Formatted} (${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ" : isEntryTriggered ? `⏳ В позиции, ждём TP1 (до цели: ${distToTp1} п.)` : "⏳ В ожидании входа"})
-- TP2: ${tp2Formatted}
-- План Б (инвалидация): пробой уровня ${bounceInvalidation} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
-- Статус в терминале (HUD): "${hudStatus}"`;;
+- Вход: ${entryPriceFormatted} (${entryRationale}) [${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"}]
+- Стоп-лосс (SL): ${slFormatted} (${slRationale})
+- Тейк 1: ${tp1Formatted} (${tp1Rationale}) [${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ" : isEntryTriggered ? `⏳ В позиции, ждём TP1 (до цели: ${distToTp1} п.)` : "⏳ В ожидании входа"}]
+- Тейк 2: ${tp2Formatted} (${tp2Rationale})
+- План Б (инвалидация): пробой уровня ${slFormatted} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
+- Статус в терминале (HUD): "${hudStatus}"
+- Правило тейков: TP1 — ближайший локальный уровень (15M/1H), TP2 — цель дня (1H/4H или 1D Put/Call Wall, строго в пределах дневного ATR, без слепой привязки к 1D)`;;
 
     if (!isEducationalOrConceptQuery) {
       if (Array.isArray(history) && history.length > 0) {
@@ -9409,6 +9753,20 @@ ${liveWorldNewsFormatted}
 3. В конце ответа сошлись на проверенные источники:
 🌐 **Проверенные мировые источники и новости из сети (Live Web Search):**
 с перечислением ключевых агентств (Bloomberg, Reuters, CME Group, Kitco, Investing.com) и дат.`;
+
+        // Direct search without intermediate 422 errors: query /v1/tools/search directly first
+        const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
+        console.log(`[DeepSeek Live Search] 🔍 Прямой запрос в DeepSeek Search API (https://api.deepseek.com/v1/tools/search) с запросом: "${searchQuery}"...`);
+        const dsSearchResults = await fetchDeepSeekSearchApi(dsKey, searchQuery, 5);
+
+        if (dsSearchResults.length > 0) {
+          console.log(`[DeepSeek Search API] ✅ Получено ${dsSearchResults.length} проверенных RU/EN результатов веб-поиска:`, dsSearchResults.map(s => `[${s.title}](${s.url})`));
+          addServerLog("INFO", `[DeepSeek Search API] ✅ Успешно получено ${dsSearchResults.length} источников из интернета от поисковика DeepSeek`);
+          dsPrompt += `\n\n🌐 РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ЖИВОГО ПОИСКА В ИНТЕРНЕТЕ ИЗ ПОИСКОВОЙ СИСТЕМЫ DEEPSEEK (Search API):\n` +
+            dsSearchResults.map(s => `• [${s.title}](${s.url}) — ${s.snippet || ""}`).join("\n");
+        } else {
+          console.log(`[DeepSeek Search API] Поисковик не вернул прямых результатов, используются потоки мировых новостей.`);
+        }
       } else {
         dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ: ОТКЛЮЧЕН пользователем. Опирайся исключительно на локальные алгоритмические данные терминала.`;
         dsPrompt = dsPrompt.replace(/🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ[\s\S]*?(?=\n\n|\n📊)/g, "");
@@ -9417,6 +9775,7 @@ ${liveWorldNewsFormatted}
       try {
         const endpoint = aiProviderConfig?.deepSeekEndpoint || "https://api.deepseek.com/chat/completions";
         
+        // Standard chat completions payload WITHOUT tools parameter to prevent HTTP 422 error
         const dsRequestBody: any = {
           model: dsModel,
           messages: [
@@ -9426,15 +9785,10 @@ ${liveWorldNewsFormatted}
           temperature: 0.25
         };
 
-        // 1. Pass native web_search tool if enabled
-        if (isDsWebSearchEnabled) {
-          dsRequestBody.tools = [{ type: "web_search" }];
-        }
+        console.log(`[DeepSeek API Request] 🌐 Отправка POST ${endpoint} | Модель: ${dsModel} (без tools, с внедренными данными поиска)...`);
+        addServerLog("INFO", `[DeepSeek API] Отправка запроса на ${endpoint} (модель: ${dsModel}, прямой поиск: ${isDsWebSearchEnabled ? "активен" : "отключен"})`);
 
-        console.log(`[DeepSeek API Request] 🌐 Отправка POST ${endpoint} | Модель: ${dsModel} | tools: ${JSON.stringify(dsRequestBody.tools || [])}`);
-        addServerLog("INFO", `[DeepSeek API] Отправка запроса на ${endpoint} (модель: ${dsModel}, tools: ${isDsWebSearchEnabled ? '[{"type":"web_search"}]' : "отключен"})`);
-
-        let dsRes = await fetch(endpoint, {
+        const dsRes = await fetch(endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -9442,40 +9796,6 @@ ${liveWorldNewsFormatted}
           },
           body: JSON.stringify(dsRequestBody)
         });
-
-        // 2. Fallback check: if endpoint rejected tools parameter (e.g. standard chat endpoint without native tool support)
-        if (!dsRes.ok && dsRequestBody.tools) {
-          const errText = await dsRes.text();
-          console.warn(`[DeepSeek API] Эндпоинт ${endpoint} вернул статус ${dsRes.status} на параметр tools: ${errText.slice(0, 160)}.`);
-          addServerLog("WARN", `[DeepSeek API] Эндпоинт не поддерживает tools: web_search (${dsRes.status}). Запуск прямого поиска через DeepSeek Search API...`);
-
-          // Execute live search via official DeepSeek Search API
-          const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
-          console.log(`[DeepSeek Live Search] 🔍 Запуск прямого запроса в DeepSeek Search API (https://api.deepseek.com/v1/tools/search) с запросом: "${searchQuery}"...`);
-          const dsSearchResults = await fetchDeepSeekSearchApi(dsKey, searchQuery, 5);
-
-          if (dsSearchResults.length > 0) {
-            console.log(`[DeepSeek Search API] ✅ Получено ${dsSearchResults.length} живых результатов от поискового движка DeepSeek:`, dsSearchResults.map(s => `[${s.title}](${s.url})`));
-            addServerLog("INFO", `[DeepSeek Search API] ✅ Успешно получено ${dsSearchResults.length} источников из интернета от поисковика DeepSeek`);
-            dsPrompt += `\n\n🌐 РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ЖИВОГО ПОИСКА В ИНТЕРНЕТЕ ИЗ ПОИСКОВОЙ СИСТЕМЫ DEEPSEEK (Search API):\n` +
-              dsSearchResults.map(s => `• [${s.title}](${s.url}) — ${s.snippet || ""}`).join("\n");
-          } else {
-            console.log(`[DeepSeek Search API] DeepSeek Search API не вернул прямых результатов, используются потоки мировых новостей.`);
-          }
-
-          delete dsRequestBody.tools;
-          dsRequestBody.messages[1].content = dsPrompt;
-
-          console.log(`[DeepSeek API] Повторная отправка запроса в ${endpoint} без параметра tools (с внедренными реальными данными поиска DeepSeek)...`);
-          dsRes = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${dsKey.trim()}`
-            },
-            body: JSON.stringify(dsRequestBody)
-          });
-        }
 
         if (dsRes.ok) {
           const dsData = await dsRes.json();
@@ -9989,18 +10309,19 @@ function generateAutonomousAiPlan(params: {
     liveWorldNews = []
   } = params;
 
-  const isBull = indicatorForecast?.isBull ?? true;
-  const dec = ticker === "XRPUSDT" ? 4 : (ticker === "MOEX_GOLD" || ticker === "MOEX_MINI") ? 1 : 2;
-  const entry = Number(indicatorForecast?.p1Entry ?? currentPrice).toFixed(dec);
-  const tp1 = Number(indicatorForecast?.p2Tp1 ?? (currentPrice * (isBull ? 1.008 : 0.992))).toFixed(dec);
-  const tp2 = Number(indicatorForecast?.p3Tp2 ?? (currentPrice * (isBull ? 1.016 : 0.984))).toFixed(dec);
-  const sl = Number(indicatorForecast?.activeTrailingSl ?? (currentPrice * (isBull ? 0.995 : 1.005))).toFixed(dec);
-  const prob = indicatorForecast?.probability ?? 84;
-  const cw = gex?.callWall || (currentPrice * 1.015).toFixed(dec);
-  const pw = gex?.putWall || (currentPrice * 0.985).toFixed(dec);
-  const maxPain = gex?.maxPain || currentPrice.toFixed(dec);
-  const emLow = gex?.expectedMove68?.low || (currentPrice * 0.99).toFixed(dec);
-  const emHigh = gex?.expectedMove68?.high || (currentPrice * 1.01).toFixed(dec);
+  const dec = ticker === "XRPUSDT" ? 4 : (ticker === "MOEX_GOLD" || ticker === "MOEX_MINI" || ticker.includes("XAU")) ? 1 : 2;
+  const honest = computeHonest5TfConsensus(multiTfMetrics, indicatorForecast, Number(currentPrice), gex, dec, ticker);
+  const isBull = honest.isBull;
+  const entry = honest.entryPriceFormatted;
+  const tp1 = honest.tp1Formatted;
+  const tp2 = honest.tp2Formatted;
+  const sl = honest.slFormatted;
+  const prob = indicatorForecast?.probability ?? (isBull ? 84 : 86);
+  const cw = gex?.callWall || (Number(currentPrice) * 1.015).toFixed(dec);
+  const pw = gex?.putWall || (Number(currentPrice) * 0.985).toFixed(dec);
+  const maxPain = gex?.maxPain || Number(currentPrice).toFixed(dec);
+  const emLow = gex?.expectedMove68?.low || (Number(currentPrice) * 0.99).toFixed(dec);
+  const emHigh = gex?.expectedMove68?.high || (Number(currentPrice) * 1.01).toFixed(dec);
   const gexRegime = gex?.regime || "POSITIVE_GAMMA";
   const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
   const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
@@ -10518,12 +10839,12 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     ? `⏳ В позиции (до цели ${distToTp1} п., стоп перенесён в БУ)`
     : "первая фиксация 50% объема и перевод SL в безубыток";
 
-  const d1KeyLevel = isBull ? pw : cw;
-  const h4KeyLevel = ema200Val;
-  const h1KeyLevel = bounceRetestAuto;
-  const m30KeyLevel = entry;
-  const m15KeyLevel = entry;
-  const consensusSummary = isBull ? "4 из 5 ТФ за ПОКУПКИ" : "4 из 5 ТФ за ПРОДАЖИ";
+  const d1KeyLevel = honest.d1KeyLevel;
+  const h4KeyLevel = honest.h4KeyLevel;
+  const h1KeyLevel = honest.h1KeyLevel;
+  const m30KeyLevel = honest.m30KeyLevel;
+  const m15KeyLevel = honest.m15KeyLevel;
+  const consensusSummary = honest.consensus5Str;
 
   const imminentAlertDetailed = imminent.isImminent
     ? `🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.\n\n`
@@ -10546,21 +10867,21 @@ ${formattedNewsFacts}
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
 Дай оценку каждому ТФ:
-- 1D: ${isBull ? "BULL" : "BEAR"} | ${d1KeyLevel}
-- 4H: ${isBull ? "BULL" : "BEAR"} | ${h4KeyLevel}
-- 1H: ${isBull ? "BULL" : "BEAR"} | ${h1KeyLevel}
-- 30M: ${isBull ? "BULL" : "BEAR"} | ${m30KeyLevel}
-- 15M: ${isBull ? "BULL" : "BEAR"} | ${m15KeyLevel}
+- 1D: ${honest.d1Trend} | ${d1KeyLevel} (${honest.d1LevelDesc})
+- 4H: ${honest.h4Trend} | ${h4KeyLevel} (${honest.h4LevelDesc})
+- 1H: ${honest.h1Trend} | ${h1KeyLevel} (${honest.h1LevelDesc})
+- 30M: ${honest.m30Trend} | ${m30KeyLevel} (${honest.m30LevelDesc})
+- 15M: ${honest.m15Trend} | ${m15KeyLevel} (${honest.m15LevelDesc})
 👉 Итоговый консенсус: ${consensusSummary}.
 
 4. 📋 Торговый план (на основе консенсуса и GEX):
 На основе консенсуса ${consensusSummary} и уровней GEX, план следующий:
 - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
-- Вход: ${entry} (от зоны подтверждения 15M/1H ${bounceRetestAuto} и уровней GEX).
-- Стоп-лосс (SL): ${sl} (обязательно привязан к ${isBull ? `Put Wall ${pw}` : `Call Wall ${cw}`}).
-- Тейк-профит (TP1 / TP2): TP1: ${tp1} (${tp1StatusDesc}) / TP2: ${tp2}.
+- Вход: ${entry} (${honest.entryRationale}).
+- Стоп-лосс (SL): ${sl} (${honest.slRationale}).
+- Тейк-профит (TP1 / TP2): TP1: ${tp1} (${honest.tp1Rationale}) [${tp1StatusDesc}] / TP2: ${tp2} (${honest.tp2Rationale}).
 - ⚠️ Корректировка на новости: ${imminent.isImminent ? `Перед выходом ${imminent.title} в ${imminent.timeMsk} МСК стоп подтягивается в безубыток.` : "При отсутствии резких новостных импульсов позиция удерживается по целям плана."}
-- План Б: При пробое уровня ${bounceSlAuto} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}.`;
+- План Б: При пробое уровня ${sl} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}.`;
 }
 
 // Serve static build or set up Vite middleware in development
