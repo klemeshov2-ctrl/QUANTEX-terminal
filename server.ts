@@ -2570,8 +2570,11 @@ ${
         messages: [
           {
             role: "system",
-            content: `РОЛЬ: Профессиональный трейдер XAUUSD. Язык четкий, без сложных терминов и воды.
+            content: `РОЛЬ: Профессиональный трейдер ${pair}. Язык четкий, без сложных терминов и воды.
 ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
+
+ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
+Пиши простым языком практикующего трейдера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE. Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит. Текст должен быть кратким. Никаких длинных предложений.
 
 Текущий режим: ${(params as any).responseStyle === "short" ? "«Короткий ответ» (Short)" : "«Развёрнутый ответ» (Detailed)"}.
 
@@ -2582,9 +2585,10 @@ ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТ
 4. Вердикт: 1 короткое предложение.` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 1. 📰 Фундаментальный фон и новости:
+   - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
    - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Формат: [Время МСК] — [Событие] — [Влияние на золото].
-   - Если до важной новости < 30 минут, первой строкой ответа выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если новостей нет — "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".
+   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото].
+   - Если до важной новости < 30 минут, первой строкой выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если новостей нет — "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".
 
 2. 📊 Опционные уровни (GEX):
    - Call Wall (Сопротивление): [Уровень]
@@ -2607,7 +2611,7 @@ ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТ
    - Вход: [Цена] (укажи, от какого уровня ТФ или GEX).
    - Стоп-лосс (SL): [Цена] (обязательно привяжи к Call Wall или Put Wall).
    - Тейк-профит (TP1 / TP2): [Цены].
-   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку.
+   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
    - План Б: При пробое уровня [Уровень] в обратную сторону, ищем вход с целями [Цены].`}`
           },
           {
@@ -8452,6 +8456,47 @@ export interface LiveWorldNewsItem {
   source: string;
 }
 
+// Strict Language & Quality Filter: allow ONLY Russian (Cyrillic) and English (Latin)
+export function isValidRuEnNews(text: string): boolean {
+  if (!text || typeof text !== "string") return false;
+  // Reject Arabic, Persian, Urdu scripts
+  if (/[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff]/.test(text)) return false;
+  // Reject East Asian scripts: Chinese, Japanese, Korean
+  if (/[\u4e00-\u9fa5\u3040-\u30ff\u3400-\u4dbf\uac00-\ud7af]/.test(text)) return false;
+  // Reject Thai, Hebrew, Devanagari (Hindi) and other non-target scripts
+  if (/[\u0e00-\u0e7f\u0590-\u05ff\u0900-\u097f]/.test(text)) return false;
+  // Must contain Russian Cyrillic or English Latin letters
+  const hasRu = /[а-яА-ЯёЁ]/.test(text);
+  const hasEn = /[a-zA-Z]/.test(text);
+  return hasRu || hasEn;
+}
+
+// Build clean, asset-prioritized macro search query under 128 characters (DeepSeek Search API limit)
+export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery: string = ""): string {
+  const t = (ticker || "XAUUSD").toUpperCase();
+  const q = (userQuery || "").trim();
+
+  // If user asked a specific educational/factual search question, focus on it while keeping it clean
+  if (q.length > 3 && !q.toLowerCase().includes("дай план") && !q.toLowerCase().includes("сетап")) {
+    const cleanUserQ = q.replace(/[^\w\sа-яА-ЯёЁ\-\.\$]/gi, " ").replace(/\s+/g, " ").trim();
+    const combined = `${t} ${cleanUserQ.slice(0, 50)} ФРС инфляция ставка CPI`;
+    return combined.slice(0, 120);
+  }
+
+  const isBtc = t.includes("BTC") || t.includes("BITCOIN");
+  const isGold = t.includes("XAU") || t.includes("GOLD") || t.includes("GLD");
+
+  if (isBtc) {
+    // 1. Ticker priority -> 2. Crypto focus -> 3. Correlation -> 4. Macro keywords
+    return `${t} Bitcoin BTC криптовалюта gold crypto correlation ФРС инфляция ставка CPI`.slice(0, 120);
+  } else if (isGold) {
+    // 1. Ticker priority -> 2. Gold focus -> 3. Correlation -> 4. Macro keywords
+    return `${t} Gold XAUUSD золото биткоин корреляция ФРС инфляция ставка CPI`.slice(0, 120);
+  } else {
+    return `${t} рынок финансы биткоин корреляция ФРС инфляция ставка CPI`.slice(0, 120);
+  }
+}
+
 function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
   const items: LiveWorldNewsItem[] = [];
   const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/g;
@@ -8471,6 +8516,10 @@ function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
       source = parts.pop() || "";
       rawTitle = parts.join(" - ");
     }
+    // Strict RU / EN language filter: filter out non-RU/EN or spam articles
+    if (!isValidRuEnNews(rawTitle)) {
+      continue;
+    }
     items.push({
       title: rawTitle.trim(),
       link: match[2].trim(),
@@ -8484,8 +8533,11 @@ function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
 export async function fetchLiveWorldNews(query: string = "", ticker: string = "XAUUSD"): Promise<LiveWorldNewsItem[]> {
   try {
     const q = (query || "").toLowerCase();
-    let searchQueryRu = `${ticker} золото мировые рынки новости аналитика`;
-    let searchQueryEn = `${ticker} gold commodities markets news analysis`;
+    const isBtc = ticker.includes("BTC") || ticker.includes("BITCOIN") || q.includes("биткоин") || q.includes("крипт");
+    let searchQueryRu = buildCleanMacroSearchQuery(ticker, query);
+    let searchQueryEn = isBtc
+      ? `${ticker} Bitcoin BTC crypto gold correlation Fed interest rate inflation CPI`
+      : `${ticker} gold commodities bitcoin correlation Fed rate inflation CPI news`;
     let isForecastQuery = false;
 
     // Prioritize specific user questions: analyst forecasts, year-end targets, inflation, Fed meetings
@@ -8502,12 +8554,6 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
     } else if (q.includes("безработиц") || q.includes("nfp") || q.includes("рынок труда") || q.includes("payroll")) {
       searchQueryRu = "рынок труда США безработица NFP Non-Farm Payrolls";
       searchQueryEn = "US jobs report Non-farm payrolls unemployment BLS";
-    } else if (q.includes("биткоин") || q.includes("крипт") || ticker.includes("BTC")) {
-      searchQueryRu = "биткоин BTC крипторынок ETF прогноз цена";
-      searchQueryEn = "bitcoin BTC crypto ETF price forecast";
-    } else if (query && query.trim().length > 3) {
-      searchQueryRu = `${ticker} ${query.trim().slice(0, 80)}`;
-      searchQueryEn = `${ticker} ${query.trim().slice(0, 50)} market news`;
     }
 
     // 1. Fetch primary localized Russian news
@@ -8526,7 +8572,7 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       items = parseRssNewsXml(xml, 5);
     }
 
-    // 2. If fewer than 3 items or analyst forecast query, supplement with English global financial wire
+    // 2. Supplement with English global financial wire if needed
     if (items.length < 3 || isForecastQuery) {
       try {
         const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn)}&hl=en-US&gl=US&ceid=US:en`;
@@ -8561,7 +8607,8 @@ interface DeepSeekSearchResult {
 
 async function fetchDeepSeekSearchApi(apiKey: string, query: string, count = 5): Promise<DeepSeekSearchResult[]> {
   try {
-    console.log(`[DeepSeek Search API] 🌐 Отправка запроса в поисковый движок DeepSeek Search API: "${query}"...`);
+    const cleanQuery = query.slice(0, 128);
+    console.log(`[DeepSeek Search API] 🌐 Отправка запроса в поисковый движок DeepSeek Search API: "${cleanQuery}"...`);
     const controller = new AbortController();
     const tm = setTimeout(() => controller.abort(), 4000);
     const res = await fetch("https://api.deepseek.com/v1/tools/search", {
@@ -8571,7 +8618,7 @@ async function fetchDeepSeekSearchApi(apiKey: string, query: string, count = 5):
         "Authorization": `Bearer ${apiKey.trim()}`
       },
       body: JSON.stringify({
-        query: query.slice(0, 128),
+        query: cleanQuery,
         count: Math.min(count, 10)
       }),
       signal: controller.signal
@@ -8581,13 +8628,21 @@ async function fetchDeepSeekSearchApi(apiKey: string, query: string, count = 5):
     if (res && res.ok) {
       const data = await res.json();
       const rawList = Array.isArray(data.results) ? data.results : Array.isArray(data.data) ? data.data : Array.isArray(data.items) ? data.items : [];
-      const list: DeepSeekSearchResult[] = rawList.map((item: any) => ({
-        title: item.title || item.name || "Новость",
-        url: item.url || item.link || "",
-        snippet: item.snippet || item.summary || "",
-        rerank_score: item.rerank_score
-      }));
-      console.log(`[DeepSeek Search API] ✅ Получено ${list.length} результатов веб-поиска от DeepSeek:`, list.map(l => l.title));
+      const list: DeepSeekSearchResult[] = [];
+      for (const item of rawList) {
+        const title = item.title || item.name || "Новость";
+        const snippet = item.snippet || item.summary || "";
+        // Strict language check: only Russian or English, no Arabic or Asian scripts
+        if (isValidRuEnNews(title) && (!snippet || isValidRuEnNews(snippet))) {
+          list.push({
+            title,
+            url: item.url || item.link || "",
+            snippet,
+            rerank_score: item.rerank_score
+          });
+        }
+      }
+      console.log(`[DeepSeek Search API] ✅ Получено ${list.length} проверенных RU/EN результатов веб-поиска от DeepSeek:`, list.map(l => l.title));
       return list;
     } else if (res) {
       const err = await res.text();
@@ -8729,6 +8784,15 @@ function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): st
 
   // 3. Normalize Setup label: replace "Сетап (SHORT, M15 ACTIVE)" with "Сетап (SHORT, ДНЕВНОЙ КОНСЕНСУС 5M–1D)"
   clean = clean.replace(/Сетап\s*\(([^\)]*?)(?:M15|15m)[^\)]*\)/gi, `Сетап (${opts.isBull ? "LONG" : "SHORT"}, ДНЕВНОЙ КОНСЕНСУС 5M–1D)`);
+
+  // 4. Strict simplification: purge forbidden academic/slang terms and replace with simple trader language
+  clean = clean
+    .replace(/\bрефлекси[яиейю]\b/gi, "анализ реакции рынка")
+    .replace(/нейтрально-волатильн[оыеая]+/gi, "боковик с импульсами")
+    .replace(/имбаланс[ыаовем]*/gi, "ценовой разрыв")
+    .replace(/ордерблок[амиовех]*/gi, "зона поддержки/сопротивления")
+    .replace(/лимитку/gi, "покупку по лимиту")
+    .replace(/\b0DTE\b|\bODTE\b/gi, "дневные экспирации");
 
   return clean;
 }
@@ -9069,13 +9133,13 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 
     const expHorizonCtx = detectOptionExpirationHorizon();
     const expiryRuleInstruction = `
-⚖️ ПРАВИЛО УЧЕТА ГОРИЗОНТОВ ОПЦИОННОЙ ЭКСПИРАЦИИ (0DTE, НЕДЕЛЬНЫЕ, МЕСЯЧНЫЕ, КВАРТАЛЬНЫЕ):
+⚖️ ПРАВИЛО УЧЕТА ГОРИЗОНТОВ ОПЦИОННОЙ ЭКСПИРАЦИИ (ДНЕВНЫЕ, НЕДЕЛЬНЫЕ, МЕСЯЧНЫЕ, КВАРТАЛЬНЫЕ):
 - Текущий горизонт: ${expHorizonCtx.horizonNameRu.toUpperCase()} (${marketInfo.dayOfWeekRu}, ${dateMsk})
 - Статус экспирации: ${expHorizonCtx.isExpiryDay ? "⚠️ ДЕНЬ ПОВЫШЕННОЙ ЭКСПИРАЦИОННОЙ ВОЛАТИЛЬНОСТИ / РОЛЛОВЕРА" : "Регулярный торговый день"}.
 - Опционный ориентир: ${expHorizonCtx.pinningTargetDesc}
 - Руководство: ${expHorizonCtx.adviceForAi}
 
-1. ⚡ ДНЕВНЫЕ ЭКСПИРАЦИИ (0DTE / Интрадей):
+1. ⚡ ДНЕВНЫЕ ЭКСПИРАЦИИ (Интрадей):
    - Активны каждый рабочий день на индексах США и 24/7 в крипто-опционах.
    - Экстремальная тета-деградация (Theta decay) и постоянная дельта-гамма ребалансировка дилеров. После 17:00 МСК дилеры ускоренно сжимают волатильность к суточному магниту.
 2. 📅 НЕДЕЛЬНЫЕ ЭКСПИРАЦИИ (Weekly OPEX - Каждая пятница):
@@ -9150,6 +9214,11 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
       : `РОЛЬ: Профессиональный трейдер ${ticker}. Твой язык четкий, без сложных терминов и воды.
 ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
 
+ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
+Пиши простым языком практикующего трейдера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE.
+Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит.
+Текст должен быть кратким. Никаких длинных предложений.
+
 Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (Short)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Detailed)"}.
 
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
@@ -9159,9 +9228,10 @@ ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГ
 4. Вердикт: 1 короткое предложение (например: "Ждем отскок к ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
+   - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
    - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Формат: [Время МСК] — [Событие] — [Влияние на золото].
-   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Если до важной новости < 30 минут, первой строкой ответа выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
+   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото].
+   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Если до важной новости < 30 минут, первой строкой выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
 2. 📊 Опционные уровни (GEX):
    - Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
@@ -9185,7 +9255,7 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
    - Вход: ${entryPriceFormatted} (укажи, от какого уровня ТФ или GEX, например: от зоны отката 15M/1H ${bounceRetestLevel} или теста поддержки).
    - Стоп-лосс (SL): ${slFormatted} (обязательно привяжи к ${isBull ? `Put Wall ${gex?.putWall || "поддержке"}` : `Call Wall ${gex?.callWall || "сопротивлению"}`}).
    - Тейк-профит (TP1 / TP2): TP1: ${tp1Formatted} / TP2: ${tp2Formatted}.
-   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку.
+   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
    - План Б: При пробое уровня ${bounceInvalidation} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}.`}
 
 ⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ:
@@ -9380,7 +9450,7 @@ ${liveWorldNewsFormatted}
           addServerLog("WARN", `[DeepSeek API] Эндпоинт не поддерживает tools: web_search (${dsRes.status}). Запуск прямого поиска через DeepSeek Search API...`);
 
           // Execute live search via official DeepSeek Search API
-          const searchQuery = `${ticker} ${userQuery || "золото XAUUSD новости ФРС CPI ставка инфляция"}`;
+          const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
           console.log(`[DeepSeek Live Search] 🔍 Запуск прямого запроса в DeepSeek Search API (https://api.deepseek.com/v1/tools/search) с запросом: "${searchQuery}"...`);
           const dsSearchResults = await fetchDeepSeekSearchApi(dsKey, searchQuery, 5);
 
@@ -10459,9 +10529,14 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     ? `🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.\n\n`
     : "";
 
+  const assetNameRu = (ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLD")) ? "золото" : (ticker.includes("BTC") ? "биткоин" : ticker);
+  const formattedNewsFacts = (Array.isArray(liveWorldNews) && liveWorldNews.length > 0)
+    ? liveWorldNews.slice(0, 3).map(n => `- [${timeMsk} МСК] — ${n.title} — Влияние на ${assetNameRu}: тест опционных границ.`).join("\n")
+    : `- [${timeMsk} МСК] — ${imminent.isImminent ? `${imminent.title} — ${imminent.marketEffect}` : nearestNews !== "Фон чистый" ? `${nearestNews} — Мониторинг реакции рынка` : "Фон чистый — Ближайшие важные публикации отсутствуют."}
+- [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: умеренная волатильность у Put Wall ${pw}.`;
+
   return `${imminentAlertDetailed}1. 📰 Фундаментальный фон и новости:
-${liveNewsSection || `- [${timeMsk} МСК] — ${imminent.isImminent ? `${imminent.title} — ${imminent.marketEffect}` : nearestNews}
-- [15:30 МСК] — Ожидания по ставкам ФРС и макростатистика США — Умеренное влияние на золото (поддержка на откатах к Put Wall ${pw}).`}
+${formattedNewsFacts}
 
 2. 📊 Опционные уровни (GEX):
 - Call Wall (Сопротивление): ${cw}

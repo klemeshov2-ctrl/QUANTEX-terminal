@@ -1379,11 +1379,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 4. Вердикт: ${verdict}`;
     }
 
+    const currentTicker = payload.ticker || "XAUUSD";
+    const assetNameRu = (currentTicker.includes("GOLD") || currentTicker.includes("XAU") || currentTicker.includes("GLD")) ? "золото" : (currentTicker.includes("BTC") ? "биткоин" : currentTicker);
     const consensusStr = isBull ? "4 из 5 ТФ за ПОКУПКИ" : "4 из 5 ТФ за ПРОДАЖИ";
 
     return `1. 📰 Фундаментальный фон и новости:
 - [${mskNow} МСК] — Фон чистый — Ближайшие важные публикации отсутствуют.
-- [15:30 МСК] — Ожидания по ставкам ФРС и макростатистика США — Смягчение монетарных условий стимулирует приток капитала к Call Wall ${callWall}.
+- [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: поддержка котировок у Put Wall ${putWall}.
 
 2. 📊 Опционные уровни (GEX):
 - Call Wall (Сопротивление): ${callWall}
@@ -1403,10 +1405,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 4. 📋 Торговый план (на основе консенсуса и GEX):
 На основе консенсуса ${consensusStr} и уровней GEX, план следующий:
 - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
-- Вход: ${entryConservative} (от зоны подтверждения OTE и уровней GEX).
+- Вход: ${entryConservative} (от зоны отката и уровней GEX).
 - Стоп-лосс (SL): ${slLevel} (обязательно привязан к ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`}).
 - Тейк-профит (TP1 / TP2): TP1: ${tp1} (${isTp1Hit ? "взят" : isEntryHit ? "в позиции, ждём TP1" : "ждём входа"}) / TP2: ${tp2}.
-- ⚠️ Корректировка на новости: При отсутствии резких новостных импульсов сделка отрабатывается строго по уровням ликвидности.
+- ⚠️ Корректировка на новости: При отсутствии резких новостных импульсов сделка отрабатывается по целям плана.
 - План Б: При пробое уровня ${cancelLevel} в обратную сторону, ищем вход с целями ${altTarget}.`;
   };
 
