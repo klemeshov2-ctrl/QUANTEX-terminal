@@ -531,26 +531,44 @@ export function f_round_step(pr: number): number {
 
 export function f_avoid_round(price: number, isLong: boolean, atrV: number, mintick = 0.01): number {
   const step = f_round_step(price);
+  if (step <= 0) return price;
   const nr = Math.round(price / step) * step;
   const dist = Math.abs(price - nr);
   const zone = atrV * 0.35;
+  if (dist >= zone) return price;
+
+  const sh = Math.max(atrV * 0.12, mintick * 5);
   let result = price;
-  if (dist < zone && step > 0) {
-    const sh = Math.max(atrV * 0.12, mintick * 5);
-    result = isLong ? Math.min(nr - sh, price) : Math.max(nr + sh, price);
+  if (isLong) {
+    // For Long TP: if price is just below or at a round resistance nr, take profit slightly before it (nr - sh)
+    if (price <= nr && nr - sh > price - zone) {
+      result = nr - sh;
+    }
+  } else {
+    // For Short TP: if price is just above or at a round support nr, take profit slightly before it (nr + sh)
+    if (price >= nr && nr + sh < price + zone) {
+      result = nr + sh;
+    }
   }
   return result;
 }
 
 export function f_avoid_round_sl(price: number, isLong: boolean, atrV: number, mintick = 0.01): number {
   const step = f_round_step(price);
+  if (step <= 0) return price;
   const nr = Math.round(price / step) * step;
   const dist = Math.abs(price - nr);
   const zone = atrV * 0.35;
+  if (dist >= zone) return price;
+
+  const sh = Math.max(atrV * 0.12, mintick * 5);
   let result = price;
-  if (dist < zone && step > 0) {
-    const sh = Math.max(atrV * 0.12, mintick * 5);
-    result = isLong ? nr - sh : nr + sh;
+  if (isLong) {
+    // Long SL: Place slightly below round support (nr - sh)
+    result = nr - sh;
+  } else {
+    // Short SL: Place slightly above round resistance (nr + sh)
+    result = nr + sh;
   }
   return result;
 }
@@ -1303,141 +1321,183 @@ export function evaluateSuperIndicator(
 
   const tpMult = Math.min(1.80, Math.max(0.55, p.mult * mtfMult * regimeMult * ictMult * absorbMult));
 
-  // target_p1 (Entry)
-  let target_p1: number;
-  if (isLowSweep && isBull) {
-    target_p1 = Math.min(close, lastCandle.low);
-  } else if (isHighSweep && !isBull) {
-    target_p1 = Math.max(close, lastCandle.high);
-  } else if (isBull) {
-    let p1Found: number | null = null;
-    if (cleanBullOb.length > 0) {
-      for (let i = cleanBullOb.length - 1; i >= 0; i--) {
-        const ob = cleanBullOb[i];
-        if (ob.top < close && ob.top >= close - atrVal * max_pullback_atr) {
-          p1Found = Math.max((ob.top + ob.bottom) / 2, close - atrVal * max_pullback_atr);
-          break;
+  // 8. Forecast Wave (Вход, TP1, TP2, TP3, SL, Trailing) - Exact Pine Script 1:1 Port with Strict Invariants
+  interface SetupLevelsResult {
+    p1Entry: number;
+    p2Tp1: number;
+    p3Tp2: number;
+    p5Tp3: number;
+    invalidLevelSl: number;
+    altTp1: number;
+    altTp2: number;
+    altTp3: number;
+  }
+
+  const computeSetupLevelsForBar = (
+    bIdx: number,
+    isBullDir: boolean,
+    bCandle: Candle,
+    bAtr: number,
+    isSweep: boolean
+  ): SetupLevelsResult => {
+    const bClose = bCandle.close;
+    const isWkOrMo = tfSec >= 604800;
+    const isDly = tfSec >= 86400 && tfSec < 604800;
+    const is240 = tfSec >= 14400 && tfSec < 86400;
+    const is60 = tfSec >= 3600 && tfSec < 14400;
+
+    const max_tp1_atr = isWkOrMo ? 1.8 : isDly ? 1.8 : is240 ? 1.6 : is60 ? 1.5 : 1.4;
+    const max_tp2_atr = isWkOrMo ? 2.8 : isDly ? 2.8 : is240 ? 2.5 : is60 ? 2.4 : 2.2;
+    const min_tp1_atr = isWkOrMo ? 0.85 : isDly ? 0.85 : is240 ? 0.75 : is60 ? 0.7 : 0.65;
+    const min_tp2_atr = isWkOrMo ? 1.0 : isDly ? 1.0 : is240 ? 0.9 : is60 ? 0.85 : 0.8;
+    const max_pullback_atr = isWkOrMo ? 0.45 : isDly ? 0.55 : is240 ? 0.65 : 0.75;
+
+    let entry: number;
+
+    if (isBullDir) {
+      if (isSweep) {
+        entry = Math.min(bClose, bCandle.low);
+      } else {
+        let pFound: number | null = null;
+        for (let i = cleanBullOb.length - 1; i >= 0; i--) {
+          const ob = cleanBullOb[i];
+          if (ob.left <= bIdx && ob.top < bClose && ob.top >= bClose - bAtr * max_pullback_atr) {
+            pFound = Math.max((ob.top + ob.bottom) / 2, bClose - bAtr * max_pullback_atr);
+            break;
+          }
         }
-      }
-    }
-    if (p1Found === null && cleanBullFvg.length > 0) {
-      for (let i = cleanBullFvg.length - 1; i >= 0; i--) {
-        const fvg = cleanBullFvg[i];
-        if (fvg.top < close && fvg.top >= close - atrVal * max_pullback_atr) {
-          p1Found = Math.max((fvg.top + fvg.bottom) / 2, close - atrVal * max_pullback_atr);
-          break;
+        if (pFound === null && cleanBullFvg.length > 0) {
+          for (let i = cleanBullFvg.length - 1; i >= 0; i--) {
+            const fvg = cleanBullFvg[i];
+            if (fvg.left <= bIdx && fvg.top < bClose && fvg.top >= bClose - bAtr * max_pullback_atr) {
+              pFound = Math.max((fvg.top + fvg.bottom) / 2, bClose - bAtr * max_pullback_atr);
+              break;
+            }
+          }
         }
+        entry = pFound !== null ? pFound : bClose - bAtr * (tfSec < 86400 ? 0.42 : 0.35);
       }
-    }
-    target_p1 = p1Found !== null ? p1Found : close - atrVal * (tfSec < 86400 ? 0.45 : 0.35);
-  } else {
-    let p1Found: number | null = null;
-    if (cleanBearOb.length > 0) {
+      // Safety limit: long pullback entry must never exceed close
+      entry = Math.min(bClose, Math.max(bClose - bAtr * max_pullback_atr, entry));
+
+      // TP1 anchored to entry
+      const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
+      let candP2 = entry + tp1Dist;
       for (let i = cleanBearOb.length - 1; i >= 0; i--) {
         const ob = cleanBearOb[i];
-        if (ob.bottom > close && ob.bottom <= close + atrVal * max_pullback_atr) {
-          p1Found = Math.min((ob.top + ob.bottom) / 2, close + atrVal * max_pullback_atr);
+        if (ob.left <= bIdx && ob.bottom >= entry + bAtr * min_tp1_atr && ob.bottom <= entry + bAtr * max_tp1_atr * tpMult) {
+          candP2 = ob.bottom;
           break;
         }
       }
-    }
-    if (p1Found === null && cleanBearFvg.length > 0) {
-      for (let i = cleanBearFvg.length - 1; i >= 0; i--) {
-        const fvg = cleanBearFvg[i];
-        if (fvg.bottom > close && fvg.bottom <= close + atrVal * max_pullback_atr) {
-          p1Found = Math.min((fvg.top + fvg.bottom) / 2, close + atrVal * max_pullback_atr);
-          break;
-        }
-      }
-    }
-    target_p1 = p1Found !== null ? p1Found : close + atrVal * (tfSec < 86400 ? 0.45 : 0.35);
-  }
+      candP2 = f_avoid_round(candP2, true, bAtr);
+      const tp1 = Math.max(entry + bAtr * min_tp1_atr, Math.min(entry + bAtr * max_tp1_atr * tpMult, candP2));
 
-  // target_p2 (TP1) & target_p3 (TP2)
-  let target_p2: number;
-  let target_p3: number;
+      // TP2 anchored strictly above TP1
+      const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
+      let candP3 = Math.max(tp1 + bAtr * min_tp2_atr, entry + tp2Dist);
+      candP3 = f_avoid_round(candP3, true, bAtr);
+      const tp2 = Math.max(tp1 + bAtr * min_tp2_atr, Math.min(entry + bAtr * max_tp2_atr * tpMult, candP3));
 
-  if (isBull) {
-    let candP2 = close + atrVal * 1.35 * tpMult;
-    if (cleanBearFvg.length > 0) {
-      for (let i = cleanBearFvg.length - 1; i >= 0; i--) {
-        const fb = cleanBearFvg[i].bottom;
-        if (fb >= close + atrVal * min_tp1_atr && fb <= close + atrVal * max_tp1_atr * tpMult) {
-          candP2 = fb;
-          break;
-        }
-      }
-    } else if (cleanBearOb.length > 0) {
-      for (let i = cleanBearOb.length - 1; i >= 0; i--) {
-        const ob = cleanBearOb[i].bottom;
-        if (ob >= close + atrVal * min_tp1_atr && ob <= close + atrVal * max_tp1_atr * tpMult) {
-          candP2 = ob;
-          break;
-        }
-      }
-    }
-    // Exact Pine Script formula for bull target_p2:
-    // target_p2 := math.max(target_p1 + atr * min_tp1_atr, math.min(close + atr * max_tp1_atr * tp_mult, math.max(close + atr * min_tp1_atr, target_p2)))
-    target_p2 = Math.max(target_p1 + atrVal * min_tp1_atr, Math.min(close + atrVal * max_tp1_atr * tpMult, Math.max(close + atrVal * min_tp1_atr, candP2)));
+      // TP3 strictly above TP2
+      const tp3 = tp2 + bAtr * Math.max(0.85, 1.10 * tpMult);
 
-    // Exact Pine Script formula for bull target_p3:
-    const candP3 = close + atrVal * 2.2 * tpMult;
-    target_p3 = Math.max(target_p2 + atrVal * min_tp2_atr, Math.min(close + atrVal * max_tp2_atr * tpMult, candP3));
-  } else {
-    let candP2 = close - atrVal * 1.35 * tpMult;
-    if (cleanBullFvg.length > 0) {
-      for (let i = cleanBullFvg.length - 1; i >= 0; i--) {
-        const ft = cleanBullFvg[i].top;
-        if (ft <= close - atrVal * min_tp1_atr && ft >= close - atrVal * max_tp1_atr * tpMult) {
-          candP2 = ft;
-          break;
+      // Stop Loss strictly below entry
+      let sl = entry - bAtr * 0.85;
+      const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
+      if (winSlice.length > 0) {
+        const ll = Math.min(...winSlice.map(c => c.low));
+        if (ll < entry && ll >= entry - bAtr * 1.35) {
+          sl = ll - bAtr * 0.15;
         }
       }
-    } else if (cleanBullOb.length > 0) {
+      sl = f_avoid_round_sl(sl, true, bAtr);
+      sl = Math.min(entry - bAtr * 0.35, sl);
+
+      const altTp1 = sl - bAtr * 1.5;
+      const altTp2 = sl - bAtr * 3.0;
+      const altTp3 = altTp2 - bAtr * 1.2;
+
+      return { p1Entry: entry, p2Tp1: tp1, p3Tp2: tp2, p5Tp3: tp3, invalidLevelSl: sl, altTp1, altTp2, altTp3 };
+    } else {
+      // SHORT DIRECTION
+      if (isSweep) {
+        entry = Math.max(bClose, bCandle.high);
+      } else {
+        let pFound: number | null = null;
+        for (let i = cleanBearOb.length - 1; i >= 0; i--) {
+          const ob = cleanBearOb[i];
+          if (ob.left <= bIdx && ob.bottom > bClose && ob.bottom <= bClose + bAtr * max_pullback_atr) {
+            pFound = Math.min((ob.top + ob.bottom) / 2, bClose + bAtr * max_pullback_atr);
+            break;
+          }
+        }
+        if (pFound === null && cleanBearFvg.length > 0) {
+          for (let i = cleanBearFvg.length - 1; i >= 0; i--) {
+            const fvg = cleanBearFvg[i];
+            if (fvg.left <= bIdx && fvg.bottom > bClose && fvg.bottom <= bClose + bAtr * max_pullback_atr) {
+              pFound = Math.min((fvg.top + fvg.bottom) / 2, bClose + bAtr * max_pullback_atr);
+              break;
+            }
+          }
+        }
+        entry = pFound !== null ? pFound : bClose + bAtr * (tfSec < 86400 ? 0.42 : 0.35);
+      }
+      // Safety limit: short pullback entry must never be below close
+      entry = Math.max(bClose, Math.min(bClose + bAtr * max_pullback_atr, entry));
+
+      // TP1 anchored to entry (strictly below entry)
+      const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
+      let candP2 = entry - tp1Dist;
       for (let i = cleanBullOb.length - 1; i >= 0; i--) {
-        const ot = cleanBullOb[i].top;
-        if (ot <= close - atrVal * min_tp1_atr && ot >= close - atrVal * max_tp1_atr * tpMult) {
-          candP2 = ot;
+        const ob = cleanBullOb[i];
+        if (ob.left <= bIdx && ob.top <= entry - bAtr * min_tp1_atr && ob.top >= entry - bAtr * max_tp1_atr * tpMult) {
+          candP2 = ob.top;
           break;
         }
       }
+      candP2 = f_avoid_round(candP2, false, bAtr);
+      const tp1 = Math.min(entry - bAtr * min_tp1_atr, Math.max(entry - bAtr * max_tp1_atr * tpMult, candP2));
+
+      // TP2 anchored strictly below TP1 (GUARANTEE: TP2 < TP1 ALWAYS!)
+      const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
+      let candP3 = Math.min(tp1 - bAtr * min_tp2_atr, entry - tp2Dist);
+      candP3 = f_avoid_round(candP3, false, bAtr);
+      const tp2 = Math.min(tp1 - bAtr * min_tp2_atr, Math.max(entry - bAtr * max_tp2_atr * tpMult, candP3));
+
+      // TP3 strictly below TP2
+      const tp3 = tp2 - bAtr * Math.max(0.85, 1.10 * tpMult);
+
+      // Stop Loss strictly above entry
+      let sl = entry + bAtr * 0.85;
+      const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
+      if (winSlice.length > 0) {
+        const hh = Math.max(...winSlice.map(c => c.high));
+        if (hh > entry && hh <= entry + bAtr * 1.35) {
+          sl = hh + bAtr * 0.15;
+        }
+      }
+      sl = f_avoid_round_sl(sl, false, bAtr);
+      sl = Math.max(entry + bAtr * 0.35, sl);
+
+      const altTp1 = sl + bAtr * 1.5;
+      const altTp2 = sl + bAtr * 3.0;
+      const altTp3 = altTp2 + bAtr * 1.2;
+
+      return { p1Entry: entry, p2Tp1: tp1, p3Tp2: tp2, p5Tp3: tp3, invalidLevelSl: sl, altTp1, altTp2, altTp3 };
     }
-    // Exact Pine Script formula for bear target_p2:
-    // target_p2 := math.min(target_p1 - atr * min_tp1_atr, math.max(close - atr * max_tp1_atr * tp_mult, math.min(close - atr * min_tp1_atr, target_p2)))
-    target_p2 = Math.min(target_p1 - atrVal * min_tp1_atr, Math.max(close - atrVal * max_tp1_atr * tpMult, Math.min(close - atrVal * min_tp1_atr, candP2)));
+  };
 
-    // Exact Pine Script formula for bear target_p3:
-    const candP3 = close - atrVal * 2.2 * tpMult;
-    target_p3 = Math.min(target_p2 - atrVal * min_tp2_atr, Math.max(close - atrVal * max_tp2_atr * tpMult, candP3));
-  }
-
-  // Independent anti-round calculation (f_avoid_round) matching Pine Script v6
-  target_p2 = f_avoid_round(target_p2, isBull, atrVal);
-  target_p3 = f_avoid_round(target_p3, isBull, atrVal);
-
-  if (isBull) {
-    target_p2 = Math.min(close + atrVal * max_tp1_atr * tpMult, Math.max(target_p1 + atrVal * min_tp1_atr, target_p2));
-    target_p3 = Math.min(close + atrVal * max_tp2_atr * tpMult, Math.max(target_p2 + atrVal * min_tp2_atr, target_p3));
-  } else {
-    target_p2 = Math.max(close - atrVal * max_tp1_atr * tpMult, Math.min(target_p1 - atrVal * min_tp1_atr, target_p2));
-    target_p3 = Math.max(close - atrVal * max_tp2_atr * tpMult, Math.min(target_p2 - atrVal * min_tp2_atr, target_p3));
-  }
-  const p5Tp3 = isBull ? target_p3 + atrVal * 1.10 : target_p3 - atrVal * 1.10;
-
-  // Stop loss calculation (fc_invalid_level) based on swing structure and ATR buffer
-  let invalidLevelSl = isBull ? target_p1 - atrVal * 0.85 : target_p1 + atrVal * 0.85;
-  if (isBull) {
-    const ll8 = Math.min(...candles.slice(-8).map(c => c.low));
-    if (ll8 < target_p1 && ll8 >= target_p1 - atrVal * 1.25) {
-      invalidLevelSl = ll8 - atrVal * 0.15;
-    }
-  } else {
-    const hh8 = Math.max(...candles.slice(-8).map(c => c.high));
-    if (hh8 > target_p1 && hh8 <= target_p1 + atrVal * 1.25) {
-      invalidLevelSl = hh8 + atrVal * 0.15;
-    }
-  }
-  invalidLevelSl = f_avoid_round_sl(invalidLevelSl, isBull, atrVal);
+  // Compute live setup levels at latest bar
+  const liveLevels = computeSetupLevelsForBar(n - 1, isBull, lastCandle, atrVal, isLowSweep || isHighSweep);
+  const target_p1 = liveLevels.p1Entry;
+  const target_p2 = liveLevels.p2Tp1;
+  const target_p3 = liveLevels.p3Tp2;
+  const invalidLevelSl = liveLevels.invalidLevelSl;
+  const p5Tp3 = liveLevels.p5Tp3;
+  const altTp1 = liveLevels.altTp1;
+  const altTp2 = liveLevels.altTp2;
+  const altTp3 = liveLevels.altTp3;
 
   // Trailing stop progression
   let activeTrailingSl = invalidLevelSl;
@@ -1458,9 +1518,6 @@ export function evaluateSuperIndicator(
   }
 
   const isPlanBActive = isBull ? close < invalidLevelSl : close > invalidLevelSl;
-  const altTp1 = isBull ? invalidLevelSl - atrVal * 1.5 : invalidLevelSl + atrVal * 1.5;
-  const altTp2 = isBull ? invalidLevelSl - atrVal * 3.0 : invalidLevelSl + atrVal * 3.0;
-
   const noPullbackProb = Math.min(95, Math.max(12, 15 + (isExtremeDelta ? 25 : 10) + (Math.abs(close - target_p1) > atrVal ? 20 : 0)));
 
   const p1Entry = target_p1;
@@ -1492,66 +1549,17 @@ export function evaluateSuperIndicator(
       bIsBull = bClose >= bEma200 ? (localMomUp || bDelta >= 0) : (localMomUp && bClose > bEma200 * 0.998);
     }
 
-    let bP1: number;
-    let bP2: number;
-    let bP3: number;
-    let bSl: number;
+    // Use unified deterministic setup level calculator
+    const levels = computeSetupLevelsForBar(bIdx, bIsBull, bCandle, bAtr, false);
+    const bP1 = levels.p1Entry;
+    const bP2 = levels.p2Tp1;
+    const bP3 = levels.p3Tp2;
+    const bP5 = levels.p5Tp3;
+    const bSl = levels.invalidLevelSl;
+    const bAlt1 = levels.altTp1;
+    const bAlt2 = levels.altTp2;
+    const bAlt3 = levels.altTp3;
 
-    if (bIdx === n - 1) {
-      bP1 = p1Entry;
-      bP2 = p2Tp1;
-      bP3 = p3Tp2;
-      bSl = invalidLevelSl;
-    } else {
-      const pullDist = bAtr * (tfSec < 86400 ? 0.42 : 0.35);
-      bP1 = bIsBull ? bClose - pullDist : bClose + pullDist;
-
-      // Snap entry to nearby unmitigated OB/FVG formed at or before bIdx if available
-      if (bIsBull) {
-        for (let i = bullObBoxes.length - 1; i >= 0; i--) {
-          const ob = bullObBoxes[i];
-          if (ob.left <= bIdx && ob.top < bClose && ob.top >= bClose - bAtr * max_pullback_atr) {
-            bP1 = Math.max((ob.top + ob.bottom) / 2, bClose - bAtr * max_pullback_atr);
-            break;
-          }
-        }
-        const cand2 = bClose + bAtr * 1.35 * tpMult;
-        bP2 = Math.max(bP1 + bAtr * min_tp1_atr, Math.min(bClose + bAtr * max_tp1_atr * tpMult, cand2));
-        const cand3 = bClose + bAtr * 2.2 * tpMult;
-        bP3 = Math.max(bP2 + bAtr * min_tp2_atr, Math.min(bClose + bAtr * max_tp2_atr * tpMult, cand3));
-      } else {
-        for (let i = bearObBoxes.length - 1; i >= 0; i--) {
-          const ob = bearObBoxes[i];
-          if (ob.left <= bIdx && ob.bottom > bClose && ob.bottom <= bClose + bAtr * max_pullback_atr) {
-            bP1 = Math.min((ob.top + ob.bottom) / 2, bClose + bAtr * max_pullback_atr);
-            break;
-          }
-        }
-        const cand2 = bClose - bAtr * 1.35 * tpMult;
-        bP2 = Math.min(bP1 - bAtr * min_tp1_atr, Math.max(bClose - bAtr * max_tp1_atr * tpMult, cand2));
-        const cand3 = bClose - bAtr * 2.2 * tpMult;
-        bP3 = Math.min(bP2 - bAtr * min_tp2_atr, Math.max(bClose - bAtr * max_tp2_atr * tpMult, cand3));
-      }
-
-      bP2 = f_avoid_round(bP2, bIsBull, bAtr);
-      bP3 = f_avoid_round(bP3, bIsBull, bAtr);
-
-      bSl = bIsBull ? bP1 - bAtr * 0.85 : bP1 + bAtr * 0.85;
-      const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
-      if (bIsBull && winSlice.length > 0) {
-        const ll = Math.min(...winSlice.map((c) => c.low));
-        if (ll < bP1 && ll >= bP1 - bAtr * 1.25) bSl = ll - bAtr * 0.15;
-      } else if (!bIsBull && winSlice.length > 0) {
-        const hh = Math.max(...winSlice.map((c) => c.high));
-        if (hh > bP1 && hh <= bP1 + bAtr * 1.25) bSl = hh + bAtr * 0.15;
-      }
-      bSl = f_avoid_round_sl(bSl, bIsBull, bAtr);
-    }
-
-    const bP5 = bIsBull ? bP3 + bAtr * 1.1 : bP3 - bAtr * 1.1;
-    const bAlt1 = bIsBull ? bSl - bAtr * 1.5 : bSl + bAtr * 1.5;
-    const bAlt2 = bIsBull ? bSl - bAtr * 3.0 : bSl + bAtr * 3.0;
-    const bAlt3 = bIsBull ? bAlt2 - bAtr * 1.2 : bAlt2 + bAtr * 1.2;
     const bEntryHitOnStart = bIsBull ? bCandle.low <= bP1 : bCandle.high >= bP1;
 
     const fcState: ForecastState = {
@@ -1684,11 +1692,11 @@ export function evaluateSuperIndicator(
         const bestExtreme = prev.isBull ? cb.high - prev.p1Entry : prev.p1Entry - cb.low;
         if (leg2Hit || bestExtreme >= distToTp1) {
           activeTrailingSl = prev.isBull
-            ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.5
-            : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.5;
+            ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
+            : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
           trailingStageStr = "💰 Защита 50%";
           trailingStageIdx = 2;
-        } else if (bestExtreme >= distToTp1 * 0.7) {
+        } else if (bestExtreme >= distToTp1 * 0.70) {
           const bAtr = atrs[bi] || atrVal;
           activeTrailingSl = prev.isBull ? prev.p1Entry + bAtr * 0.15 : prev.p1Entry - bAtr * 0.15;
           trailingStageStr = "🔒 BE+0.15";
@@ -1697,11 +1705,19 @@ export function evaluateSuperIndicator(
       }
 
       const barsPassedAtBi = bi - anchorIdx;
-      const slBrokenAtBi = prev.isBull ? cb.close < prev.invalidLevelSl : cb.close > prev.invalidLevelSl;
+      const slBrokenAtBi = prev.isBull ? cb.low <= prev.invalidLevelSl : cb.high >= prev.invalidLevelSl;
+      // Trailing stop hit condition: only checks on candles AFTER TP1 was achieved
       const trailingHitAtBi =
-        leg2Hit && trailingStageIdx > 0 && (prev.isBull ? cb.close < activeTrailingSl : cb.close > activeTrailingSl);
+        leg2Hit &&
+        trailingStageIdx > 0 &&
+        bi > (leg2Idx ?? anchorIdx) &&
+        (prev.isBull ? cb.low <= activeTrailingSl : cb.high >= activeTrailingSl);
+      // Runaway without entry: price already achieved TP1 or broke SL before entry ever triggered
       const runawayWithoutEntry =
-        !leg1Hit && barsPassedAtBi >= 2 && (prev.isBull ? cb.high >= prev.p2Tp1 : cb.low <= prev.p2Tp1);
+        !leg1Hit &&
+        (prev.isBull
+          ? cb.high >= prev.p2Tp1 || cb.low <= prev.invalidLevelSl
+          : cb.low <= prev.p2Tp1 || cb.high >= prev.invalidLevelSl);
       const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? bi - leg2Idx : 0;
 
       if (

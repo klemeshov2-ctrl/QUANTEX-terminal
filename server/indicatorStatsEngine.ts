@@ -990,10 +990,10 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
 
   const direction: "LONG" | "SHORT" = fc?.isBull ? "LONG" : "SHORT";
   const entry = Number(fc?.p1Entry) || 3995.8;
-  const tp1 = Number(fc?.p2Tp1) || (entry * 1.008);
-  const tp2 = Number(fc?.p3Tp2) || (entry * 1.016);
-  const tp3 = Number(fc?.p5Tp3) || (entry * 1.025);
-  const sl = Number(fc?.invalidLevelSl) || (entry * 0.995);
+  const tp1 = Number(fc?.p2Tp1) || (direction === "LONG" ? entry * 1.008 : entry * 0.992);
+  const tp2 = Number(fc?.p3Tp2) || (direction === "LONG" ? entry * 1.016 : entry * 0.984);
+  const tp3 = Number(fc?.p5Tp3) || (direction === "LONG" ? entry * 1.025 : entry * 0.975);
+  const sl = Number(fc?.invalidLevelSl) || (direction === "LONG" ? entry * 0.995 : entry * 1.005);
   const activeSl = Number(fc?.activeTrailingSl) || sl;
   const trailingStr = fc?.trailingStageStr || "🛡️ Начальный SL";
   const prob = Number(fc?.probability) || 84;
@@ -1142,6 +1142,25 @@ export function evaluateIndicatorSetups(
       } else if (!isLong && hi >= item.entryPrice) {
         item.entryTriggered = true;
         updated++;
+      } else {
+        // Entry NOT triggered. Check if price ran away to TP1/TP2 or broke initial SL without entry
+        const runawayHit = isLong ? hi >= item.tp1 : lo <= item.tp1;
+        const slBroken = isLong ? lo <= item.initialSl : hi >= item.initialSl;
+        if (runawayHit || slBroken) {
+          item.status = "NOT_TRIGGERED";
+          item.exitReason = "NOT_TRIGGERED";
+          item.exitPrice = cur;
+          item.exitTimestamp = now;
+          item.exitTimeMsk = `${timeMsk} МСК`;
+          item.pnlPercent = 0;
+          item.pnlR = 0;
+          item.behaviorNote = runawayHit
+            ? "Сетап не исполнен: цена ушла напрямую к тейк-профиту без отката к точке входа"
+            : "Сетап отменен: структура сломана до срабатывания точки входа";
+          updated++;
+        }
+        // Do not evaluate targets or wins for a position that was never entered
+        continue;
       }
     }
 
