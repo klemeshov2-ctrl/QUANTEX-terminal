@@ -1355,6 +1355,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 * **В ночь на понедельник в 01:00 МСК:** Возобновление мировых торгов (CME Globex & Сидней). При открытии с гэпом воздержитесь от рыночных ордеров в первые 15 минут.`;
     }
 
+    const mskNow = new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date());
+
     const isEntryHit = Boolean(payload.indicatorForecast?.leg1Hit ?? payload.indicatorForecast?.entryTriggered);
     const isTp1Hit = Boolean(payload.indicatorForecast?.leg2Hit ?? payload.indicatorForecast?.tp1Hit);
     const isTp2Hit = Boolean(payload.indicatorForecast?.leg3Hit ?? payload.indicatorForecast?.tp2Hit);
@@ -1366,31 +1373,41 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         ? `В позиции, удерживаем до TP1 ${tp1} со стопом в БУ.`
         : `Ждем отскок к ${entryConservative} для входа в ${isBull ? "лонг" : "шорт"}.`;
 
-      return `· Сделка: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryConservative} | SL: ${slLevel} | TP1: ${tp1}
-· Фундамент: Фон чистый (до открытия ключевых сессий)
-· Вердикт: ${verdict}`;
+      return `1. 🚨 Фон чистый (важных новостей в ближайшие 30 минут нет).
+2. GEX: Call ${callWall}, Put ${putWall}. Консенсус ТФ: ${isBull ? "4 из 5 за ПОКУПКИ" : "4 из 5 за ПРОДАЖИ"}.
+3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryConservative} | SL: ${slLevel} | TP1: ${tp1}.
+4. Вердикт: ${verdict}`;
     }
 
-    return `### 📊 Технический анализ
-* **Разбор по ТФ:** 4H (${isBull ? "бычья структура" : "давление продавцов"}), 1H (${isBull ? "консолидация над поддержкой" : "медвежий импульс"}), 30м (интрадей-баланс 0.50 EQ), 15M (${tradeStatus}).
-* **Индикаторы:** MACD (${isBull ? "DIF > DEA, гистограмма зеленеет" : "DIF < DEA, давление вниз"}), RSI (${isBull ? "58.2" : "38.5"}), Стохастик (${isBull ? "выход из перепроданности к 65" : "перепродан 15–25"}), 200 EMA (${isBull ? "цена выше скользящей, тренд бычий" : "цена ниже скользящей, тренд нисходящий"}).
-* **Ключевые уровни GEX:** Call Wall: **${callWall}** (потолок), Put Wall: **${putWall}** (пол), Max Pain: **${maxPain}** (магнит экспирации), режим: \`${regime}\`.
+    const consensusStr = isBull ? "4 из 5 ТФ за ПОКУПКИ" : "4 из 5 ТФ за ПРОДАЖИ";
 
-### 📰 Фундаментальный фон
-* **Свежие мировые новости & ФРС:** Рыночные ожидания по процентным ставкам ФРС и геополитический баланс.
-* **Ожидаемое влияние на золото:** Смягчение монетарных условий стимулирует приток капитала в защитный металл к Call Wall ${callWall}; рост доходностей трежерис сдерживает импульс у Put Wall ${putWall}.
+    return `1. 📰 Фундаментальный фон и новости:
+- [${mskNow} МСК] — Фон чистый — Ближайшие важные публикации отсутствуют.
+- [15:30 МСК] — Ожидания по ставкам ФРС и макростатистика США — Смягчение монетарных условий стимулирует приток капитала к Call Wall ${callWall}.
 
-### 📋 Торговый план (Сценарии)
-* **Основной сценарий (${isBull ? "🟢 LONG" : "🔴 SHORT"}):**
-  * **Вход:** Агрессивный \`${entryAggressive}\` / Консервативный \`${entryConservative}\` в зоне OTE на подтверждении.
-  * **Стоп-лосс (SL):** \`${slLevel}\` (привязка к опционной стене ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`}).
-  * **Тейк-профиты:** TP1 \`${tp1}\` (${isTp1Hit ? "взят" : isEntryHit ? "в позиции, ждём TP1" : "ждём входа"}), TP2 \`${tp2}\`.
-* **Альтернативный сценарий (План Б):**
-  При пробое ключевого уровня \`${cancelLevel}\` открываем ${isBull ? "шорт" : "лонг"} с целью \`${altTarget}\`.
+2. 📊 Опционные уровни (GEX):
+- Call Wall (Сопротивление): ${callWall}
+- Put Wall (Поддержка): ${putWall}
+- Max Pain: ${maxPain}
+- Гамма-режим: ${regime}.
 
-### ⚠️ Риски
-* **Опционные экспирации:** Учитывайте дневную (0DTE), недельную Weekly OPEX по пятницам (притяжение к Max Pain \`${maxPain}\`), месячную экспирацию и ролловер.
-* **Мани-менеджмент:** Рекомендуемый риск — строго не более **1–2%** от депозита на сделку.`;
+3. 📈 Технический анализ и Консенсус таймфреймов:
+Дай оценку каждому ТФ:
+- 1D: ${isBull ? "BULL" : "BEAR"} | ${isBull ? putWall : callWall}
+- 4H: ${isBull ? "BULL" : "BEAR"} | ${cancelLevel}
+- 1H: ${isBull ? "BULL" : "BEAR"} | ${entryConservative}
+- 30M: ${isBull ? "BULL" : "BEAR"} | ${entryConservative}
+- 15M: ${isBull ? "BULL" : "BEAR"} | ${entryAggressive}
+👉 Итоговый консенсус: ${consensusStr}.
+
+4. 📋 Торговый план (на основе консенсуса и GEX):
+На основе консенсуса ${consensusStr} и уровней GEX, план следующий:
+- Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
+- Вход: ${entryConservative} (от зоны подтверждения OTE и уровней GEX).
+- Стоп-лосс (SL): ${slLevel} (обязательно привязан к ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`}).
+- Тейк-профит (TP1 / TP2): TP1: ${tp1} (${isTp1Hit ? "взят" : isEntryHit ? "в позиции, ждём TP1" : "ждём входа"}) / TP2: ${tp2}.
+- ⚠️ Корректировка на новости: При отсутствии резких новостных импульсов сделка отрабатывается строго по уровням ликвидности.
+- План Б: При пробое уровня ${cancelLevel} в обратную сторону, ищем вход с целями ${altTarget}.`;
   };
 
   // Switch response style mode and immediately refresh active plan

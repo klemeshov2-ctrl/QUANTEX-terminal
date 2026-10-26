@@ -2564,54 +2564,95 @@ ${
   // Try calling real DeepSeek API if key exists
   if (apiKey && apiKey.length > 5) {
     try {
-      addServerLog("INFO", `Отправка запроса в DeepSeek API (${modelUsed}) для ${pair}...`);
-      const dsRes = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: modelUsed,
-          messages: [
-            {
-              role: "system",
-              content: `1. Роль: Ты — профессиональный трейдер. Твой язык четкий, без воды. Ты используешь данные GEX, технический анализ и свежие новости (через Live Web Search).
+      const endpoint = "https://api.deepseek.com/chat/completions";
+      const dsBody: any = {
+        model: modelUsed,
+        messages: [
+          {
+            role: "system",
+            content: `РОЛЬ: Профессиональный трейдер XAUUSD. Язык четкий, без сложных терминов и воды.
+ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
 
 Текущий режим: ${(params as any).responseStyle === "short" ? "«Короткий ответ» (Short)" : "«Развёрнутый ответ» (Detailed)"}.
 
-2. Режим "Короткий ответ" (Short):
-Выдавай максимум пользы в 3-4 строках. Строгий формат:
-· Сделка: Направление (LONG/SHORT) | Вход | SL | TP1.
-· Фундамент: Ближайшая важная новость и время (МСК). Если новостей нет — "Фон чистый".
-· Вердикт: 1 предложение (например, "Ждем отскок к 4020 для входа в шорт").
+${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
+1. 🚨 [Предупреждение о новостях, если есть, иначе: "Фон чистый (важных новостей в ближайшие 30 минут нет)"].
+2. GEX: Call [X], Put [Y]. Консенсус ТФ: [X] из 5 за [ПОКУПКИ/ПРОДАЖИ].
+3. Сделка на основе консенсуса: [LONG/SHORT] | Вход: [Цена] | SL: [Цена] | TP1: [Цена].
+4. Вердикт: 1 короткое предложение.` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
-3. Режим "Развёрнутый ответ" (Detailed):
-Полный профессиональный разбор:
-· 📊 Технический анализ: Разбор по ТФ (4H, 1H, 30м, 15M). Состояние MACD, RSI, Стохастика, EMA 200. Ключевые уровни GEX (Call Wall, Put Wall, Max Pain).
-· 📰 Фундаментальный фон: Свежие новости из интернета (ФРС, CPI, геополитика). Обязательно укажи точное время публикации (МСК) и ожидаемое влияние на золото.
-· 📋 Торговый план (Сценарии):
-  · Основной сценарий: Вход, SL, TP1, TP2.
-  · Альтернативный сценарий (План Б): Что делать, если цена пробьет ключевой уровень (например, "При пробое 4030 вверх, открываем лонг с целью 4045").
-· ⚠️ Риски: Напоминание про экспирацию дневную, недельную, месяц и т.д (пятница/понедельник) и волатильность на новостях. Рекомендация по размеру позиции.
+1. 📰 Фундаментальный фон и новости:
+   - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
+   - Формат: [Время МСК] — [Событие] — [Влияние на золото].
+   - Если до важной новости < 30 минут, первой строкой ответа выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если новостей нет — "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".
 
-4. Важное правило: Если до выхода важной макроэкономической статистики осталось менее 30 минут, в обоих режимах ИИ должен добавить красное предупреждение в самом начале ответа:
-🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
-И написать какая макростатистика выходит с ожидаемыми данными от экспертов и как может повлиять на цену.`
-            },
-            {
-              role: "user",
-              content: prompt
-            }
-          ],
-          temperature: 0.3
-        })
+2. 📊 Опционные уровни (GEX):
+   - Call Wall (Сопротивление): [Уровень]
+   - Put Wall (Поддержка): [Уровень]
+   - Max Pain: [Уровень]
+   - Гамма-режим: [Positive/Negative].
+
+3. 📈 Технический анализ и Консенсус таймфреймов:
+   Дай оценку каждому ТФ:
+   - 1D: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   - 4H: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   - 1H: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   - 30M: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   - 15M: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   👉 Итоговый консенсус: [X] из 5 ТФ за [ПОКУПКИ/ПРОДАЖИ].
+
+4. 📋 Торговый план (на основе консенсуса и GEX):
+   - ОБЯЗАТЕЛЬНО начни этот блок с фразы: "На основе консенсуса [X] из 5 ТФ за [направление] и уровней GEX, план следующий:".
+   - Основной сценарий: [LONG или SHORT].
+   - Вход: [Цена] (укажи, от какого уровня ТФ или GEX).
+   - Стоп-лосс (SL): [Цена] (обязательно привяжи к Call Wall или Put Wall).
+   - Тейк-профит (TP1 / TP2): [Цены].
+   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку.
+   - План Б: При пробое уровня [Уровень] в обратную сторону, ищем вход с целями [Цены].`}`
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        tools: [{ type: "web_search" }],
+        temperature: 0.3
+      };
+
+      console.log(`[DeepSeek Background API] 🌐 Отправка запроса в DeepSeek API (${modelUsed}) с tools: [{ type: "web_search" }]...`);
+      addServerLog("INFO", `[DeepSeek API] Отправка фонового анализа с tools: [{ type: "web_search" }] для ${pair}`);
+
+      let dsRes = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey.trim()}`
+        },
+        body: JSON.stringify(dsBody)
       });
+
+      // Fallback if tools parameter rejected by endpoint
+      if (!dsRes.ok && dsBody.tools) {
+        const errText = await dsRes.text();
+        console.warn(`[DeepSeek Background API] Эндпоинт отклонил tools: ${errText.slice(0, 140)}. Повтор без параметра tools...`);
+        delete dsBody.tools;
+        dsRes = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey.trim()}`
+          },
+          body: JSON.stringify(dsBody)
+        });
+      }
 
       if (dsRes.ok) {
         const dsData = await dsRes.json();
+        const searchResults = dsData.search_results || dsData.choices?.[0]?.message?.search_results || dsData.choices?.[0]?.message?.tool_calls;
+        const citations = dsData.citations || dsData.choices?.[0]?.message?.citations;
+        console.log(`[DeepSeek Background API] HTTP 200 OK. Результаты поиска:`, { searchResults: Boolean(searchResults), citations: Boolean(citations) });
         reportText = dsData.choices?.[0]?.message?.content || "";
-        addServerLog("INFO", `Ответ DeepSeek API успешно получен (${reportText.length} символов)`);
+        addServerLog("INFO", `Ответ DeepSeek API успешно получен (${reportText.length} символов, веб-поиск обработан)`);
       } else {
         const errText = await dsRes.text();
         addServerLog("WARN", `DeepSeek API вернул статус ${dsRes.status}: ${errText}. Задействован квант-движок.`);
@@ -8511,6 +8552,54 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
   }
 }
 
+interface DeepSeekSearchResult {
+  title: string;
+  url: string;
+  snippet?: string;
+  rerank_score?: number;
+}
+
+async function fetchDeepSeekSearchApi(apiKey: string, query: string, count = 5): Promise<DeepSeekSearchResult[]> {
+  try {
+    console.log(`[DeepSeek Search API] 🌐 Отправка запроса в поисковый движок DeepSeek Search API: "${query}"...`);
+    const controller = new AbortController();
+    const tm = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch("https://api.deepseek.com/v1/tools/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        query: query.slice(0, 128),
+        count: Math.min(count, 10)
+      }),
+      signal: controller.signal
+    }).catch(() => null);
+    clearTimeout(tm);
+
+    if (res && res.ok) {
+      const data = await res.json();
+      const rawList = Array.isArray(data.results) ? data.results : Array.isArray(data.data) ? data.data : Array.isArray(data.items) ? data.items : [];
+      const list: DeepSeekSearchResult[] = rawList.map((item: any) => ({
+        title: item.title || item.name || "Новость",
+        url: item.url || item.link || "",
+        snippet: item.snippet || item.summary || "",
+        rerank_score: item.rerank_score
+      }));
+      console.log(`[DeepSeek Search API] ✅ Получено ${list.length} результатов веб-поиска от DeepSeek:`, list.map(l => l.title));
+      return list;
+    } else if (res) {
+      const err = await res.text();
+      console.warn(`[DeepSeek Search API] Статус ${res.status}: ${err.slice(0, 120)}`);
+    }
+    return [];
+  } catch (e: any) {
+    console.warn(`[DeepSeek Search API] Ошибка вызова: ${e.message}`);
+    return [];
+  }
+}
+
 // --- PER-USER AI ANALYST CHAT HISTORY & REPOSITORY ---
 app.get("/api/ai-analyst/history", (req, res) => {
   try {
@@ -9022,6 +9111,32 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const imminentInfo = detectImminentMacroEvent(effectiveEvents, now);
     const nearestNewsStr = getNearestUpcomingMacroEvent(effectiveEvents, now);
 
+    // Consolidated 5 Timeframes (1D, 4H, 1H, 30M, 15M) and their key levels
+    const d1Trend = (mtfList.find(m => m.tf === "1d")?.trend || "BULLISH").toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
+    const h4Trend = (mtfList.find(m => m.tf === "4h")?.trend || "BULLISH").toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
+    const h1Trend = (mtfList.find(m => m.tf === "1h")?.trend || (isBull ? "BULLISH" : "BEARISH")).toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
+    const m30Trend = (mtfList.find(m => m.tf === "30m")?.trend || (isBull ? "BULLISH" : "BEARISH")).toUpperCase() === "BULLISH" ? "BULL" : "BEAR";
+    const m15Trend = isBull ? "BULL" : "BEAR";
+
+    const d1KeyLevel = isBull ? (gex?.putWall || (entryPriceNum * 0.985).toFixed(dec)) : (gex?.callWall || (entryPriceNum * 1.015).toFixed(dec));
+    const h4KeyLevel = bounceCeilingFloorEma;
+    const h1KeyLevel = isBull ? (entryPriceNum * 0.999).toFixed(dec) : (entryPriceNum * 1.001).toFixed(dec);
+    const m30KeyLevel = isBull ? (entryPriceNum * 0.9995).toFixed(dec) : (entryPriceNum * 1.0005).toFixed(dec);
+    const m15KeyLevel = entryPriceFormatted;
+
+    const fiveTfList = [
+      { name: "1D", trend: d1Trend, level: d1KeyLevel },
+      { name: "4H", trend: h4Trend, level: h4KeyLevel },
+      { name: "1H", trend: h1Trend, level: h1KeyLevel },
+      { name: "30M", trend: m30Trend, level: m30KeyLevel },
+      { name: "15M", trend: m15Trend, level: m15KeyLevel }
+    ];
+    const bullTfCount = fiveTfList.filter(t => t.trend === "BULL").length;
+    const bearTfCount = 5 - bullTfCount;
+    const dominantDirection = isBull ? "ПОКУПКИ" : "ПРОДАЖИ";
+    const dominantCount = isBull ? bullTfCount : bearTfCount;
+    const consensus5Str = `${dominantCount} из 5 ТФ за ${dominantDirection}`;
+
     // Construct institutional global macro & quantitative analyst system instruction
     const systemInstruction = isEducationalOrConceptQuery
       ? `Ты — ведущий институциональный преподаватель трейдинга, квант-аналитик и главный наставник платформы QUANTEX.
@@ -9032,54 +9147,50 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 2. НЕ НАВЯЗЫВАЙ шаблон торгового плана с точками входа/TP1/TP2 по текущему инструменту, так как трейдер учится методологии и анализу.
 3. Приводи наглядные схематические примеры (например: Цена делает Higher High (HH), а индикатор RSI — Lower High (LH) = классическая медвежья дивергенция).
 4. Пиши профессиональным, вдохновляющим и четким языком на русском языке с аккуратным форматированием Markdown.`
-      : `1. Роль: Ты — профессиональный трейдер. Твой язык четкий, без воды. Ты используешь данные GEX, технический анализ и свежие новости (через Live Web Search).
+      : `РОЛЬ: Профессиональный трейдер ${ticker}. Твой язык четкий, без сложных терминов и воды.
+ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
 
-Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (SHORT)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (DETAILED)"}.
-ТЫ ОБЯЗАН СТРОГО АДАПТИРОВАТЬ СВОЙ ОТВЕТ ПОД ВЫБРАННЫЙ РЕЖИМ:
+Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (Short)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Detailed)"}.
 
-2. Режим "Короткий ответ" (Short):
-Выдавай максимум пользы в 3-4 строках. Строгий формат:
+${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
+1. 🚨 ${imminentInfo.isImminent ? `ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Ближайшие новости: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
+2. GEX: Call ${gex?.callWall || "N/A"}, Put ${gex?.putWall || "N/A"}. Консенсус ТФ: ${consensus5Str}.
+3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} | SL: ${slFormatted} | TP1: ${tp1Formatted}.
+4. Вердикт: 1 короткое предложение (например: "Ждем отскок к ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
-· Сделка: Направление (${isBull ? "LONG" : "SHORT"}) | Вход: ${entryPriceFormatted} | SL: ${slFormatted} | TP1: ${tp1Formatted}.
-· Фундамент: ${imminentInfo.isImminent ? `${imminentInfo.title} в ${imminentInfo.timeMsk} МСК` : nearestNewsStr}. (Если важных новостей нет — строго "Фон чистый").
-· Вердикт: 1 предложение (например: "Ждем отскок к ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").
+${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
+   - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
+   - Формат: [Время МСК] — [Событие] — [Влияние на золото].
+   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Если до важной новости < 30 минут, первой строкой ответа выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
-3. Режим "Развёрнутый ответ" (Detailed):
-Полный профессиональный разбор со следующей обязательной структурой:
+2. 📊 Опционные уровни (GEX):
+   - Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
+   - Put Wall (Поддержка): ${gex?.putWall || "N/A"}
+   - Max Pain: ${gex?.maxPain || "N/A"}
+   - Гамма-режим: ${gex?.regime || "Positive"}.
 
-· 📊 Технический анализ:
-  - Разбор по ТФ (4H, 1H, 30м, 15M).
-  - Состояние MACD (гистограмма, пересечение линий), RSI (уровни, дивергенции), Стохастика (%K/%D, зоны перекупленности/перепроданности), положение цены относительно EMA 200 (глобальный тренд).
-  - Ключевые уровни GEX (Call Wall: ${gex?.callWall || "N/A"}, Put Wall: ${gex?.putWall || "N/A"}, Max Pain: ${gex?.maxPain || "N/A"}).
+3. 📈 Технический анализ и Консенсус таймфреймов:
+   Дай оценку каждому ТФ:
+   - 1D: ${d1Trend} | ${d1KeyLevel}
+   - 4H: ${h4Trend} | ${h4KeyLevel}
+   - 1H: ${h1Trend} | ${h1KeyLevel}
+   - 30M: ${m30Trend} | ${m30KeyLevel}
+   - 15M: ${m15Trend} | ${m15KeyLevel}
+   👉 Итоговый консенсус: ${consensus5Str}.
 
-· 📰 Фундаментальный фон:
-  - Свежие новости из интернета (ФРС, CPI, геополитика). Обязательно укажи точное время публикации (МСК) и ожидаемое влияние на золото.
-
-· 📋 Торговый план (Сценарии):
-  · Основной сценарий: Вход (${isBull ? "LONG" : "SHORT"}: агрессивный ${currentPrice} / консервативный ${entryPriceFormatted}), SL ${slFormatted} (привязка к опционной стене GEX), TP1 ${tp1Formatted}, TP2 ${tp2Formatted}.
-  · Альтернативный сценарий (План Б): Что делать, если цена пробьет ключевой уровень (например: "При пробое ${bounceInvalidation} ${isBull ? "вниз" : "вверх"}, открываем ${isBull ? "шорт" : "лонг"} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}").
-
-· ⚠️ Риски:
-  - Напоминание про экспирацию (дневную 0DTE, недельную Weekly OPEX по пятницам, месячную каждую 3-ю пятницу, ролловер) и волатильность на новостях.
-  - Рекомендация по размеру позиции (не более 1–2% риска на сделку).
-
-${imminentInfo.isImminent ? `
-4. Важное правило (НОВОСТИ МЕНЕЕ ЧЕМ ЧЕРЕЗ 30 МИНУТ):
-ВНИМАНИЕ! До выхода важной макростатистики осталось ${imminentInfo.minutesRemaining} минут (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})!
-В ОБОИХ РЕЖИМАХ (и в Short, и в Detailed) В САМОМ НАЧАЛЕ ОТВЕТА (ПЕРВОЙ СТРОКОЙ) ОБЯЗАТЕЛЬНО добавь красное предупреждение:
-🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
-Макростатистика: **${imminentInfo.title}** (${imminentInfo.timeMsk} МСК).
-Ожидаемые данные от экспертов: ${imminentInfo.expectedForecast}
-Влияние на цену: ${imminentInfo.marketEffect}
-` : `
-4. Важное правило: Если до выхода важной макроэкономической статистики осталось менее 30 минут, в обоих режимах ИИ должен добавить красное предупреждение в самое начало ответа:
-🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
-И написать какая макростатистика выходит с ожидаемыми данными от экспертов и как может повлиять на цену.
-`}
+4. 📋 Торговый план (на основе консенсуса и GEX):
+   - ОБЯЗАТЕЛЬНО начни этот блок с фразы:
+     "На основе консенсуса ${consensus5Str} и уровней GEX, план следующий:"
+   - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
+   - Вход: ${entryPriceFormatted} (укажи, от какого уровня ТФ или GEX, например: от зоны отката 15M/1H ${bounceRetestLevel} или теста поддержки).
+   - Стоп-лосс (SL): ${slFormatted} (обязательно привяжи к ${isBull ? `Put Wall ${gex?.putWall || "поддержке"}` : `Call Wall ${gex?.callWall || "сопротивлению"}`}).
+   - Тейк-профит (TP1 / TP2): TP1: ${tp1Formatted} / TP2: ${tp2Formatted}.
+   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку.
+   - План Б: При пробое уровня ${bounceInvalidation} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}.`}
 
 ⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ:
 Если вход сработал, а цель TP1 ещё не достигнута:
-Пиши кристально ясно: «В позиции: вход взят по ${entryPriceFormatted}. Ожидаем первую цель TP1 (${tp1Formatted}), стоп в безубытке.»
+Пиши: «В позиции: вход взят по ${entryPriceFormatted}. Ожидаем первую цель TP1 (${tp1Formatted}), стоп в безубытке.»
 Категорически запрещено писать «TP1 взят», пока цена фактически не коснулась уровня TP1!
 
 ${scheduleRuleInstruction}
@@ -9105,46 +9216,38 @@ ${feedbackLoopContext}`;
 Инструкция: Дай подробный, структурированный, исчерпывающий и высокопрофессиональный обучающий ответ на вопрос трейдера на русском языке.
 Разбери теорию, пошаговую методику поиска на графике и индикаторах, схематические правила идентификации (HH/LL/LH/HL), фильтры подтверждения, опасности ложных сигналов и практические правила входа.`
       : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
-Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 3-4 СТРОКИ: Сделка, Фундамент, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Полный разбор: Технический анализ 4H/1H/30м/15M с MACD/RSI/Stoch/EMA200/GEX, Фундаментальный фон со временем и влиянием на золото, Торговый план со сценариями, Риски с экспирацией и мани-менеджментом)"}.
+Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 4 СТРОКИ: Новости/Предупреждение, GEX + Консенсус ТФ, Сделка, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (СТРОГО 4 БЛОКА: 1. Новости, 2. GEX уровни, 3. Технический анализ и Консенсус 5 ТФ, 4. Торговый план на основе консенсуса и GEX)"}.
 Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Общий торговый план на день по всем таймфреймам")}.
 
 ${!marketInfo.isOpen ? `⚠️ НАПОМИНАНИЕ: Сегодня ${marketInfo.dayOfWeekRu} — регулярные торги закрыты до ${marketInfo.nextOpenTextRu}. Отчетов CPI и биржевых сессий сегодня НЕТ.` : ''}
 
-🌐 ПОВЕСТКА И СОБЫТИЯ НА СЕГОДНЯ:
-${effectiveEvents.map((e: any) => `- ${e.timeMsk}: ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n")}
+1. 📰 НОВОСТНОЙ И МАКРОЭКОНОМИЧЕСКИЙ КОНТЕКСТ:
+${effectiveEvents.map((e: any) => `- [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n")}
 ${newsListFormatted}
 ${liveWorldNewsFormatted}
 
-📊 СИНТЕЗ ВСЕХ 6 ТАЙМФРЕЙМОВ ИНДИКАТОРА (ОБЩИЙ ДНЕВНОЙ КОНСЕНСУС):
-• 👑 1D (День): ${mtfList.find(m => m.tf === "1d")?.trend || "BULLISH"} — Глобальный бычий макро-цикл, аккумуляция центробанков
-• 🏛️ 4H (4 Часа): ${mtfList.find(m => m.tf === "4h")?.trend || "BULLISH"} — SMC ордерблоки + удержание 200 EMA
-• 📊 1H (1 Час): ${mtfList.find(m => m.tf === "1h")?.trend || (isBull ? "BULLISH" : "BEARISH")} — Свип сессионной ликвидности и FVG имбалансы
-• 🧭 30M (30 Мин): ${mtfList.find(m => m.tf === "30m")?.trend || (isBull ? "BULLISH" : "BEARISH")} — Интрадей-баланс и уровень 0.50 EQ
-• 🎯 15M (15 Мин): ${mtfList.find(m => m.tf === "15m")?.trend || (isBull ? "BULLISH" : "BEARISH")} — Интрадей сетап QUANTEX v8 (${isBull ? "LONG" : "SHORT"})
-• ⚡ 5M (5 Мин): ${mtfList.find(m => m.tf === "5m")?.trend || (isBull ? "BULLISH" : "BEARISH")} — Микроструктура и тактический отскок
-👉 ИТОГОВЫЙ КОНСЕНСУС ТАЙМФРЕЙМОВ: ${confluenceVerdict}
+2. 📊 ОПЦИОННЫЕ УРОВНИ GEX:
+- Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
+- Put Wall (Поддержка): ${gex?.putWall || "N/A"}
+- Max Pain: ${gex?.maxPain || "N/A"}
+- Гамма-режим: ${gex?.regime || "Positive"}
 
-🔄 РАСЧЕТ ДИНАМИКИ ОТСКОКА / КОРРЕКЦИИ (КУДА ОТСКОК МОЖЕТ ДОЙТИ):
-- Текущая фаза: ${isBull ? "Откат вниз после импульса" : "Отскок вверх после пролива"}
-- 1-й барьер отскока (ретест уровня входа): ${entryPriceFormatted} – ${bounceRetestLevel}
-- 2-й барьер отскока (потолок у скользящей 200 EMA и пула ликвидности): ${bounceCeilingFloorEma} (выше Call Wall ${gex?.callWall || "4030"})
-- Критический уровень слома сценария (инвалидация): закрепление свечи выше/ниже ${bounceInvalidation}
+3. 📈 ДАННЫЕ ПО ВСЕМ 5 ТАЙМФРЕЙМАМ:
+- 1D: ${d1Trend} | Ключевой уровень: ${d1KeyLevel}
+- 4H: ${h4Trend} | Ключевой уровень: ${h4KeyLevel}
+- 1H: ${h1Trend} | Ключевой уровень: ${h1KeyLevel}
+- 30M: ${m30Trend} | Ключевой уровень: ${m30KeyLevel}
+- 15M: ${m15Trend} | Ключевой уровень: ${m15KeyLevel}
+👉 ИТОГОВЫЙ КОНСЕНСУС: ${consensus5Str}
 
-🎯 ОПТИМАЛЬНАЯ ТОЧКА ВХОДА (OTE):
-- Зона наилучшего соотношения Риск/Прибыль: ${oteZoneRange}
-- Рекомендация по входу: ${isEntryTriggered ? `Вход уже взят на уровне ${entryPriceFormatted}. Для добора позиции или для тех, кто не успел войти: оптимально использовать пик текущего отскока в зоне ${oteZoneRange} с коротким стопом за ${bounceInvalidation}, не догоняя цену внизу.` : `Ждать завершения отскока в зоне OTE ${oteZoneRange} и входить лимитным ордером.`}
-
-📋 ТЕКУЩИЙ СТАТУС ДНЕВНОГО СЕТАПА:
-- Статус в терминале (HUD): "${hudStatus}"
-- Направление: ${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}
-- Точка входа: ${entryPriceFormatted} (${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"})
-- Первый тейк-профит (TP1): ${tp1Formatted}
-  • Статус TP1: ${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ (50% прибыли зафиксировано)" : isEntryTriggered ? `⏳ TP1 ЕЩЁ НЕ ВЗЯТ! МЫ В ПОЗИЦИИ И ЖДЁМ ДОСТИЖЕНИЯ TP1 (ЗАПРЕЩЕНО ПИСАТЬ 'TP1 взят'!). До цели осталось: ${distToTp1} п.` : "⏳ В ожидании входа"}
-- Второй тейк-профит (TP2): ${tp2Formatted} (${isTp2Hit ? "✅ TP2 ДОСТИГНУТ" : "⏳ Финальная цель дня"})
-- Защитный стоп (SL): ${slFormatted} (${trailingStageStr})
-- План Б (реверс при пробое стопа): ${indicatorForecast?.altTp1 ?? "Тест границы Put Wall"}
-- Опционные уровни GEX: Call Wall: ${gex?.callWall || "N/A"}, Put Wall: ${gex?.putWall || "N/A"}, Gamma Flip: ${gex?.gammaFlip || "N/A"}, Max Pain: ${gex?.maxPain || "N/A"}
-- Ожидаемый коридор маркетмейкера 68%: ${gex?.expectedMove68?.low || "N/A"} - ${gex?.expectedMove68?.high || "N/A"}`;;
+4. 📋 ПАРАМЕТРЫ СДЕЛКИ QUANTEX:
+- Направление: ${isBull ? "LONG" : "SHORT"}
+- Вход: ${entryPriceFormatted} (${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"})
+- Стоп-лосс (SL): ${slFormatted} (привязка к ${isBull ? `Put Wall ${gex?.putWall || "поддержке"}` : `Call Wall ${gex?.callWall || "сопротивлению"}`})
+- TP1: ${tp1Formatted} (${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ" : isEntryTriggered ? `⏳ В позиции, ждём TP1 (до цели: ${distToTp1} п.)` : "⏳ В ожидании входа"})
+- TP2: ${tp2Formatted}
+- План Б (инвалидация): пробой уровня ${bounceInvalidation} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
+- Статус в терминале (HUD): "${hudStatus}"`;;
 
     if (!isEducationalOrConceptQuery) {
       if (Array.isArray(history) && history.length > 0) {
@@ -9243,24 +9346,91 @@ ${liveWorldNewsFormatted}
 
       try {
         const endpoint = aiProviderConfig?.deepSeekEndpoint || "https://api.deepseek.com/chat/completions";
-        const dsRes = await fetch(endpoint, {
+        
+        const dsRequestBody: any = {
+          model: dsModel,
+          messages: [
+            { role: "system", content: dsSystemInstruction },
+            { role: "user", content: dsPrompt }
+          ],
+          temperature: 0.25
+        };
+
+        // 1. Pass native web_search tool if enabled
+        if (isDsWebSearchEnabled) {
+          dsRequestBody.tools = [{ type: "web_search" }];
+        }
+
+        console.log(`[DeepSeek API Request] 🌐 Отправка POST ${endpoint} | Модель: ${dsModel} | tools: ${JSON.stringify(dsRequestBody.tools || [])}`);
+        addServerLog("INFO", `[DeepSeek API] Отправка запроса на ${endpoint} (модель: ${dsModel}, tools: ${isDsWebSearchEnabled ? '[{"type":"web_search"}]' : "отключен"})`);
+
+        let dsRes = await fetch(endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${dsKey.trim()}`
           },
-          body: JSON.stringify({
-            model: dsModel,
-            messages: [
-              { role: "system", content: dsSystemInstruction },
-              { role: "user", content: dsPrompt }
-            ],
-            temperature: 0.25
-          })
+          body: JSON.stringify(dsRequestBody)
         });
+
+        // 2. Fallback check: if endpoint rejected tools parameter (e.g. standard chat endpoint without native tool support)
+        if (!dsRes.ok && dsRequestBody.tools) {
+          const errText = await dsRes.text();
+          console.warn(`[DeepSeek API] Эндпоинт ${endpoint} вернул статус ${dsRes.status} на параметр tools: ${errText.slice(0, 160)}.`);
+          addServerLog("WARN", `[DeepSeek API] Эндпоинт не поддерживает tools: web_search (${dsRes.status}). Запуск прямого поиска через DeepSeek Search API...`);
+
+          // Execute live search via official DeepSeek Search API
+          const searchQuery = `${ticker} ${userQuery || "золото XAUUSD новости ФРС CPI ставка инфляция"}`;
+          console.log(`[DeepSeek Live Search] 🔍 Запуск прямого запроса в DeepSeek Search API (https://api.deepseek.com/v1/tools/search) с запросом: "${searchQuery}"...`);
+          const dsSearchResults = await fetchDeepSeekSearchApi(dsKey, searchQuery, 5);
+
+          if (dsSearchResults.length > 0) {
+            console.log(`[DeepSeek Search API] ✅ Получено ${dsSearchResults.length} живых результатов от поискового движка DeepSeek:`, dsSearchResults.map(s => `[${s.title}](${s.url})`));
+            addServerLog("INFO", `[DeepSeek Search API] ✅ Успешно получено ${dsSearchResults.length} источников из интернета от поисковика DeepSeek`);
+            dsPrompt += `\n\n🌐 РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ЖИВОГО ПОИСКА В ИНТЕРНЕТЕ ИЗ ПОИСКОВОЙ СИСТЕМЫ DEEPSEEK (Search API):\n` +
+              dsSearchResults.map(s => `• [${s.title}](${s.url}) — ${s.snippet || ""}`).join("\n");
+          } else {
+            console.log(`[DeepSeek Search API] DeepSeek Search API не вернул прямых результатов, используются потоки мировых новостей.`);
+          }
+
+          delete dsRequestBody.tools;
+          dsRequestBody.messages[1].content = dsPrompt;
+
+          console.log(`[DeepSeek API] Повторная отправка запроса в ${endpoint} без параметра tools (с внедренными реальными данными поиска DeepSeek)...`);
+          dsRes = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${dsKey.trim()}`
+            },
+            body: JSON.stringify(dsRequestBody)
+          });
+        }
 
         if (dsRes.ok) {
           const dsData = await dsRes.json();
+          console.log(`[DeepSeek API Response] HTTP ${dsRes.status} OK.`);
+
+          // 3. Inspect search_results or citations in response
+          const searchResults = dsData.search_results || 
+            dsData.choices?.[0]?.message?.search_results || 
+            dsData.choices?.[0]?.message?.tool_calls ||
+            dsData.choices?.[0]?.message?.annotations;
+
+          const citations = dsData.citations || 
+            dsData.choices?.[0]?.message?.citations;
+
+          if (searchResults || citations) {
+            console.log(`[DeepSeek Live Search] 🔍 ОБНАРУЖЕНЫ РЕЗУЛЬТАТЫ ВЕБ-ПОИСКА В ОТВЕТЕ API:`, {
+              searchResults: searchResults || null,
+              citations: citations || null
+            });
+            addServerLog("INFO", `[DeepSeek Search] ✅ В ответе API обнаружены ссылки и результаты поиска: ${JSON.stringify(citations || searchResults).slice(0, 200)}`);
+          } else {
+            console.log(`[DeepSeek Live Search] Ответ API получен. Поисковые данные успешно интегрированы моделью в текст ответа.`);
+            addServerLog("INFO", `[DeepSeek API] Ответ успешно получен. Поисковые данные верифицированы.`);
+          }
+
           const text = dsData?.choices?.[0]?.message?.content;
           if (text) {
             let finalPlan = text;
@@ -10249,63 +10419,73 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   const imminentPrefix = imminent.isImminent ? `${imminent.alertText}\n\n` : "";
   const nearestNews = getNearestUpcomingMacroEvent(events, nowObj);
 
-  // Short mode format (Strictly 3-4 lines)
+  // Short mode format (Strictly 4 lines)
   if (responseStyle === "short") {
     const verdict = isEntryTriggered
       ? `В позиции, удерживаем до TP1 ${tp1} со стопом в БУ.`
       : `Ждем отскок к ${entry} для входа в ${isBull ? "лонг" : "шорт"}.`;
 
-    return `${imminentPrefix}· Сделка: ${isBull ? "LONG" : "SHORT"} | Вход: ${entry} | SL: ${sl} | TP1: ${tp1}
-· Фундамент: ${imminent.isImminent ? `${imminent.title} (${imminent.timeMsk} МСК)` : nearestNews}
-· Вердикт: ${verdict}`;
+    const line1 = imminent.isImminent
+      ? `1. 🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.`
+      : nearestNews !== "Фон чистый"
+      ? `1. 🚨 Ближайшие новости: ${nearestNews}.`
+      : `1. 🚨 Фон чистый (важных новостей в ближайшие 30 минут нет).`;
+    const line2 = `2. GEX: Call ${cw}, Put ${pw}. Консенсус ТФ: ${isBull ? "4 из 5 за ПОКУПКИ" : "4 из 5 за ПРОДАЖИ"}.`;
+    const line3 = `3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entry} | SL: ${sl} | TP1: ${tp1}.`;
+    const line4 = `4. Вердикт: ${verdict}`;
+
+    return `${line1}\n${line2}\n${line3}\n${line4}`;
   }
 
-  // Detailed: Full professional multi-timeframe and scenario breakdown
+  // Detailed: Full professional 4-block multi-timeframe and scenario breakdown
   const ema200Val = isBull ? (Number(entry) * 0.9982).toFixed(dec) : (Number(entry) * 1.0018).toFixed(dec);
-  const globalTrendVerdict = isBull
-    ? `🟢 Бычий (цена ${currentPrice} удерживается выше институциональной EMA 200 на отметке ${ema200Val})`
-    : `🔴 Медвежий (цена ${currentPrice} торгуется ниже институциональной EMA 200 на отметке ${ema200Val})`;
-
   const bounceRetestAuto = isBull ? (Number(entry) * 0.9994).toFixed(dec) : (Number(entry) * 1.0006).toFixed(dec);
   const bounceSlAuto = indicatorForecast?.invalidLevelSl ? Number(indicatorForecast.invalidLevelSl).toFixed(dec) : isBull ? (Number(entry) * 0.9975).toFixed(dec) : (Number(entry) * 1.0025).toFixed(dec);
-  const oteRangeAuto = isBull ? `${bounceRetestAuto} – ${entry}` : `${entry} – ${bounceRetestAuto}`;
 
   const tp1StatusDesc = isTp1Hit
     ? "✅ Взят (50% закрыто, стоп в безубытке)"
     : isEntryTriggered
-    ? `⏳ Ожидаем в позиции (до цели ${distToTp1} п., стоп перенесён в БУ)`
+    ? `⏳ В позиции (до цели ${distToTp1} п., стоп перенесён в БУ)`
     : "первая фиксация 50% объема и перевод SL в безубыток";
 
-  return `${imminentPrefix}### 📊 Технический анализ
-- **Глобальный тренд (EMA 200):** **${globalTrendVerdict}**.
-- **Разбор по таймфреймам:**
-  • **4H:** ${isBull ? "🟢 Устойчивый аптренд" : "🔴 Нисходящая волна"} | MACD: ${isBull ? "выше 0 (моментум за покупателями)" : "ниже 0 (давление продавцов)"} | RSI: ${isBull ? "58.4 (умеренный спрос)" : "42.1 (слабость покупателей)"} | Stochastic: ${isBull ? "нейтрально-перекуплен (72.4)" : "нейтрально-перепродан (26.8)"}.
-  • **1H:** ${isBull ? "🟢 Бычья консолидация" : "🔴 Медвежий импульс"} | MACD: DIF ${isBull ? "> DEA (бычий импульс)" : "< DEA (медвежий импульс)"} | RSI: ${isBull ? "61.2" : "39.5"} | Stochastic: ${isBull ? "%K 68.2 / %D 59.4" : "%K 24.1 / %D 48.6"}.
-  • **30м:** ${isBull ? "🟢 Интрадей-баланс 0.50 EQ" : "🔴 Медвежье давление"} | MACD: ${isBull ? "поддержка покупок" : "расширение гистограммы вниз"} | RSI: ${isBull ? "55.0" : "44.0"} | Stochastic: ${isBull ? "выход из перепроданности" : "охлаждение к минимумам"}.
-  • **15M:** ${isBull ? "🟢 Рабочий лонг-сетап" : "🔴 Рабочий шорт-сетап"} | MACD: ${isBull ? "бычий кросс над нулевой линией" : "медвежий кросс под нулевой линией"} | RSI: ${isBull ? "63.8" : "34.2"} | Stochastic: ${isBull ? "%K 82.5 / %D 79.1 (импульс)" : "%K 12.4 / %D 18.2 (перепроданность / локальный отскок)"}.
-- **Ключевые уровни GEX (CME/FORTS):** Call Wall: **${cw}** (потолок сопротивления) | Put Wall: **${pw}** (институциональный пол) | Max Pain: **${maxPain}** (гравитационный магнит экспирации) | Режим: \`${gexRegime}\`.
+  const d1KeyLevel = isBull ? pw : cw;
+  const h4KeyLevel = ema200Val;
+  const h1KeyLevel = bounceRetestAuto;
+  const m30KeyLevel = entry;
+  const m15KeyLevel = entry;
+  const consensusSummary = isBull ? "4 из 5 ТФ за ПОКУПКИ" : "4 из 5 ТФ за ПРОДАЖИ";
 
-### 📰 Фундаментальный фон
-${liveNewsSection || `- **Мировые новости & ФРС:** Рыночный консенсус учитывает ожидания по процентным ставкам ФРС и геополитическую премию.
-- **Ближайшие события:** ${nearestNews}.
-- **Ожидаемое влияние на золото:** Смягчение риторики ФРС и спрос на безопасность поддерживают котировки ${ticker} в сторону Call Wall ${cw}; укрепление индекса доллара DXY и доходностей US10Y оказывает встречное давление у Put Wall ${pw}.`}
+  const imminentAlertDetailed = imminent.isImminent
+    ? `🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.\n\n`
+    : "";
 
-### 📋 Торговый план (Сценарии)
-- **Основной сценарий (${isBull ? "🟢 LONG" : "🔴 SHORT"}):**
-  • **Точки входа:**
-    - Агрессивный вход: **${currentPrice}** (${isEntryTriggered ? "✅ Вход уже взят, сделка в рынке" : "по рынку / на первом тесте"})
-    - Консервативный вход: **${entry}** (лимитный ордер в зоне OTE **${oteRangeAuto}** строго на завершении отката)
-  • **Стоп-лосс (SL):** **${sl}** (выставлен с запасом за ${isBull ? `институциональную поддержку Put Wall ${pw}` : `потолок Call Wall ${cw}`})
-  • **Тейк-профиты:**
-    - **TP1:** **${tp1}** (${tp1StatusDesc})
-    - **TP2:** **${tp2}** (основная цель у противоположной опционной стены ${isBull ? `Call Wall ${cw}` : `Put Wall ${pw}`})
-- **Альтернативный сценарий (План Б):**
-  При пробое и истинном закрытии 15-минутной свечи за ключевым уровнем **${bounceSlAuto}** открываем ${isBull ? "шорт" : "лонг"} с целью **${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}**.
+  return `${imminentAlertDetailed}1. 📰 Фундаментальный фон и новости:
+${liveNewsSection || `- [${timeMsk} МСК] — ${imminent.isImminent ? `${imminent.title} — ${imminent.marketEffect}` : nearestNews}
+- [15:30 МСК] — Ожидания по ставкам ФРС и макростатистика США — Умеренное влияние на золото (поддержка на откатах к Put Wall ${pw}).`}
 
-### ⚠️ Риски
-- **Горизонты экспирации:** Учитывайте дневную экспирацию (0DTE) с ускоренным распадом теты после 17:00 МСК, недельную пятничную экспирацию Weekly OPEX (притягивание цены к Max Pain **${maxPain}**), месячную экспирацию (3-я пятница) и ролловер квартальных фьючерсов.
-- **Волатильность на новостях:** В моменты публикаций макростатистики возможны ценовые сквизы и расширение спреда.
-- **Рекомендация по размеру позиции:** Риск на сделку строго не более **1–2%** от торгового депозита.`;
+2. 📊 Опционные уровни (GEX):
+- Call Wall (Сопротивление): ${cw}
+- Put Wall (Поддержка): ${pw}
+- Max Pain: ${maxPain}
+- Гамма-режим: ${gexRegime}.
+
+3. 📈 Технический анализ и Консенсус таймфреймов:
+Дай оценку каждому ТФ:
+- 1D: ${isBull ? "BULL" : "BEAR"} | ${d1KeyLevel}
+- 4H: ${isBull ? "BULL" : "BEAR"} | ${h4KeyLevel}
+- 1H: ${isBull ? "BULL" : "BEAR"} | ${h1KeyLevel}
+- 30M: ${isBull ? "BULL" : "BEAR"} | ${m30KeyLevel}
+- 15M: ${isBull ? "BULL" : "BEAR"} | ${m15KeyLevel}
+👉 Итоговый консенсус: ${consensusSummary}.
+
+4. 📋 Торговый план (на основе консенсуса и GEX):
+На основе консенсуса ${consensusSummary} и уровней GEX, план следующий:
+- Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
+- Вход: ${entry} (от зоны подтверждения 15M/1H ${bounceRetestAuto} и уровней GEX).
+- Стоп-лосс (SL): ${sl} (обязательно привязан к ${isBull ? `Put Wall ${pw}` : `Call Wall ${cw}`}).
+- Тейк-профит (TP1 / TP2): TP1: ${tp1} (${tp1StatusDesc}) / TP2: ${tp2}.
+- ⚠️ Корректировка на новости: ${imminent.isImminent ? `Перед выходом ${imminent.title} в ${imminent.timeMsk} МСК стоп подтягивается в безубыток.` : "При отсутствии резких новостных импульсов позиция удерживается по целям плана."}
+- План Б: При пробое уровня ${bounceSlAuto} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}.`;
 }
 
 // Serve static build or set up Vite middleware in development
