@@ -33,14 +33,18 @@ export interface AiForecastRecord {
   timeframe: string;
   direction: TradeDirection;
   entryPrice: number;
+  entryAggressive?: number;
+  entryConservative?: number;
   tp1: number;
   tp2: number;
+  tp3?: number;
   sl: number;
+  cancellationLevel?: number;
   status: ForecastStatus;
   exitPrice?: number;
   exitTimestamp?: number;
   exitTimeMsk?: string;
-  winLevel?: "TP1" | "TP2";
+  winLevel?: "TP1" | "TP2" | "TP3";
   pnlPercent?: number;
   pnlR?: number;
   gexRegime?: string;
@@ -79,6 +83,15 @@ export interface AiLearningStats {
   profitFactor: number;
   averageR: number;
   totalPnLPercent: number;
+  scalperStats: {
+    tp1Hits: number;
+    tp2Hits: number;
+    tp3Hits: number;
+    cancellationHits: number;
+    conservativeEntries: number;
+    aggressiveEntries: number;
+    scalperWinRate: number;
+  };
   expiryStats: {
     fridayWins: number;
     fridayLosses: number;
@@ -189,9 +202,13 @@ const INITIAL_DEMO_FORECASTS: AiForecastRecord[] = [
     timeframe: "15m",
     direction: "LONG",
     entryPrice: 4015.50,
+    entryAggressive: 4016.80,
+    entryConservative: 4015.50,
     tp1: 4025.00,
     tp2: 4032.00,
+    tp3: 4042.00,
     sl: 4008.00,
+    cancellationLevel: 4005.00,
     status: "WIN",
     winLevel: "TP2",
     exitPrice: 4032.00,
@@ -220,9 +237,13 @@ const INITIAL_DEMO_FORECASTS: AiForecastRecord[] = [
     timeframe: "15m",
     direction: "SHORT",
     entryPrice: 4026.50,
+    entryAggressive: 4025.20,
+    entryConservative: 4026.50,
     tp1: 4005.00,
     tp2: 3980.00,
+    tp3: 3965.00,
     sl: 4036.50,
+    cancellationLevel: 4040.00,
     status: "WIN",
     winLevel: "TP2",
     exitPrice: 3980.00,
@@ -251,9 +272,13 @@ const INITIAL_DEMO_FORECASTS: AiForecastRecord[] = [
     timeframe: "15m",
     direction: "LONG",
     entryPrice: 4003.50,
+    entryAggressive: 4004.80,
+    entryConservative: 4003.50,
     tp1: 4016.00,
     tp2: 4025.00,
+    tp3: 4035.00,
     sl: 3991.00,
+    cancellationLevel: 3988.00,
     status: "LOSS",
     exitPrice: 3991.00,
     exitTimestamp: Date.now() - 1000 * 60 * 60 * 10,
@@ -282,9 +307,13 @@ const INITIAL_DEMO_FORECASTS: AiForecastRecord[] = [
     timeframe: "15m",
     direction: "LONG",
     entryPrice: 67800,
+    entryAggressive: 67950,
+    entryConservative: 67800,
     tp1: 68900,
     tp2: 69800,
+    tp3: 71200,
     sl: 67200,
+    cancellationLevel: 66900,
     status: "WIN",
     winLevel: "TP2",
     exitPrice: 69800,
@@ -309,6 +338,13 @@ export function loadForecastJournal() {
       const raw = fs.readFileSync(JOURNAL_FILE, "utf-8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        parsed.forEach((fc: any) => {
+          if (fc.entryConservative == null) fc.entryConservative = fc.entryPrice;
+          if (fc.entryAggressive == null) fc.entryAggressive = fc.entryPrice;
+          if (fc.tp3 == null && fc.tp2) {
+            fc.tp3 = fc.direction === "LONG" ? Number((fc.tp2 * 1.008).toFixed(2)) : Number((fc.tp2 * 0.992).toFixed(2));
+          }
+        });
         forecastJournal = parsed;
       } else {
         forecastJournal = [...INITIAL_DEMO_FORECASTS];
@@ -470,9 +506,13 @@ export function recordAiForecast(params: {
   timeframe?: string;
   direction: TradeDirection;
   entryPrice: number;
+  entryAggressive?: number;
+  entryConservative?: number;
   tp1: number;
   tp2: number;
+  tp3?: number;
   sl: number;
+  cancellationLevel?: number;
   gexRegime?: string;
   provider: string;
   reasoningSummary?: string;
@@ -522,9 +562,13 @@ export function recordAiForecast(params: {
     timeframe: params.timeframe || "15m",
     direction: params.direction,
     entryPrice: Number(params.entryPrice) || 3995.8,
+    entryAggressive: params.entryAggressive ? Number(params.entryAggressive) : undefined,
+    entryConservative: params.entryConservative ? Number(params.entryConservative) : Number(params.entryPrice),
     tp1: Number(params.tp1),
     tp2: Number(params.tp2),
+    tp3: params.tp3 ? Number(params.tp3) : undefined,
     sl: Number(params.sl),
+    cancellationLevel: params.cancellationLevel ? Number(params.cancellationLevel) : undefined,
     status: "PENDING",
     gexRegime: params.gexRegime || "POSITIVE_GAMMA",
     provider: params.provider || "DeepSeek",
@@ -592,8 +636,24 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
     const curLow = priceInfo.low || curPrice;
 
     if (fc.direction === "LONG") {
-      // 1. Check TP2
-      if (curHigh >= fc.tp2) {
+      // 1. Check TP3 (Moon target)
+      if (fc.tp3 && curHigh >= fc.tp3) {
+        fc.status = "WIN";
+        fc.winLevel = "TP3";
+        fc.exitPrice = fc.tp3;
+        fc.exitTimestamp = now;
+        fc.exitTimeMsk = `${timeMsk} МСК`;
+        const diff = fc.tp3 - fc.entryPrice;
+        fc.pnlPercent = Math.round((diff / fc.entryPrice) * 10000) / 100;
+        const risk = Math.max(0.1, fc.entryPrice - fc.sl);
+        fc.pnlR = Math.round((diff / risk) * 10) / 10;
+        fc.outcomeNote = `🚀 Максимальный тейк TP3 взят (+${fc.pnlPercent}%, +${fc.pnlR}R)`;
+        fc.lessonLearned = "Импульс полностью отработал максимальное расширение Фибоначчи и опционную цель.";
+        updatedCount++;
+        wins++;
+      }
+      // 2. Check TP2
+      else if (curHigh >= fc.tp2) {
         fc.status = "WIN";
         fc.winLevel = "TP2";
         fc.exitPrice = fc.tp2;
@@ -610,7 +670,7 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
         updatedCount++;
         wins++;
       }
-      // 2. Check TP1 (if not already hit TP2)
+      // 3. Check TP1 (if not already hit TP2 or TP3)
       else if (curHigh >= fc.tp1 && !fc.winLevel) {
         fc.status = "WIN";
         fc.winLevel = "TP1";
@@ -626,7 +686,22 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
         updatedCount++;
         wins++;
       }
-      // 3. Check SL
+      // 4. Check Cancellation Level
+      else if (fc.cancellationLevel && curLow <= fc.cancellationLevel) {
+        fc.status = "LOSS";
+        fc.exitPrice = fc.cancellationLevel;
+        fc.exitTimestamp = now;
+        fc.exitTimeMsk = `${timeMsk} МСК`;
+        const diff = fc.cancellationLevel - fc.entryPrice;
+        fc.pnlPercent = Math.round((diff / fc.entryPrice) * 10000) / 100;
+        fc.pnlR = -1.0;
+        fc.outcomeNote = `⚠️ Сработал ключевой уровень отмены сценария (${fc.pnlPercent}%, -1.0R)`;
+        fc.mistakePattern = "Пробой уровня инвалидации сценария";
+        fc.lessonLearned = "Структура сломана досрочно на ключевом барьере; выход без пересиживания.";
+        updatedCount++;
+        losses++;
+      }
+      // 5. Check SL
       else if (curLow <= fc.sl) {
         fc.status = "LOSS";
         fc.exitPrice = fc.sl;
@@ -652,8 +727,24 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
         losses++;
       }
     } else if (fc.direction === "SHORT") {
-      // 1. Check TP2
-      if (curLow <= fc.tp2) {
+      // 1. Check TP3 (Moon target)
+      if (fc.tp3 && curLow <= fc.tp3) {
+        fc.status = "WIN";
+        fc.winLevel = "TP3";
+        fc.exitPrice = fc.tp3;
+        fc.exitTimestamp = now;
+        fc.exitTimeMsk = `${timeMsk} МСК`;
+        const diff = fc.entryPrice - fc.tp3;
+        fc.pnlPercent = Math.round((diff / fc.entryPrice) * 10000) / 100;
+        const risk = Math.max(0.1, fc.sl - fc.entryPrice);
+        fc.pnlR = Math.round((diff / risk) * 10) / 10;
+        fc.outcomeNote = `🚀 Максимальный тейк TP3 взят (+${fc.pnlPercent}%, +${fc.pnlR}R)`;
+        fc.lessonLearned = "Шорт отработал максимальное расширение импульса к дальней поддержке.";
+        updatedCount++;
+        wins++;
+      }
+      // 2. Check TP2
+      else if (curLow <= fc.tp2) {
         fc.status = "WIN";
         fc.winLevel = "TP2";
         fc.exitPrice = fc.tp2;
@@ -668,7 +759,7 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
         updatedCount++;
         wins++;
       }
-      // 2. Check TP1
+      // 3. Check TP1
       else if (curLow <= fc.tp1 && !fc.winLevel) {
         fc.status = "WIN";
         fc.winLevel = "TP1";
@@ -684,7 +775,22 @@ export function evaluateForecastOutcomes(priceMap: Record<string, { currentPrice
         updatedCount++;
         wins++;
       }
-      // 3. Check SL
+      // 4. Check Cancellation Level
+      else if (fc.cancellationLevel && curHigh >= fc.cancellationLevel) {
+        fc.status = "LOSS";
+        fc.exitPrice = fc.cancellationLevel;
+        fc.exitTimestamp = now;
+        fc.exitTimeMsk = `${timeMsk} МСК`;
+        const diff = fc.entryPrice - fc.cancellationLevel;
+        fc.pnlPercent = Math.round((diff / fc.entryPrice) * 10000) / 100;
+        fc.pnlR = -1.0;
+        fc.outcomeNote = `⚠️ Сработал ключевой уровень отмены сценария (${fc.pnlPercent}%, -1.0R)`;
+        fc.mistakePattern = "Пробой уровня инвалидации сценария";
+        fc.lessonLearned = "Шорт инвалидирован пробоем ключевого рубежа; защитный выход исполнен.";
+        updatedCount++;
+        losses++;
+      }
+      // 5. Check SL
       else if (curHigh >= fc.sl) {
         fc.status = "LOSS";
         fc.exitPrice = fc.sl;
@@ -825,6 +931,15 @@ export function computeAiLearningStats(): AiLearningStats {
     }))
     .sort((a, b) => b.count - a.count);
 
+  // Scalper stats aggregation
+  const tp1Hits = forecastJournal.filter(f => f.winLevel === "TP1").length;
+  const tp2Hits = forecastJournal.filter(f => f.winLevel === "TP2").length;
+  const tp3Hits = forecastJournal.filter(f => f.winLevel === "TP3").length;
+  const cancellationHits = forecastJournal.filter(f => f.outcomeNote?.includes("инвалидация") || f.outcomeNote?.includes("отмены")).length;
+  const aggressiveEntries = forecastJournal.filter(f => f.entryAggressive != null).length;
+  const conservativeEntries = forecastJournal.filter(f => f.entryConservative != null).length;
+  const scalperWinRate = resolvedCount > 0 ? Math.round(((tp1Hits + tp2Hits + tp3Hits) / resolvedCount) * 1000) / 10 : winRate;
+
   return {
     totalForecasts,
     pendingCount,
@@ -835,6 +950,15 @@ export function computeAiLearningStats(): AiLearningStats {
     profitFactor,
     averageR,
     totalPnLPercent,
+    scalperStats: {
+      tp1Hits,
+      tp2Hits,
+      tp3Hits,
+      cancellationHits,
+      aggressiveEntries,
+      conservativeEntries,
+      scalperWinRate
+    },
     expiryStats: {
       fridayWins,
       fridayLosses,

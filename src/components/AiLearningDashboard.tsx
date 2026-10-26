@@ -37,14 +37,18 @@ export interface AiForecastItem {
   timeframe: string;
   direction: "LONG" | "SHORT";
   entryPrice: number;
+  entryAggressive?: number;
+  entryConservative?: number;
   tp1: number;
   tp2: number;
+  tp3?: number;
   sl: number;
+  cancellationLevel?: number;
   status: "PENDING" | "WIN" | "LOSS" | "EXPIRED";
   exitPrice?: number;
   exitTimestamp?: number;
   exitTimeMsk?: string;
-  winLevel?: "TP1" | "TP2";
+  winLevel?: "TP1" | "TP2" | "TP3";
   pnlPercent?: number;
   pnlR?: number;
   gexRegime?: string;
@@ -79,6 +83,15 @@ export interface AiLearningStatsData {
   profitFactor: number;
   averageR: number;
   totalPnLPercent: number;
+  scalperStats?: {
+    tp1Hits: number;
+    tp2Hits: number;
+    tp3Hits: number;
+    cancellationHits: number;
+    conservativeEntries: number;
+    aggressiveEntries: number;
+    scalperWinRate: number;
+  };
   expiryStats: {
     fridayWins: number;
     fridayLosses: number;
@@ -516,44 +529,63 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
         {/* Global Filter Bar for Journal */}
         {activeSubTab === "journal" && (
-          <div className="flex items-center gap-1.5 pb-1 flex-wrap">
-            {/* Status Filter */}
-            <select
-              value={filterStatus}
-              onChange={e => setFilterStatus(e.target.value)}
-              className="bg-[#121622] border border-gray-700/80 rounded-lg px-2 py-1 text-[11px] text-gray-200 font-mono"
-            >
-              <option value="ALL">Все статусы</option>
-              <option value="PENDING">⏳ В рынке (PENDING)</option>
-              <option value="WIN">🏆 Победы (WIN)</option>
-              <option value="LOSS">❌ Стопы (LOSS)</option>
-              <option value="EXPIRED">⏱️ Истекшие (EXPIRED)</option>
-            </select>
+          <div className="flex flex-col gap-1.5 pb-1 w-full sm:w-auto">
+            {stats?.scalperStats && (
+              <div className="flex items-center gap-2 flex-wrap text-[10.5px] font-mono bg-[#101420] px-2.5 py-1 rounded-lg border border-purple-500/30 text-gray-300">
+                <span className="text-purple-300 font-bold flex items-center gap-1">
+                  <Target className="h-3 w-3 text-purple-400" />
+                  <span>Скальп-статистика:</span>
+                </span>
+                <span className="text-emerald-400 font-bold">TP1: {stats.scalperStats.tp1Hits}</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-emerald-300 font-bold">TP2: {stats.scalperStats.tp2Hits}</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-teal-300 font-bold">TP3: {stats.scalperStats.tp3Hits}</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-amber-400 font-bold">Уровень отмены: {stats.scalperStats.cancellationHits}</span>
+                <span className="text-gray-600">•</span>
+                <span className="text-cyan-300 font-bold">Win Rate: {stats.scalperStats.scalperWinRate}%</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* Status Filter */}
+              <select
+                value={filterStatus}
+                onChange={e => setFilterStatus(e.target.value)}
+                className="bg-[#121622] border border-gray-700/80 rounded-lg px-2 py-1 text-[11px] text-gray-200 font-mono"
+              >
+                <option value="ALL">Все статусы</option>
+                <option value="PENDING">⏳ В рынке (PENDING)</option>
+                <option value="WIN">🏆 Победы (WIN)</option>
+                <option value="LOSS">❌ Стопы (LOSS)</option>
+                <option value="EXPIRED">⏱️ Истекшие (EXPIRED)</option>
+              </select>
 
-            {/* Ticker Filter */}
-            <select
-              value={filterTicker}
-              onChange={e => setFilterTicker(e.target.value)}
-              className="bg-[#121622] border border-gray-700/80 rounded-lg px-2 py-1 text-[11px] text-gray-200 font-mono"
-            >
-              <option value="ALL">Все тикеры</option>
-              {uniqueTickers.map(t => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+              {/* Ticker Filter */}
+              <select
+                value={filterTicker}
+                onChange={e => setFilterTicker(e.target.value)}
+                className="bg-[#121622] border border-gray-700/80 rounded-lg px-2 py-1 text-[11px] text-gray-200 font-mono"
+              >
+                <option value="ALL">Все тикеры</option>
+                {uniqueTickers.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
 
-            {/* Expiry Day Only Filter */}
-            <button
-              type="button"
-              onClick={() => setFilterExpiryOnly(!filterExpiryOnly)}
-              className={`px-2 py-1 rounded-lg text-[10.5px] font-bold font-mono transition cursor-pointer border ${
-                filterExpiryOnly
-                  ? "bg-amber-500/25 border-amber-500/50 text-amber-300"
-                  : "bg-[#121622] border-gray-700 text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              ⚠️ Только дни экспирации (Пт/Пн)
-            </button>
+              {/* Expiry Day Only Filter */}
+              <button
+                type="button"
+                onClick={() => setFilterExpiryOnly(!filterExpiryOnly)}
+                className={`px-2 py-1 rounded-lg text-[10.5px] font-bold font-mono transition cursor-pointer border ${
+                  filterExpiryOnly
+                    ? "bg-amber-500/25 border-amber-500/50 text-amber-300"
+                    : "bg-[#121622] border-gray-700 text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                ⚠️ Только дни экспирации (Пт/Пн)
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -622,11 +654,14 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
                         </div>
                       </div>
 
-                      {/* Center: Price Levels (Entry, TP1, TP2, SL) */}
-                      <div className="flex items-center gap-3 font-mono text-xs flex-wrap bg-[#080b12] px-3 py-1.5 rounded-lg border border-gray-800">
+                      {/* Center: Scalper Price Levels (Aggressive, Conservative, TP1, TP2, TP3, SL, Cancellation) */}
+                      <div className="flex items-center gap-2.5 font-mono text-xs flex-wrap bg-[#080b12] px-3 py-1.5 rounded-lg border border-gray-800">
                         <div>
-                          <span className="text-[9px] text-gray-500 block uppercase">Вход</span>
-                          <span className="font-bold text-gray-200">{fc.entryPrice}</span>
+                          <span className="text-[9px] text-gray-500 block uppercase">Вход (Агр./Конс.)</span>
+                          <span className="font-bold text-gray-200">
+                            {fc.entryAggressive ? `${fc.entryAggressive}` : `${fc.entryPrice}`}
+                            {fc.entryConservative && fc.entryConservative !== fc.entryAggressive ? ` / ${fc.entryConservative}` : ""}
+                          </span>
                         </div>
                         <div className="text-gray-700">|</div>
                         <div>
@@ -638,11 +673,29 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
                           <span className="text-[9px] text-emerald-400 block uppercase">TP2</span>
                           <span className="font-bold text-emerald-300">{fc.tp2}</span>
                         </div>
+                        {fc.tp3 && (
+                          <>
+                            <div className="text-gray-700">|</div>
+                            <div>
+                              <span className="text-[9px] text-teal-400 block uppercase">TP3</span>
+                              <span className="font-bold text-teal-300">{fc.tp3}</span>
+                            </div>
+                          </>
+                        )}
                         <div className="text-gray-700">|</div>
                         <div>
                           <span className="text-[9px] text-rose-500 block uppercase">Stop Loss</span>
                           <span className="font-bold text-rose-400">{fc.sl}</span>
                         </div>
+                        {fc.cancellationLevel && (
+                          <>
+                            <div className="text-gray-700">|</div>
+                            <div>
+                              <span className="text-[9px] text-amber-500 block uppercase">Отмена (Слом)</span>
+                              <span className="font-bold text-amber-300">{fc.cancellationLevel}</span>
+                            </div>
+                          </>
+                        )}
                       </div>
 
                       {/* Right: Outcome Status Badge & Actions */}

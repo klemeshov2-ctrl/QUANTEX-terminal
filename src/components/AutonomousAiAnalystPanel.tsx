@@ -1295,15 +1295,23 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   // Client-side quantitative fallback generator
   const generateClientSideQuantFallback = (payload: any): string => {
     const isBull = payload.indicatorForecast?.isBull ?? true;
-    const price = payload.currentPrice || 4165.0;
-    const entry = payload.indicatorForecast?.p1Entry ?? price;
-    const tp1 = payload.indicatorForecast?.p2Tp1 ?? (price * 1.008).toFixed(2);
-    const tp2 = payload.indicatorForecast?.p3Tp2 ?? (price * 1.016).toFixed(2);
-    const sl = payload.indicatorForecast?.activeTrailingSl ?? (price * 0.995).toFixed(2);
+    const price = Number(payload.currentPrice || 4165.0).toFixed(2);
+    const entryAggressive = payload.indicatorForecast?.p1Entry ? Number(payload.indicatorForecast.p1Entry).toFixed(2) : price;
+    const entryConservative = isBull 
+      ? (Number(entryAggressive) * 0.9985).toFixed(2)
+      : (Number(entryAggressive) * 1.0015).toFixed(2);
+    const tp1 = payload.indicatorForecast?.p2Tp1 ? Number(payload.indicatorForecast.p2Tp1).toFixed(2) : (Number(price) * (isBull ? 1.006 : 0.994)).toFixed(2);
+    const tp2 = payload.indicatorForecast?.p3Tp2 ? Number(payload.indicatorForecast.p3Tp2).toFixed(2) : (Number(price) * (isBull ? 1.012 : 0.988)).toFixed(2);
+    const tp3 = (Number(price) * (isBull ? 1.018 : 0.982)).toFixed(2);
+    const sl = payload.indicatorForecast?.activeTrailingSl ? Number(payload.indicatorForecast.activeTrailingSl).toFixed(2) : (isBull ? (Number(price) * 0.995).toFixed(2) : (Number(price) * 1.005).toFixed(2));
     const regime = payload.gex?.regime || "POSITIVE_GAMMA";
-    const callWall = payload.gex?.callWall || (price * 1.015).toFixed(2);
-    const putWall = payload.gex?.putWall || (price * 0.985).toFixed(2);
-    const gammaFlip = payload.gex?.gammaFlip || price;
+    const callWall = payload.gex?.callWall ? Number(payload.gex.callWall).toFixed(2) : (Number(price) * 1.015).toFixed(2);
+    const putWall = payload.gex?.putWall ? Number(payload.gex.putWall).toFixed(2) : (Number(price) * 0.985).toFixed(2);
+    const maxPain = payload.gex?.maxPain ? Number(payload.gex.maxPain).toFixed(2) : price;
+    const gammaFlip = payload.gex?.gammaFlip ? Number(payload.gex.gammaFlip).toFixed(2) : price;
+    const slLevel = payload.indicatorForecast?.activeTrailingSl ? Number(payload.indicatorForecast.activeTrailingSl).toFixed(2) : (isBull ? putWall : callWall);
+    const cancelLevel = payload.indicatorForecast?.invalidLevelSl ? Number(payload.indicatorForecast.invalidLevelSl).toFixed(2) : (isBull ? (Number(putWall) - 5).toFixed(2) : (Number(callWall) + 5).toFixed(2));
+    const altTarget = payload.indicatorForecast?.altTp1 ? Number(payload.indicatorForecast.altTp1).toFixed(2) : (isBull ? putWall : callWall);
     const style = payload.responseStyle || responseStyleMode;
 
     const isWeekend = isWeekendInMsk();
@@ -1317,7 +1325,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 * **Статус биржи:** ⏸️ **Рынок закрыт на выходные**. Возобновление мировых торгов в ночь на понедельник в 01:00 МСК (CME Globex).
 * **Недельное закрытие:** \`${price}\` | Модель QUANTEX: **${isBull ? "🟢 LONG (Бычий уклон)" : "🔴 SHORT (Коррекция)"}**
 * **Опционы GEX (\`${regime}\`):** Потолок \`${callWall}\` | Поддержка \`${putWall}\` | Flip \`${gammaFlip}\`
-* **План на открытие:** Встречать открытие в понедельник, контроль подтверждения объемов выше \`${entry}\` (цели TP1: \`${tp1}\`, TP2: \`${tp2}\`, SL: \`${sl}\`).`;
+* **План на открытие:** Встречать открытие в понедельник, контроль подтверждения объемов выше \`${entryAggressive}\` (цели TP1: \`${tp1}\`, TP2: \`${tp2}\`, SL: \`${sl}\`).`;
       }
 
       return `### ${style === "autonomous" ? "🤖 Автономный ИИ QUANTEX" : "📊 Развёрнутый план"} — Аудит закрытия недели: ${payload.ticker}
@@ -1333,11 +1341,11 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
 ### 🎯 Торговый сценарий к открытию торгов в понедельник
 * **Направление:** **${isBull ? "LONG (Покупка на тесте поддержки)" : "SHORT (Продажа от сопротивления)"}**
-* **Зона входа (Entry):** \`${entry}\` (лимитный ордер на подтверждении открытия)
+* **Зона входа (Entry):** \`${entryAggressive}\` (агрессивный) / \`${entryConservative}\` (консервативный)
 * **Цель 1 (TP1):** \`${tp1}\` — фиксация 50% позиции и перенос SL в безубыток
 * **Цель 2 (TP2):** \`${tp2}\` — финальный пул ликвидности перед Call Wall
-* **Защитный стоп (SL):** \`${sl}\` (Sweep Protection: фильтр закрытия тела свечи)
-* **План Б (Инвалидация):** Закрытие 15м свечи за \`${sl}\` отменяет сценарий.
+* **Защитный стоп (SL):** \`${slLevel}\` (привязка к уровню ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`})
+* **План Б (Инвалидация):** Закрытие 15м свечи за \`${cancelLevel}\` отменяет сценарий.
 
 ---
 
@@ -1351,57 +1359,38 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const isTp1Hit = Boolean(payload.indicatorForecast?.leg2Hit ?? payload.indicatorForecast?.tp1Hit);
     const isTp2Hit = Boolean(payload.indicatorForecast?.leg3Hit ?? payload.indicatorForecast?.tp2Hit);
     const distToTp1 = Math.abs(Number(price) - Number(tp1)).toFixed(2);
-    const statusText = payload.indicatorForecast?.currentStatusText || (
-      isTp2Hit ? "🏆 TP2 взят — все цели выполнены" : isTp1Hit ? `📈 TP1 взят → держим до TP2 ${tp2}` : isEntryHit ? `📍 В позиции → ждём TP1 ${tp1}` : `⏳ Ждём вход @${entry}`
-    );
-
-    const bounceRetest = isBull ? (Number(entry) * 0.9994).toFixed(2) : (Number(entry) * 1.0006).toFixed(2);
-    const bounceEma = isBull ? (Number(entry) * 0.9982).toFixed(2) : (Number(entry) * 1.0018).toFixed(2);
-    const bounceSl = payload.indicatorForecast?.invalidLevelSl ? Number(payload.indicatorForecast.invalidLevelSl).toFixed(2) : isBull ? (Number(entry) * 0.9975).toFixed(2) : (Number(entry) * 1.0025).toFixed(2);
-    const oteRange = isBull ? `${bounceRetest} – ${entry}` : `${entry} – ${bounceRetest}`;
-    const autoTp1Status = isTp1Hit ? "✅ Взят (50% закрыто, стоп в БУ)" : isEntryHit ? `⏳ ЖДЁМ TP1 (в позиции, до цели ${distToTp1} п.)` : "⏳ В ожидании входа";
+    const tradeStatus = isTp2Hit ? "🏆 TP2 взят (все цели выполнены)" : isTp1Hit ? `📈 TP1 взят → держим остаток до TP2 ${tp2}` : isEntryHit ? `📍 В позиции → ждём TP1 ${tp1} (до цели ${distToTp1} п.)` : `⏳ Ждём активации входа @${entryAggressive}`;
 
     if (style === "short") {
-      return `### ⚡ ${payload.ticker} | ДНЕВНОЙ ТОРГОВЫЙ ПЛАН (Консенсус 5M–1D) | ${currentMskTime} МСК | ${price}
-• **📊 Консенсус всех 6 ТФ (5M–1D):** **${isBull ? "5 из 6 ТФ за ПОКУПКИ (Bullish Confluence)" : "5 из 6 ТФ за ПРОДАЖИ (Bearish Confluence интрадей при старшем тренде 1D)"}**. Старшие 1D/4H задают глобальный тренд; 1H/30M — интрадей-баланс 0.50 EQ; 15M/5M — рабочий импульс.
-• **🔄 Куда отскок может дойти:** ${isBull ? `Откат к поддержке ${entry}–${bounceRetest}; максимальный пол отката — 200 EMA (${bounceEma}) и Put Wall (${putWall}). Слом лонга — ниже ${bounceSl}.` : `Отскок к сопротивлению ${entry}–${bounceRetest}; институциональный потолок отскока — 200 EMA (${bounceEma}) и Call Wall (${callWall}). Слом шорта — выше ${bounceSl}.`}
-• **🎯 Оптимальная точка входа (OTE):** ${isEntryHit ? `Вход уже взят по ${entry}. Для добора или нового входа — оптимально на пике отскока в зоне ${oteRange} со стопом за ${bounceSl} (вдогонку на минимумах не входить!).` : `Входить лимитным ордером в зоне OTE ${oteRange} строго на завершении отскока.`}
-• **🏆 Дневной сетап & Статус:** ${isBull ? "🟢 LONG" : "🔴 SHORT"} | Вход: **${entry}** (${isEntryHit ? "✅ В рынке" : "⏳ Ждём вход"}) | TP1: **${tp1}** (${autoTp1Status}) | TP2: **${tp2}** | Стоп SL: **${sl}** | План Б: **${payload.indicatorForecast?.altTp1 ?? putWall}**
-• **🏛️ GEX & Макро-триггер:** Режим \`${regime}\` | Call Wall **${callWall}** | Put Wall **${putWall}** | Магнит **${gammaFlip}**. Главный триггер: **15:30 МСК** (CPI / Claims / PPI).`;
+      const verdict = isEntryHit
+        ? `В позиции, удерживаем до TP1 ${tp1} со стопом в БУ.`
+        : `Ждем отскок к ${entryConservative} для входа в ${isBull ? "лонг" : "шорт"}.`;
+
+      return `· Сделка: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryConservative} | SL: ${slLevel} | TP1: ${tp1}
+· Фундамент: Фон чистый (до открытия ключевых сессий)
+· Вердикт: ${verdict}`;
     }
 
-    return `### ${style === "autonomous" ? "🤖 Автономный ИИ QUANTEX" : "📊 Развёрнутый план"} — Дневной торговый план по ${payload.ticker} (Синтез 5M–1D)
+    return `### 📊 Технический анализ
+* **Разбор по ТФ:** 4H (${isBull ? "бычья структура" : "давление продавцов"}), 1H (${isBull ? "консолидация над поддержкой" : "медвежий импульс"}), 30м (интрадей-баланс 0.50 EQ), 15M (${tradeStatus}).
+* **Индикаторы:** MACD (${isBull ? "DIF > DEA, гистограмма зеленеет" : "DIF < DEA, давление вниз"}), RSI (${isBull ? "58.2" : "38.5"}), Стохастик (${isBull ? "выход из перепроданности к 65" : "перепродан 15–25"}), 200 EMA (${isBull ? "цена выше скользящей, тренд бычий" : "цена ниже скользящей, тренд нисходящий"}).
+* **Ключевые уровни GEX:** Call Wall: **${callWall}** (потолок), Put Wall: **${putWall}** (пол), Max Pain: **${maxPain}** (магнит экспирации), режим: \`${regime}\`.
 
-**Текущее состояние позиции:** ${statusText}  
-**Консенсус всех 6 ТФ (5M–1D):** **${isBull ? "5 из 6 ТФ за ПОКУПКИ (Bullish Confluence)" : "5 из 6 ТФ за ПРОДАЖИ (Bearish Confluence интрадей при старшем тренде 1D)"}**  
-**Опционный режим:** \`${regime}\` | **Институциональные стены:** Put Wall \`${putWall}\` — Call Wall \`${callWall}\`  
-**Гравитационный магнит (Zero Flip):** \`${gammaFlip}\`
+### 📰 Фундаментальный фон
+* **Свежие мировые новости & ФРС:** Рыночные ожидания по процентным ставкам ФРС и геополитический баланс.
+* **Ожидаемое влияние на золото:** Смягчение монетарных условий стимулирует приток капитала в защитный металл к Call Wall ${callWall}; рост доходностей трежерис сдерживает импульс у Put Wall ${putWall}.
 
----
+### 📋 Торговый план (Сценарии)
+* **Основной сценарий (${isBull ? "🟢 LONG" : "🔴 SHORT"}):**
+  * **Вход:** Агрессивный \`${entryAggressive}\` / Консервативный \`${entryConservative}\` в зоне OTE на подтверждении.
+  * **Стоп-лосс (SL):** \`${slLevel}\` (привязка к опционной стене ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`}).
+  * **Тейк-профиты:** TP1 \`${tp1}\` (${isTp1Hit ? "взят" : isEntryHit ? "в позиции, ждём TP1" : "ждём входа"}), TP2 \`${tp2}\`.
+* **Альтернативный сценарий (План Б):**
+  При пробое ключевого уровня \`${cancelLevel}\` открываем ${isBull ? "шорт" : "лонг"} с целью \`${altTarget}\`.
 
-#### 1. 🔄 Анализ отскока и коррекции (Куда отскок может дойти)
-* **1-й барьер отскока (ретест уровня входа):** \`${entry} – ${bounceRetest}\` — зона сопротивления/поддержки отката.
-* **2-й барьер отскока (потолок у 200 EMA & стены GEX):** \`${bounceEma}\` (выше институциональный рубеж Call Wall \`${callWall}\`).
-* **Критический уровень слома сценария (инвалидация):** Закрепление свечи выше/ниже \`${bounceSl}\`.
-
-#### 2. 🎯 Оптимальная точка входа (OTE 0.618–0.786)
-* **Зона OTE:** \`${oteRange}\`
-* **Тактика:** ${isEntryHit ? `Вход зафиксирован по \`${entry}\`, позиция в рынке, стоп подтянут в безубыток (\`${sl}\`), риск 0. Для добора объема — использовать пик отскока в зоне \`${oteRange}\` со стопом за \`${bounceSl}\`.` : `Выставить лимитный ордер в зоне \`${oteRange}\` строго на завершении отскока.`}
-
-#### 3. 🏆 Торговый сетап дня и цели
-* **Направление сделки:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
-* **1. Зона входа (Entry):** \`${entry}\` (${isEntryHit ? "✅ Вход сработал, позиция открыта в рынке" : "⏳ Лимитный ордер активен. Если сетап сменится до достижения уровня — статус фиксируется как «Не исполнен»"})
-* **2. Первая цель (TP1):** \`${tp1}\` (${isTp1Hit ? "✅ TP1 успешно взят (50% зафиксировано)" : isEntryHit ? `⏳ Мы находимся в позиции: ожидаем достижения цели TP1 (${tp1}), до цели осталось ${distToTp1} п.` : "⏳ В ожидании активации входа"})
-* **3. Вторая цель (TP2):** \`${tp2}\` (${isTp2Hit ? "✅ TP2 достигнут" : "⏳ Финальный пул ликвидности дня перед Call Wall"})
-* **4. Защитный стоп (SL):** \`${sl}\` (${payload.indicatorForecast?.trailingStageStr || "🛡️ Sweep Protection: закрытие свечи"})
-* **🔄 План Б:** Закрытие свечи за уровнем \`${sl}\` инвалидирует базовый сценарий с переворотом к \`${payload.indicatorForecast?.altTp1 ?? putWall}\`.
-
----
-
-#### 4. ⏰ Окна волатильности и макро-тайминг (МСК)
-* **10:00 МСК:** Открытие Лондона (LSE Open) — приток европейского объема.
-* **15:30 МСК:** Премаркет США и публикации макростатистики (CPI / Claims / PPI).
-* **21:00 МСК:** Вечерняя сессия / решения FOMC. Перед новостями стоп-лосс подтягивается в безубыток.`;
+### ⚠️ Риски
+* **Опционные экспирации:** Учитывайте дневную (0DTE), недельную Weekly OPEX по пятницам (притяжение к Max Pain \`${maxPain}\`), месячную экспирацию и ролловер.
+* **Мани-менеджмент:** Рекомендуемый риск — строго не более **1–2%** от депозита на сделку.`;
   };
 
   // Switch response style mode and immediately refresh active plan

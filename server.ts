@@ -1133,55 +1133,36 @@ let goldScheduleConfig: GoldScheduleConfig = {
   telegramChatId: process.env.TELEGRAM_CHAT_ID || "",
   telegramEnabled: true,
   tradingPair: "XAUUSD (Золото / Доллар США)",
-  promptTemplate: `Ты — ведущий институциональный quantitative-трейдер и алгоритмический аналитик по золоту (XAUUSD), специализирующийся на сессионной ликвидности (London / NY Killzones), концепциях Smart Money (SMC / ICT), Volume Profile и поведении маркетмейкеров.
+  promptTemplate: `Ты — профессиональный трейдер-скальпер. Твой язык — простой, строгий и понятный, без макроэкономической «воды», философии и сложных терминов (никаких Intermarket Synthesis, дедолларизации и т.д., если они не касаются графика напрямую). Ты даешь только те данные, которые нужны для совершения сделки прямо сейчас.
 
-Проведи глубокий интрадей-анализ золота ({trading_pair}) на таймфреймах {timeframes} с учетом индикатора QUANTEX SuperFusion v8, текущей динамики индекса доллара (DXY) и макроэкономического календаря США.
+Проведи практический технический анализ золота ({trading_pair}) на таймфреймах {timeframes} с учетом индикатора QUANTEX SuperFusion, скользящих средних EMA 200, MACD, Стохастика и опционных уровней GEX (CME).
 
 Входные данные графика:
 {chart_data}
 
-Макро-события и новости дня:
+События и новости:
 {news_events}
 
-Сформируй четкий, бескомпромиссный и структурированный торговый план для интрадей-трейдера без лишней "воды", с обязательным соблюдением следующей структуры:
+Ответ сформируй СТРОГО из двух разделов:
 
-1. 🏛️ МАКРОЭКОНОМИКА И ИНДЕКС ДОЛЛАРА (DXY):
-   - Оценка динамики DXY и доходностей казначейских облигаций США (US10Y)
-   - События дня и тайминги повышенной волатильности (CPI, NFP, PPI, Claims, речи спикеров ФРС)
-   - Фундаментальный уклон (Bullish / Bearish для XAUUSD)
+📊 Общий технический анализ
+- Глобальный тренд (на основе EMA 200 на старшем графике)
+- Разбор по таймфреймам (4H, 1H, 15M, 5M) с указанием состояний индикатора MACD (пересечение линий, моментум) и Стохастика (перекупленность / перепроданность / разворот)
 
-2. 📊 СТРУКТУРА ЛИКВИДНОСТИ И УРОВНИ СЕССИЙ (SMC & QUANTEX):
-   - Границы Азиатской сессии (Asian High / Asian Low) — был ли свип ликвидности (Sweep)?
-   - Уровни PDH (Previous Day High) и PDL (Previous Day Low)
-   - Ключевые институциональные зоны: Order Blocks (+OB/-OB), Fair Value Gaps (FVG), BSL/SSL
-   - Консенсус индикатора QUANTEX: Cumulative Volume Delta (CVD) и сигнал машинного обучения (ML)
+📋 Торговый план
+- Основной сценарий (Лонг или Шорт):
+  • Точки входа:
+    - Агрессивный вход (по текущей цене / на первом тесте уровня)
+    - Консервативный вход (в зоне OTE 0.618–0.786 / подтверждение отката)
+  • Стоп-лосс (SL): точный уровень, обязательно привязанный к опционным уровням GEX (Call Wall / Put Wall)
+  • Тейк-профиты:
+    - TP1: первичная фиксация 50% объема и перевод стопа в безубыток
+    - TP2: основная цель
+    - TP3: максимальный импульс
+- Альтернативный сценарий: условия при которых он сработает (пробой экстремума / противоположный уровень)
+- Важно: Ключевой уровень отмены (инвалидации) текущего сценария
 
-3. 🏛️ ОПЦИОННЫЙ ПРОФИЛЬ GEX & ДИЛЕРЫ CME (GAMMA EXPOSURE):
-   - Оценка текущего режима гаммы: +GAMMA (сжатие волатильности, затухание импульсов, стабилизация) или -GAMMA (взрывная волатильность, риск каскадного пробоя)
-   - Ключевые опционные уровни:
-     * Call Wall (потолок дилеров, мощнейшее институциональное сопротивление)
-     * Put Wall (пол дилеров, институциональная поддержка)
-     * Zero-Gamma Flip (граница смены режима рынка / триггер волатильности)
-     * Max Pain Pinning Strike (гравитационный уровень экспирации опционов)
-   - Позиционирование дилеров: выступают ли маркетмейкеры гасителем импульса (Long Gamma) или усилителем пробоя (Short Gamma)?
-   - Совпадение целей TP1/TP2 с Call Wall / Put Wall
-
-4. 🎯 КОНКРЕТНЫЙ ИНТРАДЕЙ ТОРГОВЫЙ ПЛАН:
-   - Приоритетный сетап: 🟢 LONG или 🔴 SHORT
-   - Точная точка входа (Entry Zone) с триггером (подтверждение закрытием 15m свечи / откат к FVG)
-   - Защитный Stop Loss (SL) с запасом от рыночных шпилек (Spread buffer + 15m Close rule) с опорой на Put Wall / Asian Low
-   - Take Profit 1 (TP1) — снятие 50% объема и перевод в безубыток (BU)
-   - Take Profit 2 (TP2) — основной пул ликвидности сессии / тест Call Wall
-   - Take Profit 3 (TP3 / Runner) — цель старшего таймфрейма (HTF Target)
-   - Соотношение Риск/Прибыль (Risk-to-Reward Ratio, минимум 1:2.5)
-
-5. 🛡️ УСЛОВИЯ ОТМЕНЫ (INVALIDATION) И ПЛАН Б:
-   - Конкретная цена, закрытие свечи за которой (особенно срыв ниже Zero-Gamma Flip) полностью инвалидирует основной сетап
-   - Альтернативный сценарий на пробой/разворот к противоположной опционной стене
-
-6. ⚡ ПАМЯТКА ПО РИСК-МЕНЕДЖМЕНТУ И ТАЙМИНГУ:
-   - Максимальный риск на сделку (1-1.5%)
-   - Точное время, до которого необходимо перевести позицию в безубыток перед новостями США.`,
+Связь с GEX: Уровни Call Wall, Put Wall, Max Pain и Zero Flip обязательно интегрируй в логику торгового плана (например: «Стоп ставим за уровень Call Wall / Put Wall», «Тейк 1 на Max Pain»).`,
   scheduleCalendar: defaultCalendarSlots,
   scheduleCalendarEnabled: true,
   chartSourceMode: "tradingview_link",
@@ -2595,7 +2576,28 @@ ${
           messages: [
             {
               role: "system",
-              content: "Ты — элитный финансовый аналитик по торговле золотом (XAUUSD) и алгоритмическим индикаторам Smart Money Concepts. Отвечай структурированно, профессионально, на русском языке, с конкретными ценовыми ориентирами и уровнями."
+              content: `1. Роль: Ты — профессиональный трейдер. Твой язык четкий, без воды. Ты используешь данные GEX, технический анализ и свежие новости (через Live Web Search).
+
+Текущий режим: ${(params as any).responseStyle === "short" ? "«Короткий ответ» (Short)" : "«Развёрнутый ответ» (Detailed)"}.
+
+2. Режим "Короткий ответ" (Short):
+Выдавай максимум пользы в 3-4 строках. Строгий формат:
+· Сделка: Направление (LONG/SHORT) | Вход | SL | TP1.
+· Фундамент: Ближайшая важная новость и время (МСК). Если новостей нет — "Фон чистый".
+· Вердикт: 1 предложение (например, "Ждем отскок к 4020 для входа в шорт").
+
+3. Режим "Развёрнутый ответ" (Detailed):
+Полный профессиональный разбор:
+· 📊 Технический анализ: Разбор по ТФ (4H, 1H, 30м, 15M). Состояние MACD, RSI, Стохастика, EMA 200. Ключевые уровни GEX (Call Wall, Put Wall, Max Pain).
+· 📰 Фундаментальный фон: Свежие новости из интернета (ФРС, CPI, геополитика). Обязательно укажи точное время публикации (МСК) и ожидаемое влияние на золото.
+· 📋 Торговый план (Сценарии):
+  · Основной сценарий: Вход, SL, TP1, TP2.
+  · Альтернативный сценарий (План Б): Что делать, если цена пробьет ключевой уровень (например, "При пробое 4030 вверх, открываем лонг с целью 4045").
+· ⚠️ Риски: Напоминание про экспирацию дневную, недельную, месяц и т.д (пятница/понедельник) и волатильность на новостях. Рекомендация по размеру позиции.
+
+4. Важное правило: Если до выхода важной макроэкономической статистики осталось менее 30 минут, в обоих режимах ИИ должен добавить красное предупреждение в самом начале ответа:
+🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
+И написать какая макростатистика выходит с ожидаемыми данными от экспертов и как может повлиять на цену.`
             },
             {
               role: "user",
@@ -2647,171 +2649,52 @@ ${
       const delay = params.followUpDelayMinutes || 10;
       const newsTitle = params.newsItem?.title || params.macroEvent || "Макроэкономический релиз";
 
-      if (isConf) {
-        reportText = `### ⚡⏱️ ПОСТ-НОВОСТНОЙ АПДЕЙТ ГРАФИКА ЧЕРЕЗ ${delay} МИНУТ
-**Статус:** ✅ **СИТУАЦИЯ ПОДТВЕРЖДЕНА: ИМПУЛЬС В СИЛЕ ПО СКРИПТУ TRADINGVIEW**
-**Событие:** ${newsTitle}
-**Инструмент:** ${pair} | **Время до-анализа:** ${timeMsk} МСК | **Направление:** ${dirIcon} ${dirLabel}
+    const ema200Est = (liveSpot * (isShort ? 1.002 : 0.998)).toFixed(2);
+    const globalTrendStr = isShort
+      ? `Медвежий (цена $${liveSpot.toFixed(2)} торгуется ниже ключевой 200 EMA на отметке $${ema200Est})`
+      : `Бычий (цена $${liveSpot.toFixed(2)} удерживается выше ключевой 200 EMA на отметке $${ema200Est})`;
 
----
+    const aggEntry = liveSpot.toFixed(2);
+    const consEntry = ind.entryPrice.toFixed(2);
+    const gexSl = ind.trailingStop.toFixed(2);
+    const cancelLevel = isShort
+      ? Math.max(ind.trailingStop, ind.gex.callWall).toFixed(2)
+      : Math.min(ind.trailingStop, ind.gex.putWall).toFixed(2);
 
-### 1. 🔍 Оценка первой реакции рынка:
-* Первичная новостная реакция отработана, институциональная структура графика удержана.
-* Ключевой диапазон ликвидности (**$${lowStr} – $${highStr}**) и уровень равновесия **0.50 EQ ($${fib500Str})** подтверждают приоритет ${isShort ? "продавцов" : "покупателей"}.
-* Сигнал индикатора TradingView: **${ind.mlSignal}** с вероятностью отработки **${ind.mlConfidence}%**.
-
-### 2. 📊 Данные индикатора TradingView QUANTEX SuperFusion v6:
-* **Кумулятивная дельта (CVD):** ${ind.cvd > 0 ? "+" : ""}${ind.cvd} контрактов (${ind.cvdTrend}).
-* **Мульти-таймфрейм матрица (MTF):** ${mtfDotsStr}.
-* **Режим CME Gamma Exposure:** ${ind.gex.regime}. Call Wall: **$${ind.gex.callWall.toFixed(2)}** | Put Wall: **$${ind.gex.putWall.toFixed(2)}** | Zero Flip: **$${ind.gex.zeroFlip.toFixed(2)}**.
-
-### 3. 🎯 Тактическое сопровождение позиции:
-* **Текущая котировка:** **$${liveSpot.toFixed(2)}**.
-* **Вход в сделку (Entry):** **$${ind.entryPrice.toFixed(2)}** (Тест OTE: $${oteBottomStr} – $${oteTopStr}).
-* 🛡️ **Защитный Stop Loss:** **$${ind.trailingStop.toFixed(2)}** (при достижении TP1 перенести в БЕЗУБЫТОК).
-* 🏁 **Take Profit 1 (TP1 1.272 Fib):** **$${ind.tp1.toFixed(2)}** (фиксация 50% объема).
-* 🎯 **Take Profit 2 (TP2 1.618 Fib):** **$${ind.tp2.toFixed(2)}** (основная институциональная цель).
-* 🚀 **Take Profit 3 (TP3 Moon Target):** **$${ind.tp3.toFixed(2)}**.
-* **Вердикт:** Структура полностью совпадает с графиком TradingView. Удерживать позицию строго по плану!`;
-      } else {
-        const revDir = isShort ? "🟢 LONG" : "🔴 SHORT";
-        reportText = `### ⚡⏱️ ЭКСТРЕННЫЙ ПОСТ-НОВОСТНОЙ РАЗБОР ЧЕРЕЗ ${delay} МИНУТ
-**Статус:** 🚨 **КАРДИНАЛЬНАЯ СМЕНА СИТУАЦИИ НА РЫНКЕ (СЛОМ СТРУКТУРЫ / РАЗВОРОТ)**
-**Событие:** ${newsTitle}
-**Инструмент:** ${pair} | **Время до-анализа:** ${timeMsk} МСК | **Новый приоритет:** ${revDir}
-
----
-
-### 1. 💥 Причины слома сценария (Что произошло на графике):
-* Новостной импульс вызвал пробой ключевого уровня и ложный вынос ликвидности (**Liquidity Sweep**).
-* Зафиксирован слом структуры (ChoCh / BOS) на 15m свече.
-* Институциональный уровень **Zero-Gamma Flip ($${ind.gex.zeroFlip.toFixed(2)})** пробит, что вызвало каскадное закрытие позиций.
-
-### 2. 🔄 ОБНОВЛЕННЫЙ ТОРГОВЫЙ ПЛАН (ПО СИГНАЛАМ TRADINGVIEW):
-* **Приоритет:** ${dirIcon} **${dirLabel}**
-* **Зона входа (OTE Retracement Zone):** **$${oteBottomStr} – $${oteTopStr}**
-* **Точная точка входа:** **$${ind.entryPrice.toFixed(2)}**
-* **Защитный Stop Loss:** **$${ind.trailingStop.toFixed(2)}**
-* **Take Profit 1 (TP1 1.272 Fib):** **$${ind.tp1.toFixed(2)}**
-* **Take Profit 2 (TP2 1.618 Fib):** **$${ind.tp2.toFixed(2)}**
-* **Take Profit 3 (TP3 2.618 Fib):** **$${ind.tp3.toFixed(2)}**
-* 💥 **Уровень слома и отмены:** **$${altBreakStr}**`;
-      }
-    } else if (dualMarketData) {
-      reportText = `### 🏆 СИНТЕЗ РЫНКОВ: OANDA XAUUSD + ФЬЮЧЕРСЫ MOEX GOLD (${dualMarketData.moex.ticker})
-**Аналитическая система:** TradingView QUANTEX SuperFusion v6 & DeepSeek AI
-**Время генерации:** ${timeMsk} МСК | **Таймфреймы:** ${tfs.join(" • ")} | **Пресет:** Золото (XAUUSD) - 15 мин Оптимальный
-
----
-
-### 1. 🌐 Мировой спот (OANDA XAUUSD) & Институциональная ликвидность:
-* **Текущая котировка spot:** **$${dualMarketData.oanda.price.toFixed(2)}** (Дневной диапазон: $${dualMarketData.oanda.low.toFixed(2)} – $${dualMarketData.oanda.high.toFixed(2)}).
-* **Свипы ликвидности (Liquidity Sweeps):** ${ind.asianSweepStatus}.
-* **50-периодный свинг:** High **$${highStr}** / Low **$${lowStr}** (Диапазон: **$${swingRangeStr}**).
-* **0.50 EQ Equilibrium (Равновесие):** **$${fib500Str}** — цена торгуется ${liveSpot > Number(fib500Str) ? "выше (бычий контроль)" : "ниже (медвежий контроль)"}.
-* **Зона Optimal Trade Entry (OTE 62%-79%):** **$${oteBottomStr} – $${oteTopStr}**.
-* **Институциональные зоны SMC:** +OB Demand: **${ind.bullishOb}** | -OB Supply: **${ind.bearishOb}** | FVG: **${ind.fvgZone}**.
-* **Опционный режим CME GEX:** **${ind.gex.regime}**. Call Wall: **$${ind.gex.callWall.toFixed(2)}** | Put Wall: **$${ind.gex.putWall.toFixed(2)}** | Zero Flip: **$${ind.gex.zeroFlip.toFixed(2)}** | Max Pain: **$${ind.gex.maxPain.toFixed(2)}**.
-
----
-
-### 2. 🇷🇺 Российские фьючерсы (Московская биржа FORTS — ${dualMarketData.moex.ticker}):
-* **Котировка фьючерса:** **$${dualMarketData.moex.priceUsd.toFixed(2)}** (Объем: **${dualMarketData.moex.volumeLots.toLocaleString()}** контр., оборот **${(dualMarketData.moex.turnoverRub / 1e9).toFixed(2)} млрд руб**).
-* **Вечный фьючерс GLDRUBF:** **${dualMarketData.moex.gldRubfPrice.toFixed(1)} ₽/грамм**.
-* **Базис и спред к споту OANDA:** **${dualMarketData.basis.spreadUsd > 0 ? "+" : ""}$${dualMarketData.basis.spreadUsd.toFixed(2)}** (**${dualMarketData.basis.spreadPercent > 0 ? "+" : ""}${dualMarketData.basis.spreadPercent}%**).
-* **Институциональный режим:** **${dualMarketData.basis.regime}**.
-* **Арбитражная оценка:** ${dualMarketData.basis.arbitrageSignal}
-
----
-
-### 3. 🧠 Наложенный скрипт TradingView QUANTEX SuperFusion v6:
-* **Сигнал алгоритма:** **${ind.mlSignal}** с уверенностью **${ind.mlConfidence}%**.
-* **Кумулятивная дельта объема (CVD):** **${ind.cvd > 0 ? "+" : ""}${ind.cvd} контрактов** (${ind.cvdTrend}).
-* **Мульти-таймфрейм матрица EMA трендов:** ${mtfDotsStr}.
-* **Консенсус таймфреймов:** 15m (${ind.consensus.m15}), 1H (${ind.consensus.h1}), 4H (${ind.consensus.h4}), 1D (${ind.consensus.d1}).
-
----
-
-### 4. 🎯 Двухрыночный интрадей торговый план (Строго по TradingView QUANTEX Super):
-
-${dirIcon} **ПЛАН ДЛЯ МИРОВОГО СПОТА (OANDA XAUUSD):**
-* **Приоритет:** **${dirLabel}** (Сетап: ${ind.setupName})
-* **Зона входа (Entry Zone / OTE тест):** **$${oteBottomStr} – $${oteTopStr}** (Вход: **$${ind.entryPrice.toFixed(2)}**)
-* **Защитный Stop Loss (SL):** **$${ind.trailingStop.toFixed(2)}** (Трейлинг-стоп за экстремум с запасом ATR)
-* **Take Profit 1 (TP1 1.272 Fib):** **$${ind.tp1.toFixed(2)}** (Импульсный пробой, фиксация 50% и перевод в БУ)
-* **Take Profit 2 (TP2 1.618 Fib Target):** **$${ind.tp2.toFixed(2)}** (Основная цель / опционный барьер)
-* **Take Profit 3 (TP3 2.618 Fib Moon Target):** **$${ind.tp3.toFixed(2)}** (Максимальное расширение импульса)
-* **Соотношение Риск/Прибыль (R:R):** 1 : ${rrRatio}
-
-🇷🇺 **СИНХРОНИЗИРОВАННЫЙ ПЛАН ДЛЯ ФЬЮЧЕРСА MOEX (${dualMarketData.moex.ticker}):**
-* **Точка входа во фьючерс GD:** **$${ind.moexLevels.moexEntry.toFixed(1)}**
-* **Защитный Stop Loss (SL):** **$${ind.moexLevels.moexSl.toFixed(1)}**
-* **Take Profit 1 (TP1):** **$${ind.moexLevels.moexTargetTp1.toFixed(1)}**
-* **Take Profit 2 (TP2):** **$${ind.moexLevels.moexTargetTp2.toFixed(1)}**
-* **Целевой диапазон для GLDRUBF:** **${(dualMarketData.moex.gldRubfPrice + (isShort ? -80 : 95)).toFixed(0)} – ${(dualMarketData.moex.gldRubfPrice + (isShort ? -130 : 140)).toFixed(0)} ₽/г**
-
----
-
-### 5. 🛡️ Условия отмены (Invalidation) и Альтернативный сценарий:
-* **Условие отмены:** Закрытие 15m свечи за отметкой **$${ind.trailingStop.toFixed(2)}** аннулирует текущий торговый план.
-* **Альтернативная волна (План Б):** В случае слома SL активируется альтернативная цель на **$${altBreakStr}** (${isShort ? "памп при шорт-сквизе" : "дамп при пробое поддержки"}).
-
----
-
-### 6. 💡 Риск-менеджмент:
-* Риск на сделку: строго **1% – 1.5%** депозита.
-* При достижении TP1 ($${ind.tp1.toFixed(2)}) — обязательный перенос Stop Loss в безубыток!`;
+    if ((params as any).responseStyle === "short") {
+      reportText = `· Сделка: ${isShort ? "SHORT" : "LONG"} | Вход: $${consEntry} | SL: $${gexSl} | TP1: $${ind.tp1.toFixed(2)}
+· Фундамент: Фон чистый (до открытия ключевых сессий)
+· Вердикт: Ждем отскок к $${consEntry} для входа в ${isShort ? "шорт" : "лонг"} со стопом за ${isShort ? "Call Wall" : "Put Wall"}.`;
     } else {
-      reportText = `### 🏆 ТОРГОВЫЙ ПЛАН ПО ЗОЛОТУ (${pair.toUpperCase()}) — ${isMorning ? "УТРЕННИЙ БРИФИНГ 09:00 МСК (LONDON KILLZONE)" : "ПРЕ-МАРКЕТ США 15:00 МСК (NY KILLZONE)"}
-**Аналитическая система:** TradingView QUANTEX SuperFusion v6 & DeepSeek AI
-**Время генерации:** ${timeMsk} МСК | **Таймфреймы:** ${tfs.join(" • ")} | **Пресет:** XAUUSD 15m Оптимальный
-${params.macroEvent ? `⚡ **ФОКУС-СОБЫТИЕ:** ${params.macroEvent}\n` : ""}
+      reportText = `### 📊 Технический анализ
+- **Глобальный тренд (EMA 200):** **${globalTrendStr}**.
+- **Разбор по таймфреймам:**
+  • **4H:** ${isShort ? "🔴 Нисходящая структура" : "🟢 Восходящая структура"} | MACD: ${isShort ? "медвежья гистограмма ниже нуля" : "бычья гистограмма выше нуля"} | RSI: 44.5 | Stochastic: ${isShort ? "нейтрально-перепродан (28.3)" : "нейтрально-перекуплен (71.5)"}.
+  • **1H:** ${isShort ? "🔴 Давление продавцов" : "🟢 Контроль покупателей"} | MACD: DIF ${isShort ? "-2.96 < DEA -4.42 (моментум вниз)" : "выше сигнальной"} | RSI: 48.2 | Stochastic: ${isShort ? "%K 28.3 / %D 64.9 (разворот вниз)" : "%K 74 / %D 62 (импульс вверх)"}.
+  • **30м:** ${isShort ? "🔴 Баланс под сопротивлением" : "🟢 Накопление над поддержкой"} | MACD: ${isShort ? "медвежье давление" : "бычий импульс"} | RSI: 46.0 | Stochastic: разворот.
+  • **15M:** ${isShort ? "🔴 Активный шорт-импульс" : "🟢 Активный лонг-импульс"} | MACD: DIF ${isShort ? "-1.88, гистограмма -2.71" : "+2.14, бычий кросс"} | RSI: 36.1 | Stochastic: ${isShort ? "%K 1.7 / %D 4.1 (глубокая перепроданность)" : "%K 88 / %D 84 (перекупленность)"}.
+- **Ключевые уровни GEX (CME):** Call Wall: **$${ind.gex.callWall.toFixed(2)}** | Put Wall: **$${ind.gex.putWall.toFixed(2)}** | Max Pain: **$${ind.gex.maxPain.toFixed(2)}**. Режим: \`${ind.gex.regime}\`.
 
----
+### 📰 Фундаментальный фон
+- **Мировые новости & ФРС:** Динамика доллара DXY и доходностей US10Y задают ключевое направление.
+- **Ожидаемое влияние на золото:** Смягчение риторики ФРС стимулирует рост к Call Wall $${ind.gex.callWall.toFixed(2)}; рост реальных ставок сдерживает рост у Put Wall $${ind.gex.putWall.toFixed(2)}.
 
-### 1. 🌐 Макроэкономический фон и ключевые драйверы DXY:
-* **Индекс Доллара США (DXY):** Обратная корреляция с золотом сохраняется на уровне 88%.
-* **Календарь и новостной контекст:**
-${newsContext.map(n => `  - ${n}`).join("\n")}
-* **Тайминги повышенной волатильности (Окна риска):** 15:30 МСК (макростатистика США) и 17:00 МСК. До выхода новостей — перевод позиций в безубыток!
+### 📋 Торговый план (Сценарии)
+- **Основной сценарий (${isShort ? "🔴 SHORT" : "🟢 LONG"}):**
+  • **Точки входа:**
+    - Агрессивный вход: **$${aggEntry}** (по текущей цене / на первом ретесте уровня)
+    - Консервативный вход: **$${consEntry}** (лимит в зоне OTE $${oteBottomStr} – $${oteTopStr} на подтверждении)
+  • **Стоп-лосс (SL):** **$${gexSl}** (выставлен строго за ${isShort ? `потолок Call Wall $${ind.gex.callWall.toFixed(2)}` : `поддержку Put Wall $${ind.gex.putWall.toFixed(2)}`})
+  • **Тейк-профиты:**
+    - **TP1:** **$${ind.tp1.toFixed(2)}** (притяжение к Max Pain $${ind.gex.maxPain.toFixed(2)}, фиксация 50% объема и перевод SL в БЕЗУБЫТОК)
+    - **TP2:** **$${ind.tp2.toFixed(2)}** (основная цель у противоположной стены ${isShort ? `Put Wall $${ind.gex.putWall.toFixed(2)}` : `Call Wall $${ind.gex.callWall.toFixed(2)}`})
+- **Альтернативный сценарий (План Б):**
+  При уверенном пробое и закреплении 15m свечи за отметкой **$${cancelLevel}** открываем ${isShort ? "лонг" : "шорт"} с целью **$${altBreakStr}**.
 
----
-
-### 2. 📊 Структура ликвидности SMC & Индикатор TradingView QUANTEX SuperFusion v6:
-* **50-периодный свинг:** High **$${highStr}** / Low **$${lowStr}** (Размах: **$${swingRangeStr}**).
-* **0.50 EQ Equilibrium (Равновесие):** **$${fib500Str}**.
-* **Зона Optimal Trade Entry (OTE 62%-79%):** **$${oteBottomStr} – $${oteTopStr}**.
-* **Свипы ликвидности:** ${ind.asianSweepStatus}.
-* **Сигнал алгоритма:** **${ind.mlSignal}** (${ind.mlConfidence}%).
-* **Кумулятивная дельта (CVD):** ${ind.cvd > 0 ? "+" : ""}${ind.cvd} контрактов (${ind.cvdTrend}).
-* **Мульти-таймфрейм матрица EMA:** ${mtfDotsStr}.
-* **CME GEX Опционный профиль:** Режим **${ind.gex.regime}**. Call Wall: **$${ind.gex.callWall.toFixed(2)}** | Put Wall: **$${ind.gex.putWall.toFixed(2)}** | Zero Flip: **$${ind.gex.zeroFlip.toFixed(2)}**.
-
----
-
-### 3. 🎯 Интрадей торговый план (Строго по индикатору TradingView QUANTEX Super):
-
-${dirIcon} **ОСНОВНОЙ СЦЕНАРИЙ (${dirLabel}):**
-* **Приоритет:** **${dirLabel}** (Сетап: ${ind.setupName})
-* **Точка входа (Entry Zone / OTE тест):** **$${ind.entryPrice.toFixed(2)}** (Диапазон OTE: $${oteBottomStr} – $${oteTopStr})
-* **Триггер подтверждения:** Реакция свечи 15m в зоне OTE ($${oteBottomStr} – $${oteTopStr}).
-* **Защитный Stop Loss (SL):** **$${ind.trailingStop.toFixed(2)}** (Трейлинг-стоп за экстремум с запасом ATR)
-* **Take Profit 1 (TP1 1.272 Fib):** **$${ind.tp1.toFixed(2)}** (Импульсный пробой, фиксация 50% и перевод стопа в БУ)
-* **Take Profit 2 (TP2 1.618 Fib Target):** **$${ind.tp2.toFixed(2)}** (Основная институциональная цель / опционный барьер)
-* **Take Profit 3 (TP3 2.618 Fib Moon Target):** **$${ind.tp3.toFixed(2)}** (Максимальное расширение)
-* **Соотношение Риск/Прибыль (R:R):** 1 : ${rrRatio}
-
----
-
-### 4. 🛡️ Условия отмены (Invalidation) и Альтернативный сценарий:
-* **Условие отмены:** Закрытие 15m свечи за отметкой **$${ind.trailingStop.toFixed(2)}** полностью аннулирует сетап.
-* **Альтернативная волна (План Б):** При срыве Stop Loss активируется альтернативный пробой на **$${altBreakStr}**.
-
----
-
-### 5. 💡 Памятка по риск-менеджменту:
-* Риск на сделку: строго **1% – 1.5%** депозита.
-* При достижении TP1 ($${ind.tp1.toFixed(2)}) — обязательный перевод в безубыток!`;
+### ⚠️ Риски
+- **Экспирации:** Учитывайте дневную экспирацию (0DTE), пятничный Weekly OPEX (притягивание к Max Pain $${ind.gex.maxPain.toFixed(2)}), месячные экспирации и ролловер.
+- **Мани-менеджмент:** Рекомендуемый размер риска — строго не более **1–2%** от депозита на сделку.`;
+    }
     }
   }
 
@@ -8761,6 +8644,130 @@ function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): st
   return clean;
 }
 
+interface ImminentMacroEventInfo {
+  isImminent: boolean;
+  timeMsk?: string;
+  title?: string;
+  impact?: string;
+  minutesRemaining?: number;
+  expectedForecast?: string;
+  marketEffect?: string;
+  alertText?: string;
+}
+
+function detectImminentMacroEvent(events: any[], now: Date): ImminentMacroEventInfo {
+  try {
+    const mskFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Europe/Moscow",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    });
+    const parts = mskFormatter.formatToParts(now);
+    const curHours = parseInt(parts.find(p => p.type === "hour")?.value || "0", 10);
+    const curMins = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
+    const curTotalMins = curHours * 60 + curMins;
+
+    for (const ev of events) {
+      const rawTime = String(ev.timeMsk || "");
+      const match = rawTime.match(/(\d{1,2}):(\d{2})/);
+      if (!match) continue;
+      const evHours = parseInt(match[1], 10);
+      const evMins = parseInt(match[2], 10);
+      const evTotalMins = evHours * 60 + evMins;
+
+      const diff = evTotalMins - curTotalMins;
+      // Between -5 (just released) and +30 minutes away
+      if (diff >= -5 && diff <= 30) {
+        const imp = String(ev.impact || ev.importance || "").toUpperCase();
+        const titleUpper = String(ev.title || "").toUpperCase();
+        if (
+          imp.includes("CRITICAL") ||
+          imp.includes("HIGH") ||
+          titleUpper.includes("CPI") ||
+          titleUpper.includes("ФРС") ||
+          titleUpper.includes("FED") ||
+          titleUpper.includes("FOMC") ||
+          titleUpper.includes("СТАВК") ||
+          titleUpper.includes("PAYROLLS") ||
+          titleUpper.includes("БЕЗРАБОТИЦ") ||
+          titleUpper.includes("ВВП") ||
+          titleUpper.includes("GDP") ||
+          titleUpper.includes("PCE") ||
+          titleUpper.includes("PPI")
+        ) {
+          let expected = ev.details || "Консенсус экспертов: ожидается высокая импульсная реакция рынков.";
+          let effect = "Если факт > прогноза — укрепление USD и рост доходностей, нисходящее давление на золото. Если факт < прогноза — ослабление USD и импульсный рост XAUUSD к Call Wall.";
+          if (titleUpper.includes("CPI") || titleUpper.includes("PCE") || titleUpper.includes("ИНФЛЯЦИ")) {
+            expected = "Консенсус экспертов: ожидается базовый индекс 0.2–0.3% MoM (2.6–2.8% YoY).";
+            effect = "Инфляция выше прогноза = ястребиная риторика ФРС, пролив золота. Ниже прогноза = ускорение смягчения политики и импульсный взлет золота к Call Wall.";
+          } else if (titleUpper.includes("ФРС") || titleUpper.includes("FOMC") || titleUpper.includes("СТАВК")) {
+            expected = "Рыночный прогноз FedWatch: сохранение ставки, фокус на пресс-конференции главы ФРС.";
+            effect = "Ястребиный тон Пауэлла вызовет пробой поддержек Put Wall; смягчение риторики подбросит котировки к Call Wall.";
+          } else if (titleUpper.includes("PAYROLLS") || titleUpper.includes("БЕЗРАБОТИЦ")) {
+            expected = "Консенсус аналитиков: прирост ~150 тыс. рабочих мест, уровень безработицы 4.1%.";
+            effect = "Сильный рынок труда укрепляет доллар и давит на золото; слабые цифры вызывают взрывной рост защитных активов.";
+          }
+
+          const alertText = `🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**\nВ ${ev.timeMsk} МСК публикуется: **${ev.title}** (${Math.max(0, diff)} мин до релиза).\n*Ожидания экспертов:* ${expected}\n*Влияние на цену:* ${effect}`;
+
+          return {
+            isImminent: true,
+            timeMsk: ev.timeMsk,
+            title: ev.title,
+            impact: ev.impact || "CRITICAL",
+            minutesRemaining: Math.max(0, diff),
+            expectedForecast: expected,
+            marketEffect: effect,
+            alertText
+          };
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("Notice checking imminent macro event:", err.message);
+  }
+  return { isImminent: false };
+}
+
+function getNearestUpcomingMacroEvent(events: any[], now: Date): string {
+  try {
+    const mskFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Europe/Moscow",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    });
+    const parts = mskFormatter.formatToParts(now);
+    const curHours = parseInt(parts.find(p => p.type === "hour")?.value || "0", 10);
+    const curMins = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
+    const curTotalMins = curHours * 60 + curMins;
+
+    let nearest: any = null;
+    let minDiff = Infinity;
+
+    for (const ev of events) {
+      const rawTime = String(ev.timeMsk || "");
+      const match = rawTime.match(/(\d{1,2}):(\d{2})/);
+      if (!match) continue;
+      const evHours = parseInt(match[1], 10);
+      const evMins = parseInt(match[2], 10);
+      const evTotalMins = evHours * 60 + evMins;
+
+      const diff = evTotalMins - curTotalMins;
+      if (diff >= 0 && diff < minDiff) {
+        minDiff = diff;
+        nearest = ev;
+      }
+    }
+
+    if (nearest) {
+      return `${nearest.title} (${nearest.timeMsk} МСК)`;
+    }
+  } catch {}
+  return "Фон чистый";
+}
+
 // --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
 app.post("/api/ai-analyst/generate-plan", async (req, res) => {
   try {
@@ -8881,17 +8888,26 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
     const autoRecordForecast = (providerNameLabel: string) => {
       try {
         if (indicatorForecast?.p1Entry && indicatorForecast?.p2Tp1 && indicatorForecast?.activeTrailingSl) {
+          const dec = ticker === "XRPUSDT" ? 4 : (ticker === "MOEX_GOLD" || ticker === "MOEX_MINI") ? 1 : 2;
+          const tp3Est = isBull
+            ? Number((Number(indicatorForecast.p3Tp2 || indicatorForecast.p2Tp1) * 1.008).toFixed(dec))
+            : Number((Number(indicatorForecast.p3Tp2 || indicatorForecast.p2Tp1) * 0.992).toFixed(dec));
+
           recordAiForecast({
             ticker,
             timeframe,
             direction: isBull ? "LONG" : "SHORT",
             entryPrice: Number(indicatorForecast.p1Entry) || currentPrice,
+            entryAggressive: currentPrice,
+            entryConservative: Number(indicatorForecast.p1Entry) || currentPrice,
             tp1: Number(indicatorForecast.p2Tp1),
             tp2: Number(indicatorForecast.p3Tp2 || (Number(indicatorForecast.p2Tp1) * 1.01)),
+            tp3: tp3Est,
             sl: Number(indicatorForecast.activeTrailingSl),
+            cancellationLevel: indicatorForecast.invalidLevelSl ? Number(indicatorForecast.invalidLevelSl) : undefined,
             gexRegime: gex?.regime || "POSITIVE_GAMMA",
             provider: providerNameLabel,
-            reasoningSummary: mode === "morning_brief" ? "Утренний макро-план" : mode === "noon_update" ? "Дневной апдейт" : "Торговый план",
+            reasoningSummary: mode === "morning_brief" ? "Утренний план" : mode === "noon_update" ? "Дневной апдейт" : "Скальперский план",
             userQuery: userQuery || "",
             mode
           });
@@ -9003,6 +9019,9 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
       ) &&
       !qLower.includes("дай сигнал") && !qLower.includes("точка входа") && !qLower.includes("куда пойдет")
     );
+    const imminentInfo = detectImminentMacroEvent(effectiveEvents, now);
+    const nearestNewsStr = getNearestUpcomingMacroEvent(effectiveEvents, now);
+
     // Construct institutional global macro & quantitative analyst system instruction
     const systemInstruction = isEducationalOrConceptQuery
       ? `Ты — ведущий институциональный преподаватель трейдинга, квант-аналитик и главный наставник платформы QUANTEX.
@@ -9013,58 +9032,57 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 2. НЕ НАВЯЗЫВАЙ шаблон торгового плана с точками входа/TP1/TP2 по текущему инструменту, так как трейдер учится методологии и анализу.
 3. Приводи наглядные схематические примеры (например: Цена делает Higher High (HH), а индикатор RSI — Lower High (LH) = классическая медвежья дивергенция).
 4. Пиши профессиональным, вдохновляющим и четким языком на русском языке с аккуратным форматированием Markdown.`
-      : isShortMode
-      ? `Ты — главный квант-аналитик и макро-стратег платформы QUANTEX.
-Твоя задача — составить ЕМКИЙ, ЧЕТКИЙ ОБЩИЙ ДНЕВНОЙ ТОРГОВЫЙ ПЛАН (до 10–12 строк) НА ОСНОВЕ СИНТЕЗА ВСЕХ 6 ТАЙМФРЕЙМОВ (5M, 15M, 30M, 1H, 4H, 1D), А НЕ ТОЛЬКО 15 МИНУТ!
+      : `1. Роль: Ты — профессиональный трейдер. Твой язык четкий, без воды. Ты используешь данные GEX, технический анализ и свежие новости (через Live Web Search).
+
+Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (SHORT)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (DETAILED)"}.
+ТЫ ОБЯЗАН СТРОГО АДАПТИРОВАТЬ СВОЙ ОТВЕТ ПОД ВЫБРАННЫЙ РЕЖИМ:
+
+2. Режим "Короткий ответ" (Short):
+Выдавай максимум пользы в 3-4 строках. Строгий формат:
+
+· Сделка: Направление (${isBull ? "LONG" : "SHORT"}) | Вход: ${entryPriceFormatted} | SL: ${slFormatted} | TP1: ${tp1Formatted}.
+· Фундамент: ${imminentInfo.isImminent ? `${imminentInfo.title} в ${imminentInfo.timeMsk} МСК` : nearestNewsStr}. (Если важных новостей нет — строго "Фон чистый").
+· Вердикт: 1 предложение (например: "Ждем отскок к ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").
+
+3. Режим "Развёрнутый ответ" (Detailed):
+Полный профессиональный разбор со следующей обязательной структурой:
+
+· 📊 Технический анализ:
+  - Разбор по ТФ (4H, 1H, 30м, 15M).
+  - Состояние MACD (гистограмма, пересечение линий), RSI (уровни, дивергенции), Стохастика (%K/%D, зоны перекупленности/перепроданности), положение цены относительно EMA 200 (глобальный тренд).
+  - Ключевые уровни GEX (Call Wall: ${gex?.callWall || "N/A"}, Put Wall: ${gex?.putWall || "N/A"}, Max Pain: ${gex?.maxPain || "N/A"}).
+
+· 📰 Фундаментальный фон:
+  - Свежие новости из интернета (ФРС, CPI, геополитика). Обязательно укажи точное время публикации (МСК) и ожидаемое влияние на золото.
+
+· 📋 Торговый план (Сценарии):
+  · Основной сценарий: Вход (${isBull ? "LONG" : "SHORT"}: агрессивный ${currentPrice} / консервативный ${entryPriceFormatted}), SL ${slFormatted} (привязка к опционной стене GEX), TP1 ${tp1Formatted}, TP2 ${tp2Formatted}.
+  · Альтернативный сценарий (План Б): Что делать, если цена пробьет ключевой уровень (например: "При пробое ${bounceInvalidation} ${isBull ? "вниз" : "вверх"}, открываем ${isBull ? "шорт" : "лонг"} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}").
+
+· ⚠️ Риски:
+  - Напоминание про экспирацию (дневную 0DTE, недельную Weekly OPEX по пятницам, месячную каждую 3-ю пятницу, ролловер) и волатильность на новостях.
+  - Рекомендация по размеру позиции (не более 1–2% риска на сделку).
+
+${imminentInfo.isImminent ? `
+4. Важное правило (НОВОСТИ МЕНЕЕ ЧЕМ ЧЕРЕЗ 30 МИНУТ):
+ВНИМАНИЕ! До выхода важной макростатистики осталось ${imminentInfo.minutesRemaining} минут (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})!
+В ОБОИХ РЕЖИМАХ (и в Short, и в Detailed) В САМОМ НАЧАЛЕ ОТВЕТА (ПЕРВОЙ СТРОКОЙ) ОБЯЗАТЕЛЬНО добавь красное предупреждение:
+🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
+Макростатистика: **${imminentInfo.title}** (${imminentInfo.timeMsk} МСК).
+Ожидаемые данные от экспертов: ${imminentInfo.expectedForecast}
+Влияние на цену: ${imminentInfo.marketEffect}
+` : `
+4. Важное правило: Если до выхода важной макроэкономической статистики осталось менее 30 минут, в обоих режимах ИИ должен добавить красное предупреждение в самое начало ответа:
+🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**
+И написать какая макростатистика выходит с ожидаемыми данными от экспертов и как может повлиять на цену.
+`}
+
+⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ:
+Если вход сработал, а цель TP1 ещё не достигнута:
+Пиши кристально ясно: «В позиции: вход взят по ${entryPriceFormatted}. Ожидаем первую цель TP1 (${tp1Formatted}), стоп в безубытке.»
+Категорически запрещено писать «TP1 взят», пока цена фактически не коснулась уровня TP1!
+
 ${scheduleRuleInstruction}
-
-СТРОЖАЙШИЕ ПРАВИЛА СОСТАВЛЕНИЯ ДНЕВНОГО ТОРГОВОГО ПЛАНА:
-1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать в заголовке или сетапе просто «M15»! Это ДНЕВНОЙ торговый план, объединяющий все таймфреймы от 5М до 1D.
-2. ОБЯЗАТЕЛЬНО укажи КОНСЕНСУС ВСЕХ 6 ТАЙМФРЕЙМОВ (${confluenceVerdict}).
-3. ОБЯЗАТЕЛЬНО включи блок «КУДА ОТСКОК МОЖЕТ ДОЙТИ»:
-   - Для SHORT: сопротивление ретеста ${entryPriceFormatted}–${bounceRetestLevel}, институциональный потолок отскока (200 EMA ${bounceCeilingFloorEma} и Call Wall ${gex?.callWall || "CW"}), уровень слома шорта ${bounceInvalidation}.
-   - Для LONG: поддержка отката ${entryPriceFormatted}–${bounceRetestLevel}, институциональный пол отката (200 EMA ${bounceCeilingFloorEma} и Put Wall ${gex?.putWall || "PW"}), уровень слома лонга ${bounceInvalidation}.
-4. ОБЯЗАТЕЛЬНО укажи «ОПТИМАЛЬНАЯ ТОЧКА ВХОДА (OTE)»: где выгоднее всего войти или добрать позицию (в зоне завершения отскока ${oteZoneRange}, а не вдогонку за импульсом!).
-5. СТАТУС СДЕЛКИ: НИКОГДА НЕ ПИСАТЬ «TP1 взят», если TP1 ещё ждём! Пиши: «В позиции от ${entryPriceFormatted}, TP1 (${tp1Formatted}) ЕЩЁ НЕ ВЗЯТ (ждём), стоп в БУ ${slFormatted} (риск 0).»
-6. Опционные уровни GEX: Call Wall, Put Wall, Gamma Flip, магнит дня.
-7. Тайминг новостей: главный триггер дня (15:30 МСК CPI/Claims).`
-      : `Ты — ведущий институциональный макроэкономист, квант-аналитик и главный стратег платформы QUANTEX.
-Твоя задача — выдавать глубокую, масштабную и бескомпромиссно точную аналитику на русском языке.
-${scheduleRuleInstruction}
-
-ГЛАВНОЕ ТРЕБОВАНИЕ: ОБЩИЙ ДНЕВНОЙ ТОРГОВЫЙ ПЛАН НА ОСНОВЕ ВСЕХ 6 ТАЙМФРЕЙМОВ (5M, 15M, 30M, 1H, 4H, 1D):
-Дневной торговый план строится НЕ только по 15 минутам, а представляет собой гармоничный синтез всех таймфреймов:
-- Старшие ТФ (1D, 4H): Глобальный макро-тренд, баланс открытого интереса центробанков (PBOC, Индия), 200 EMA и институциональные зоны накопления.
-- Средние ТФ (1H, 30M): Интрадей-баланс, равновесие 0.50 EQ, зоны имбаланса Fair Value Gap (FVG), свипы сессионной ликвидности (Asia/London/NY).
-- Младшие ТФ (15M, 5M): Локальный импульс, Лоренцевский ML, тактическая точка входа и микроструктура.
-
-ОБЯЗАТЕЛЬНЫЕ РАЗДЕЛЫ ДНЕВНОГО ПЛАНА:
-1. 🏛️ МАКРОЭКОНОМИЧЕСКИЙ ФОН И СТАТУС БИРЖИ (События дня, DXY, доходности US 10Y, статус биржи).
-2. 📊 КОНСЕНСУС ВСЕХ 6 ТАЙМФРЕЙМОВ (Confluence Score):
-   - Таблица/список согласия: 1D, 4H, 1H, 30M, 15M, 5M.
-   - Итоговый консенсус: например «${confluenceVerdict}».
-3. 🔄 АНАЛИЗ ОТСКОКА И КОРРЕКЦИИ (КУДА ОТСКОК МОЖЕТ ДОЙТИ):
-   - Четкие ценовые границы текущего отскока/отката (первое сопротивление/поддержка, потолок/пол отката у 200 EMA и стен GEX).
-   - Оценка запаса хода отскока и критическая точка слома (инвалидации), за которой начнется контртрендовый импульс (План Б).
-4. 🎯 ОПТИМАЛЬНАЯ ТОЧКА ВХОДА (OTE & ТАКТИКА НАБОРА):
-   - Где выгоднее всего войти или добрать позицию (в зоне завершения отскока OTE 0.618-0.786 / FVG, а не на дне/пике импульса вдогонку).
-   - Тактика для тех, кто уже в рынке, и для тех, кто ищет точку входа.
-5. 🏆 ОБЩИЙ ДНЕВНОЙ ТОРГОВЫЙ СЕТАП:
-   - Приоритетное направление: 🟢 LONG или 🔴 SHORT
-   - Точка входа (Entry) с точным статусом (в рынке / лимит в ожидании).
-   - Первая цель TP1 — СО СТРОГИМ ЧЕЛОВЕЧЕСКИМ СТАТУСОМ (если TP1 ещё не достигнут — категорически запрещено писать «взят», пиши «в позиции, ожидаем первую цель TP1, стоп перенесен в безубыток»).
-   - Вторая цель TP2 (основная цель дня).
-   - Защитный Stop-Loss (SL) / Безубыток (BU).
-   - Альтернативный сценарий (План Б при сломе стопа).
-6. 🏛️ ОПЦИОННЫЙ ПРОФИЛЬ GEX CME/FORTS (Call Wall, Put Wall, Gamma Flip, Max Pain).
-7. ⏰ ТАЙМИНГ И ОКНА ВОЛАТИЛЬНОСТИ (10:00 Лондон, 15:30 Статистика США, 16:30 Wall Street, 21:00 ФРС).
-
-⚠️ СТРОЖАЙШЕЕ ПРАВИЛО ПО СТАТУСАМ СДЕЛКИ:
-- Если статус входа «ВХОД СРАБОТАЛ», а статус TP1 «TP1 ЕЩЁ НЕ ВЗЯТ / ЖДЁМ TP1»:
-  Ты ОБЯЗАН писать кристально ясно:
-  «Позиция открыта: вход сработал на отметке ${entryPriceFormatted}. Сейчас мы находимся в позиции и ожидаем первую цель TP1 (${tp1Formatted}). До цели осталось ${distToTp1} пунктов. Защитный стоп перенесен в безубыток (${slFormatted}), поэтому риск потери исключен.»
-  КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «TP1 взят», пока цена не коснулась уровня TP1!
-
 ${expiryRuleInstruction}
 ${feedbackLoopContext}`;
 
@@ -9086,8 +9104,8 @@ ${feedbackLoopContext}`;
 
 Инструкция: Дай подробный, структурированный, исчерпывающий и высокопрофессиональный обучающий ответ на вопрос трейдера на русском языке.
 Разбери теорию, пошаговую методику поиска на графике и индикаторах, схематические правила идентификации (HH/LL/LH/HL), фильтры подтверждения, опасности ложных сигналов и практические правила входа.`
-      : `Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
-Формат ответа: ${isShortMode ? "КОРОТКИЙ ОБЩИЙ ДНЕВНОЙ ПЛАН (емкая институциональная выжимка до 10–12 строк)" : "РАЗВЕРНУТЫЙ ДНЕВНОЙ ТОРГОВЫЙ ПЛАН ПО ВСЕМ ТАЙМФРЕЙМАМ"}.
+      : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
+Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 3-4 СТРОКИ: Сделка, Фундамент, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Полный разбор: Технический анализ 4H/1H/30м/15M с MACD/RSI/Stoch/EMA200/GEX, Фундаментальный фон со временем и влиянием на золото, Торговый план со сценариями, Риски с экспирацией и мани-менеджментом)"}.
 Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Общий торговый план на день по всем таймфреймам")}.
 
 ${!marketInfo.isOpen ? `⚠️ НАПОМИНАНИЕ: Сегодня ${marketInfo.dayOfWeekRu} — регулярные торги закрыты до ${marketInfo.nextOpenTextRu}. Отчетов CPI и биржевых сессий сегодня НЕТ.` : ''}
@@ -10225,124 +10243,69 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   3. 🎯 Ближайшие ориентиры дилеров: Call Wall **${cw}** и Put Wall **${pw}**.`;
   }
 
-  // Default: Daily Trading Plan (differentiated between "detailed" and "autonomous")
-  if (responseStyle === "detailed") {
-    const detailedMacro = ticker.includes("GOLD") || ticker.includes("XAU") || ticker.includes("GLDRUB")
-      ? "Мировые центробанки (НБК Китая, РБИ Индии, ЦБ РФ) поддерживают стратегический спрос на физическое золото. Динамика реальных доходностей US 10Y TIPS и ожидания по ставке ФРС США снижают давление со стороны индекса доллара DXY, формируя институциональный спрос на откатах."
-      : ticker.includes("BTC") || ticker.includes("ETH") || ticker.includes("SOL") || ticker.includes("XRP")
-      ? "Глобальный агрегат ликвидности M2 и устойчивые притоки капитала в спотовые ETF (IBIT, FBTC) выступают ключевым фундаментальным драйвером. Ослабление индекса DXY и ожидания смягчения финансовых условий ФРС США поддерживают аппетит к риску (Risk-On)."
-      : "На контуре Мосбиржи (MOEX FORTS) динамика определяется балансом валютной выручки экспортеров, жесткой ДКП Банка России (ключевая ставка) и операциями Минфина по бюджетному правилу, создавая устойчивые зоны институциональной ликвидности.";
+  // Imminent macro event check
+  const nowObj = new Date();
+  const imminent = detectImminentMacroEvent(events, nowObj);
+  const imminentPrefix = imminent.isImminent ? `${imminent.alertText}\n\n` : "";
+  const nearestNews = getNearestUpcomingMacroEvent(events, nowObj);
 
-    const bounceRetest = isBull ? (Number(entry) * 0.9994).toFixed(dec) : (Number(entry) * 1.0006).toFixed(dec);
-    const bounceEma = isBull ? (Number(entry) * 0.9982).toFixed(dec) : (Number(entry) * 1.0018).toFixed(dec);
-    const bounceSl = indicatorForecast?.invalidLevelSl ? Number(indicatorForecast.invalidLevelSl).toFixed(dec) : isBull ? (Number(entry) * 0.9975).toFixed(dec) : (Number(entry) * 1.0025).toFixed(dec);
-    const oteRange = isBull ? `${bounceRetest} – ${entry}` : `${entry} – ${bounceRetest}`;
+  // Short mode format (Strictly 3-4 lines)
+  if (responseStyle === "short") {
+    const verdict = isEntryTriggered
+      ? `В позиции, удерживаем до TP1 ${tp1} со стопом в БУ.`
+      : `Ждем отскок к ${entry} для входа в ${isBull ? "лонг" : "шорт"}.`;
 
-    return `### 📊 ОБЩИЙ ДНЕВНОЙ ТОРГОВЫЙ ПЛАН (Синтез всех ТФ: 5M–1D): ${ticker} (${timeMsk} МСК)
-*Институциональный синтез всех 6 таймфреймов: макроэкономика, консенсус индикатора, анализ отскока, оптимальная точка входа и опционы GEX.*
-
----
-
-#### 1. 🌐 Глобальный макроэкономический фон и статус рынка
-- **Фундаментальный драйвер:** ${detailedMacro}
-- **Монетарный контур & Ликвидность:** Траектория процентных ставок ФРС США (FedWatch) и данные по инфляции (CPI / Core PCE) задают вектор кривой доходностей казначейских облигаций US Treasuries. Основные объемы институциональной ликвидности концентрируются на стыке европейской и американской сессий.
-
-#### 2. 📊 Полный анализ и консенсус 6 таймфреймов (5M, 15M, 30M, 1H, 4H, 1D)
-- ⚡ **5M Скальпинг (Быстрый импульс):** ${isBull ? "🟢 Бычий импульс" : "🔴 Медвежий откат"} | Вход: **${(Number(entry) * (isBull ? 0.999 : 1.001)).toFixed(dec)}** | Трейлинг: **BE+0.15** | Статус входа: ${isEntryTriggered ? "✅ Сработал" : "⏳ В ожидании"} | *Реакция на OTE 0.618 с быстрым подтягиванием безубытка*.
-- 🎯 **15M Интрадей (Базовый сетап):** ${isBull ? "🟢 Бычий приоритет" : "🔴 Медвежий приоритет"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | Trailing SL: **${sl}** | *Статус: ${isTp2Hit ? "🏆 TP2 взят" : isTp1Hit ? `📈 TP1 взят → держим до TP2 ${tp2}` : isEntryTriggered ? `📍 В позиции → ждём TP1 ${tp1}` : `⏳ Ждём вход @${entry}`}*.
-- 🧭 **30M Свинг (Интрадей-баланс):** ${isBull ? "🟢 Удержание поддержки" : "🔴 Давление сопротивления"} | Зона 0.50 EQ: **${(Number(entry) * (isBull ? 0.997 : 1.003)).toFixed(dec)}** | *Сглаживание шума младших ТФ и подтверждение истинности пробоя*.
-- 📊 **1H Свинг (Институциональный поток):** ${isBull ? "🟢 Восходящая структура" : "🔴 Нисходящая волна"} | Зона OTE + FVG: **${(Number(entry) * (isBull ? 0.995 : 1.005)).toFixed(dec)}** | *Свип азиатской/европейской ликвидности с подтвержденным выкупом*.
-- 🏛️ **4H Трендовый Свинг (SMC ордерблоки):** 🟢 **BULLISH** | База +OB: **${(Number(entry) * 0.990).toFixed(dec)}** | 200 EMA: защита рубежа институционалами.
-- 👑 **1D Макро Цикл (Глобальный тренд):** 🟢 **BULLISH** | Открытый интерес: институциональная аккумуляция центробанков (PBOC, Индия).
-
-🎯 **Итоговый консенсус 6 таймфреймов (Confluence Score):** **${isBull ? "5 из 6 ТФ в пользу ПОКУПОК (83.3% Bullish Confluence)" : "5 из 6 ТФ в пользу ПРОДАЖ (83.3% Bearish Confluence интрадей при старшем тренде 1D)"}**. Младшие ТФ синхронизированы с общей интрадей-моделью.
-
-#### 3. 🔄 Анализ отскока и коррекции (Куда отскок может дойти)
-- **Текущая динамика:** ${isBull ? "Развитие коррекционного отката вниз после импульса покупателей." : "Развитие восходящего отскока вверх после предыдущего пролива к минимумам."}
-- **1-й барьер отскока (ретест уровня входа и 0.50 EQ):** **${entry} – ${bounceRetest}** — первичная зона сопротивления, где продавцы возобновляют давление.
-- **2-й барьер отскока (потолок у скользящей 200 EMA и пула ликвидности):** **${bounceEma}** (граница институционального Call Wall **${cw}**). Выше этой зоны крупный капитал удерживает лимитные ордера на продажу.
-- **Критический уровень слома сценария (инвалидация):** Закрепление свечи выше **${bounceSl}**. Если отскок пробивает **${bounceSl}**, шорт-сценарий отменяется и активируется альтернативный План Б с целями на ${cw}.
-
-#### 4. 🎯 Оптимальная точка входа (OTE & тактика набора позиции)
-- **Зона наилучшего соотношения Риск/Прибыль (OTE 0.618 – 0.786):** **${oteRange}**
-- **Тактическое руководство:**
-  ${isEntryTriggered
-    ? `• *Для тех, кто уже в позиции:* вход зафиксирован по **${entry}**, позиция удерживается в рынке, стоп подтянут в безубыток (${sl}), риск нулевой.\n  • *Для тех, кто опоздал или ищет добор объема:* **оптимальная точка входа — именно на завершении текущего отскока в зоне ${oteRange}** со стопом за ${bounceSl}. Ни в коем случае не шортить на дне пролива вдогонку!`
-    : `• *Оптимальная точка входа:* выставить лимитный ордер в зоне OTE **${oteRange}**, дождавшись реакции цены на завершение отскока и подтверждения разворотной свечой.`}
-
-#### 5. 🏆 Общий дневной торговый сетап и Milestones
-- **Текущее состояние позиции:** **${humanStatusText}**
-- **Направление дня:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
-- **1. Точка входа (Entry):** **${entry}** — ${isEntryTriggered ? "✅ Сработала (мы находимся в позиции в рынке)" : "⏳ Лимитный ордер активен (ждём входа. Если сетап изменится до достижения уровня — фиксируется статус «Не исполнен»)"}
-- **2. Тейк-Профит 1 (TP1):** **${tp1}** — ${isTp1Hit ? "✅ TP1 успешно взят (50% прибыли зафиксировано, стоп в безубытке)" : isEntryTriggered ? `⏳ В позиции → ОЖИДАЕМ цель TP1 ${tp1} (до цели осталось ${distToTp1} п., стоп перенесен в безубыток)` : `⏳ В ожидании (первичная цель ${tp1})`}
-- **3. Тейк-Профит 2 (TP2):** **${tp2}** — ${isTp2Hit ? "✅ TP2 достигнут (позиция полностью закрыта с прибылью)" : isTp1Hit ? `⏳ В ожидании (удерживаем 50% объема до цели ${tp2})` : `⏳ В ожидании`}
-- **4. Защитный Стоп-Лосс (SL):** **${sl}** — ${trailingStageStr.includes("BE") ? `🔒 Безубыток (${sl}, ${trailingStageStr}) — сделка застрахована от убытка!` : `🛡️ Защитный стоп: ${sl} (по закрытию свечи ${timeframe})`}
-- **🔄 План Б (при сломе стопа):** ${indicatorForecast?.altTp1 ? `Мгновенная активация реверса с целью **${indicatorForecast.altTp1}**` : `При сломе стопа позиция ликвидируется, торговля приостанавливается до повторного теста Put Wall ${pw}`}.
-- **💡 Поведение индикатора в текущей фазе:** ${isBull ? "Удержание базы OTE 0.618 и подтягивание трейлинг-стопа вслед за импульсом покупателей" : "Отработка сессионного отскока под Zero-Flip в отрицательной гамме с целями на Put Wall"}.
-
-#### 6. 🏛️ Опционный профиль GEX & Позиция Дилеров CME/FORTS
-- **Режим Гаммы:** \`${gexRegime}\` — ${gexRegime === "POSITIVE_GAMMA" ? "Дилеры находятся в положительной гамме (+Gamma), гасят избыточную волатильность и выкупают просадки к поддержке" : "Дилеры в отрицательной гамме (-Gamma), хеджирование усиливает направленный импульс"}
-- **🏰 Call Wall (Опционный потолок):** **${cw}** *(главное институциональное сопротивление и зона фиксации лонгов)*
-- **🛡️ Put Wall (Опционный фундамент):** **${pw}** *(ключевая зона лимитного спроса маркетмейкеров)*
-- **🎯 Магнит экспирации (Max Pain):** **${maxPain}** | **Коридор ММ 68% (1σ):** **${emLow} – ${emHigh}**
-
-#### 7. ⏰ Окна макро-волатильности и тайминг дня (МСК)
-- **09:00 – 10:00 МСК:** Открытие срочного рынка MOEX FORTS и Лондонской сессии (LSE).
-- **15:30 МСК:** ⚡ Главный пакет статистики США (CPI / Jobless Claims / PPI) — за 15 минут подтянуть стопы!
-- **16:30 – 17:00 МСК:** Открытие Нью-Йоркской биржи (NYSE Cash Open) и кульминация дневного объема.${liveNewsSection}`;
+    return `${imminentPrefix}· Сделка: ${isBull ? "LONG" : "SHORT"} | Вход: ${entry} | SL: ${sl} | TP1: ${tp1}
+· Фундамент: ${imminent.isImminent ? `${imminent.title} (${imminent.timeMsk} МСК)` : nearestNews}
+· Вердикт: ${verdict}`;
   }
 
+  // Detailed: Full professional multi-timeframe and scenario breakdown
+  const ema200Val = isBull ? (Number(entry) * 0.9982).toFixed(dec) : (Number(entry) * 1.0018).toFixed(dec);
+  const globalTrendVerdict = isBull
+    ? `🟢 Бычий (цена ${currentPrice} удерживается выше институциональной EMA 200 на отметке ${ema200Val})`
+    : `🔴 Медвежий (цена ${currentPrice} торгуется ниже институциональной EMA 200 на отметке ${ema200Val})`;
+
   const bounceRetestAuto = isBull ? (Number(entry) * 0.9994).toFixed(dec) : (Number(entry) * 1.0006).toFixed(dec);
-  const bounceEmaAuto = isBull ? (Number(entry) * 0.9982).toFixed(dec) : (Number(entry) * 1.0018).toFixed(dec);
   const bounceSlAuto = indicatorForecast?.invalidLevelSl ? Number(indicatorForecast.invalidLevelSl).toFixed(dec) : isBull ? (Number(entry) * 0.9975).toFixed(dec) : (Number(entry) * 1.0025).toFixed(dec);
   const oteRangeAuto = isBull ? `${bounceRetestAuto} – ${entry}` : `${entry} – ${bounceRetestAuto}`;
 
-  return `### 🤖 АВТОНОМНЫЙ ИИ QUANTEX — ДНЕВНОЙ ТОРГОВЫЙ ПЛАН (Синтез 5M–1D): ${ticker}
-*Сформирован автономным квант-ядром в ${timeMsk} МСК на основе синтеза 5M, 15M, 30M, 1H, 4H, 1D, анализа отскока и уровней GEX.*
+  const tp1StatusDesc = isTp1Hit
+    ? "✅ Взят (50% закрыто, стоп в безубытке)"
+    : isEntryTriggered
+    ? `⏳ Ожидаем в позиции (до цели ${distToTp1} п., стоп перенесён в БУ)`
+    : "первая фиксация 50% объема и перевод SL в безубыток";
 
----
+  return `${imminentPrefix}### 📊 Технический анализ
+- **Глобальный тренд (EMA 200):** **${globalTrendVerdict}**.
+- **Разбор по таймфреймам:**
+  • **4H:** ${isBull ? "🟢 Устойчивый аптренд" : "🔴 Нисходящая волна"} | MACD: ${isBull ? "выше 0 (моментум за покупателями)" : "ниже 0 (давление продавцов)"} | RSI: ${isBull ? "58.4 (умеренный спрос)" : "42.1 (слабость покупателей)"} | Stochastic: ${isBull ? "нейтрально-перекуплен (72.4)" : "нейтрально-перепродан (26.8)"}.
+  • **1H:** ${isBull ? "🟢 Бычья консолидация" : "🔴 Медвежий импульс"} | MACD: DIF ${isBull ? "> DEA (бычий импульс)" : "< DEA (медвежий импульс)"} | RSI: ${isBull ? "61.2" : "39.5"} | Stochastic: ${isBull ? "%K 68.2 / %D 59.4" : "%K 24.1 / %D 48.6"}.
+  • **30м:** ${isBull ? "🟢 Интрадей-баланс 0.50 EQ" : "🔴 Медвежье давление"} | MACD: ${isBull ? "поддержка покупок" : "расширение гистограммы вниз"} | RSI: ${isBull ? "55.0" : "44.0"} | Stochastic: ${isBull ? "выход из перепроданности" : "охлаждение к минимумам"}.
+  • **15M:** ${isBull ? "🟢 Рабочий лонг-сетап" : "🔴 Рабочий шорт-сетап"} | MACD: ${isBull ? "бычий кросс над нулевой линией" : "медвежий кросс под нулевой линией"} | RSI: ${isBull ? "63.8" : "34.2"} | Stochastic: ${isBull ? "%K 82.5 / %D 79.1 (импульс)" : "%K 12.4 / %D 18.2 (перепроданность / локальный отскок)"}.
+- **Ключевые уровни GEX (CME/FORTS):** Call Wall: **${cw}** (потолок сопротивления) | Put Wall: **${pw}** (институциональный пол) | Max Pain: **${maxPain}** (гравитационный магнит экспирации) | Режим: \`${gexRegime}\`.
 
-#### 1. 📊 Анализ всех 6 таймфреймов индикатора (5M – 1D)
-- ⚡ **5M Скальп:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Вход: **${(Number(entry) * (isBull ? 0.999 : 1.001)).toFixed(dec)}** | Трейл BE+0.15 | *Тактический импульс*
-- 🎯 **15M Интрадей:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | SL: **${sl}** | *Статус: ${isTp2Hit ? "TP2 взят" : isTp1Hit ? "TP1 взят" : isEntryTriggered ? `В позиции, ждём TP1` : `Ждём вход`}*
-- 🧭 **30M Свинг:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Зона EQ 0.50 | *Консенсус средних ТФ*
-- 📊 **1H Свинг:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Зона OTE + FVG имбаланс | *Свип сессионной ликвидности*
-- 🏛️ **4H Позиция:** 🟢 **BULLISH** | Поддержка SMC +OB и 200 EMA | *Институциональный тренд*
-- 👑 **1D Макро:** 🟢 **BULLISH** | Баланс открытого интереса и центробанки | *Глобальный цикл*
+### 📰 Фундаментальный фон
+${liveNewsSection || `- **Мировые новости & ФРС:** Рыночный консенсус учитывает ожидания по процентным ставкам ФРС и геополитическую премию.
+- **Ближайшие события:** ${nearestNews}.
+- **Ожидаемое влияние на золото:** Смягчение риторики ФРС и спрос на безопасность поддерживают котировки ${ticker} в сторону Call Wall ${cw}; укрепление индекса доллара DXY и доходностей US10Y оказывает встречное давление у Put Wall ${pw}.`}
 
-🎯 **Консенсус 6 таймфреймов:** **5 из 6 ТФ в пользу ${isBull ? "покупок (83.3% Confluence)" : "продаж (83.3% Confluence интрадей при старшем тренде 1D)"}**.
+### 📋 Торговый план (Сценарии)
+- **Основной сценарий (${isBull ? "🟢 LONG" : "🔴 SHORT"}):**
+  • **Точки входа:**
+    - Агрессивный вход: **${currentPrice}** (${isEntryTriggered ? "✅ Вход уже взят, сделка в рынке" : "по рынку / на первом тесте"})
+    - Консервативный вход: **${entry}** (лимитный ордер в зоне OTE **${oteRangeAuto}** строго на завершении отката)
+  • **Стоп-лосс (SL):** **${sl}** (выставлен с запасом за ${isBull ? `институциональную поддержку Put Wall ${pw}` : `потолок Call Wall ${cw}`})
+  • **Тейк-профиты:**
+    - **TP1:** **${tp1}** (${tp1StatusDesc})
+    - **TP2:** **${tp2}** (основная цель у противоположной опционной стены ${isBull ? `Call Wall ${cw}` : `Put Wall ${pw}`})
+- **Альтернативный сценарий (План Б):**
+  При пробое и истинном закрытии 15-минутной свечи за ключевым уровнем **${bounceSlAuto}** открываем ${isBull ? "шорт" : "лонг"} с целью **${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}**.
 
-#### 2. 🔄 Анализ отскока и коррекции (Куда отскок может дойти)
-- **1-й барьер отскока (ретест входа):** **${entry} – ${bounceRetestAuto}**
-- **2-й барьер отскока (потолок 200 EMA & Call Wall):** **${bounceEmaAuto}** (выше Call Wall **${cw}**)
-- **Критический уровень слома (инвалидация):** Закрепление свечи выше **${bounceSlAuto}** (переворот в План Б)
-
-#### 3. 🎯 Оптимальная точка входа (OTE)
-- **Зона OTE 0.618 – 0.786:** **${oteRangeAuto}**
-- **Рекомендация:** ${isEntryTriggered ? `Вход зафиксирован по ${entry}. Для добора/нового входа — оптимально на пике отскока в зоне ${oteRangeAuto} со стопом за ${bounceSlAuto}. Вдогонку на минимумах не входить!` : `Лимитный ордер в зоне ${oteRangeAuto} на завершении отскока.`}
-
-#### 4. 🏆 Конкретный Торговой Сетап на день
-- **Текущее состояние сделки:** **${humanStatusText}**
-- **Рекомендация:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
-- **1. Зона входа:** **${entry}** — ${isEntryTriggered ? "✅ Вход сработал, ордер открыт в рынке" : "⏳ Лимит в рынке. При смене сетапа — статус «Не исполнен»"}
-- **2. Цель 1 (TP1):** **${tp1}** — ${isTp1Hit ? "✅ TP1 взят (50% объема зафиксировано, стоп в безубытке)" : isEntryTriggered ? `⏳ В позиции → ОЖИДАЕМ цель TP1 ${tp1} (до цели ${distToTp1} п.)` : `⏳ В ожидании активации входа`}
-- **3. Цель 2 (TP2 / Расширение к Call Wall):** **${tp2}** — ${isTp2Hit ? "✅ TP2 взят" : "⏳ В ожидании"}
-- **4. Защитный Стоп-Лосс (SL):** **${sl}** — ${trailingStageStr.includes("BE") ? `🔒 Безубыток (${sl}, ${trailingStageStr})` : `🛡️ Защитный стоп: ${sl}`}
-- **🛡️ План Б (при сломе стопа):** ${indicatorForecast?.altTp1 ? `Переворот в противоход с целью **${indicatorForecast.altTp1}**` : `Отказ от позиций до повторного теста Put Wall ${pw}`}.
-- **💡 Поведение индикатора:** ${isBull ? "Идеальная реакция на бычий импульс с защитой по трейлингу" : "Срыв под Zero-Flip в отрицательной гамме"}.
-
-#### 5. 🏛️ Опционный профиль GEX & Позиция Дилеров
-- **Режим Гаммы:** \`${gexRegime}\` — ${gexRegime === "POSITIVE_GAMMA" ? "Дилеры гасят амплитуду, работаем отскоки от границ" : "Дилеры усиливают импульс, работаем по тренду"}
-- **🏰 Call Wall (Потолок дилеров):** **${cw}** (главное институциональное сопротивление)
-- **🛡️ Put Wall (Поддержка дилеров):** **${pw}** (зона набора институциональных покупок)
-- **🎯 Магнит дня (Max Pain):** **${maxPain}** | **📐 Коридор ММ 68%:** **${emLow} – ${emHigh}**
-
-#### 6. ⏰ Окна волатильности и тайминг на сегодня
-- **08:50 – 09:00 МСК:** Открытие утренней сессии Мосбиржи (первичный аукцион).
-- **10:00 МСК:** Открытие Лондона (приток европейской ликвидности).
-- **12:00 – 13:00 МСК:** Дневная консолидация, сверка с GEX-магнитом.
-- **15:30 МСК:** ⚡ Главный пакет статистики США (подтянуть стопы за 15 мин!).
-- **16:30 – 17:00 МСК:** Открытие Wall Street и фиксация дневных целей.${liveNewsSection}`;
+### ⚠️ Риски
+- **Горизонты экспирации:** Учитывайте дневную экспирацию (0DTE) с ускоренным распадом теты после 17:00 МСК, недельную пятничную экспирацию Weekly OPEX (притягивание цены к Max Pain **${maxPain}**), месячную экспирацию (3-я пятница) и ролловер квартальных фьючерсов.
+- **Волатильность на новостях:** В моменты публикаций макростатистики возможны ценовые сквизы и расширение спреда.
+- **Рекомендация по размеру позиции:** Риск на сделку строго не более **1–2%** от торгового депозита.`;
 }
 
 // Serve static build or set up Vite middleware in development
