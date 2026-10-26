@@ -308,7 +308,7 @@ const DEFAULT_INDICATOR_SEEDS: IndicatorSetupItem[] = [
     activeTrailingSl: 4004.88,
     trailingStageStr: "🔒 BE+0.15",
     entryTriggered: true,
-    tp1Hit: true,
+    tp1Hit: false,
     tp2Hit: false,
     probability: 74,
     createdAt: "2026-10-25T18:59:28.132Z",
@@ -319,8 +319,8 @@ const DEFAULT_INDICATOR_SEEDS: IndicatorSetupItem[] = [
     leg2Hit: false,
     leg3Hit: false,
     isPlanBActive: false,
-    notes: "Вход сработал на 4006.05, TP1 (3985) взят, стоп перенесен в безубыток BE+0.15 на 4004.88",
-    behaviorNote: "Активный рабочий сетап: часть позиции закрыта на TP1, остаток защищен безубытком"
+    notes: "Вход сработал на 4006.05, позиция в рынке, ждём TP1 (3985), стоп перенесен в безубыток BE+0.15 на 4004.88",
+    behaviorNote: "Активный рабочий сетап: ордер входа активирован, ждём первую цель TP1, стоп защищен в безубытке"
   },
   {
     id: "ind_seed_3",
@@ -1019,9 +1019,9 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
       existing.leg2Hit = Boolean(fc?.leg2Hit);
       existing.leg3Hit = Boolean(fc?.leg3Hit);
       existing.isPlanBActive = Boolean(fc?.isPlanBActive);
-      if (fc?.entryTriggered) existing.entryTriggered = true;
-      if (fc?.tp1Hit) existing.tp1Hit = true;
-      if (fc?.tp2Hit) existing.tp2Hit = true;
+      existing.entryTriggered = Boolean(fc?.leg1Hit ?? fc?.entryTriggered ?? existing.entryTriggered);
+      existing.tp1Hit = Boolean(fc?.leg2Hit ?? fc?.tp1Hit ?? existing.tp1Hit);
+      existing.tp2Hit = Boolean(fc?.leg3Hit ?? fc?.tp2Hit ?? existing.tp2Hit);
       persistIndicatorHistory();
       return existing;
     }
@@ -1062,9 +1062,9 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
     initialSl: sl,
     activeTrailingSl: activeSl,
     trailingStageStr: trailingStr,
-    entryTriggered: false,
-    tp1Hit: false,
-    tp2Hit: false,
+    entryTriggered: Boolean(fc?.leg1Hit ?? fc?.entryTriggered),
+    tp1Hit: Boolean(fc?.leg2Hit ?? fc?.tp1Hit),
+    tp2Hit: Boolean(fc?.leg3Hit ?? fc?.tp2Hit),
     tp3Hit: false,
     slHit: false,
     trailingHit: false,

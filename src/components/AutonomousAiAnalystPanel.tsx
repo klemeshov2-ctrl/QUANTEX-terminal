@@ -102,6 +102,7 @@ export interface TickerAiState {
     sl: string;
     gexRegime: string;
     dangerWindow: string;
+    statusText?: string;
   };
   messages: AiChatMessage[];
   customNotes: string;
@@ -897,6 +898,82 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const isBull = indicatorOutput?.forecast?.isBull ?? true;
     const basePrice = currentPrice || candles[candles.length - 1]?.close || 4006.0;
     const trailingStr = indicatorOutput?.forecast?.trailingStageStr || "🛡️ Начальный SL";
+    const fc = indicatorOutput?.forecast;
+
+    // Accurate indicator flags from the chart HUD / engine:
+    // leg1Hit = Entry reached (Вход взят ✓)
+    // leg2Hit = TP1 reached (Тейк 1 взят ✓)
+    // leg3Hit = TP2 reached (Тейк 2 взят ✓)
+    const activeLeg1Hit = Boolean(fc?.leg1Hit);
+    const activeLeg2Hit = Boolean(fc?.leg2Hit);
+    const activeLeg3Hit = Boolean(fc?.leg3Hit);
+
+    const helperStatus = (isL: boolean, entryP: number, tp1P: number, tp2P: number, eHit: boolean, t1Hit: boolean, t2Hit: boolean) => {
+      if (t2Hit) return "🏆 TP2 достигнут (цель выполнена)";
+      if (t1Hit) return `📈 TP1 взят → держим до TP2 ${tp2P}`;
+      if (eHit) return `📍 В позиции → ждём TP1 ${tp1P}`;
+      return `⏳ Ждём вход @${entryP}`;
+    };
+
+    // 15m is the primary indicator timeframe
+    const m15Entry = Number(fc?.p1Entry ?? (basePrice * (isBull ? 0.9970 : 1.0030)).toFixed(2));
+    const m15Tp1 = Number(fc?.p2Tp1 ?? (basePrice * (isBull ? 1.0080 : 0.9920)).toFixed(2));
+    const m15Tp2 = Number(fc?.p3Tp2 ?? (basePrice * (isBull ? 1.0160 : 0.9840)).toFixed(2));
+    const m15Sl = Number(fc?.invalidLevelSl ?? (basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
+    const m15Trailing = Number(fc?.activeTrailingSl ?? (basePrice * (isBull ? 0.9975 : 1.0025)).toFixed(2));
+    const m15EntryHit = activeLeg1Hit;
+    const m15Tp1Hit = activeLeg2Hit;
+    const m15Tp2Hit = activeLeg3Hit;
+
+    // 5m scalping
+    const m5Entry = Number((basePrice * (isBull ? 0.9985 : 1.0015)).toFixed(2));
+    const m5Tp1 = Number((basePrice * (isBull ? 1.0035 : 0.9965)).toFixed(2));
+    const m5Tp2 = Number((basePrice * (isBull ? 1.0070 : 0.9930)).toFixed(2));
+    const m5Sl = Number((basePrice * (isBull ? 0.9965 : 1.0035)).toFixed(2));
+    const m5Trailing = Number((basePrice * (isBull ? 0.9995 : 1.0005)).toFixed(2));
+    const m5EntryHit = isBull ? basePrice >= m5Entry : basePrice <= m5Entry;
+    const m5Tp1Hit = isBull ? basePrice >= m5Tp1 : basePrice <= m5Tp1;
+    const m5Tp2Hit = isBull ? basePrice >= m5Tp2 : basePrice <= m5Tp2;
+
+    // 30m swing
+    const m30Entry = Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2));
+    const m30Tp1 = Number((basePrice * (isBull ? 1.0100 : 0.9900)).toFixed(2));
+    const m30Tp2 = Number((basePrice * (isBull ? 1.0190 : 0.9810)).toFixed(2));
+    const m30Sl = Number((basePrice * (isBull ? 0.9920 : 1.0080)).toFixed(2));
+    const m30Trailing = Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2));
+    const m30EntryHit = isBull ? basePrice >= m30Entry : basePrice <= m30Entry;
+    const m30Tp1Hit = isBull ? basePrice >= m30Tp1 : basePrice <= m30Tp1;
+    const m30Tp2Hit = isBull ? basePrice >= m30Tp2 : basePrice <= m30Tp2;
+
+    // 1h swing
+    const h1Entry = Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
+    const h1Tp1 = Number((basePrice * (isBull ? 1.0120 : 0.9880)).toFixed(2));
+    const h1Tp2 = Number((basePrice * (isBull ? 1.0220 : 0.9780)).toFixed(2));
+    const h1Sl = Number((basePrice * (isBull ? 0.9890 : 1.0110)).toFixed(2));
+    const h1Trailing = Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2));
+    const h1EntryHit = isBull ? basePrice >= h1Entry : basePrice <= h1Entry;
+    const h1Tp1Hit = isBull ? basePrice >= h1Tp1 : basePrice <= h1Tp1;
+    const h1Tp2Hit = isBull ? basePrice >= h1Tp2 : basePrice <= h1Tp2;
+
+    // 4h trend
+    const h4Entry = Number((basePrice * 0.9900).toFixed(2));
+    const h4Tp1 = Number((basePrice * 1.0180).toFixed(2));
+    const h4Tp2 = Number((basePrice * 1.0300).toFixed(2));
+    const h4Sl = Number((basePrice * 0.9820).toFixed(2));
+    const h4Trailing = Number((basePrice * 0.9950).toFixed(2));
+    const h4EntryHit = basePrice >= h4Entry;
+    const h4Tp1Hit = basePrice >= h4Tp1;
+    const h4Tp2Hit = basePrice >= h4Tp2;
+
+    // 1d macro
+    const d1Entry = Number((basePrice * 0.9850).toFixed(2));
+    const d1Tp1 = Number((basePrice * 1.0250).toFixed(2));
+    const d1Tp2 = Number((basePrice * 1.0450).toFixed(2));
+    const d1Sl = Number((basePrice * 0.9700).toFixed(2));
+    const d1Trailing = Number((basePrice * 0.9900).toFixed(2));
+    const d1EntryHit = basePrice >= d1Entry;
+    const d1Tp1Hit = basePrice >= d1Tp1;
+    const d1Tp2Hit = basePrice >= d1Tp2;
 
     const list = [
       {
@@ -905,15 +982,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Тактический вход и микроструктура",
         trend: isBull ? "BULLISH" : "BEARISH",
         bias: "Импульсный отскок OTE 0.618 / быстрый трейл BE+0.15",
-        entry: Number((basePrice * (isBull ? 0.9985 : 1.0015)).toFixed(2)),
-        tp1: Number((basePrice * (isBull ? 1.0035 : 0.9965)).toFixed(2)),
-        tp2: Number((basePrice * (isBull ? 1.0070 : 0.9930)).toFixed(2)),
-        sl: Number((basePrice * (isBull ? 0.9965 : 1.0035)).toFixed(2)),
-        trailingSl: Number((basePrice * (isBull ? 0.9995 : 1.0005)).toFixed(2)),
-        entryTriggered: true,
-        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
-        tp2Hit: Boolean(indicatorOutput?.forecast?.leg2Hit),
+        entry: m5Entry,
+        tp1: m5Tp1,
+        tp2: m5Tp2,
+        sl: m5Sl,
+        trailingSl: m5Trailing,
+        entryTriggered: m5EntryHit,
+        tp1Hit: m5Tp1Hit,
+        tp2Hit: m5Tp2Hit,
         setupStatus: "ACTIVE",
+        tradeStatusText: helperStatus(isBull, m5Entry, m5Tp1, m5Tp2, m5EntryHit, m5Tp1Hit, m5Tp2Hit),
         rsi: isBull ? 54 : 46,
         behaviorNote: "Быстрый отскок от зоны ликвидности M5, фиксация TP1 и перевод в безубыток"
       },
@@ -923,15 +1001,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Базовый рабочий таймфрейм индикатора",
         trend: isBull ? "BULLISH" : "BEARISH",
         bias: trailingStr,
-        entry: Number(indicatorOutput?.forecast?.p1Entry ?? (basePrice * (isBull ? 0.9970 : 1.0030)).toFixed(2)),
-        tp1: Number(indicatorOutput?.forecast?.p2Tp1 ?? (basePrice * (isBull ? 1.0080 : 0.9920)).toFixed(2)),
-        tp2: Number(indicatorOutput?.forecast?.p3Tp2 ?? (basePrice * (isBull ? 1.0160 : 0.9840)).toFixed(2)),
-        sl: Number(indicatorOutput?.forecast?.invalidLevelSl ?? (basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
-        trailingSl: Number(indicatorOutput?.forecast?.activeTrailingSl ?? (basePrice * (isBull ? 0.9975 : 1.0025)).toFixed(2)),
-        entryTriggered: Boolean(indicatorOutput?.forecast?.leg1Hit || indicatorOutput?.forecast?.p1Entry),
-        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
-        tp2Hit: Boolean(indicatorOutput?.forecast?.leg2Hit),
-        setupStatus: indicatorOutput?.forecast?.isPlanBActive ? "PLAN_B_ACTIVE" : "ACTIVE",
+        entry: m15Entry,
+        tp1: m15Tp1,
+        tp2: m15Tp2,
+        sl: m15Sl,
+        trailingSl: m15Trailing,
+        entryTriggered: m15EntryHit,
+        tp1Hit: m15Tp1Hit,
+        tp2Hit: m15Tp2Hit,
+        setupStatus: fc?.isPlanBActive ? "PLAN_B_ACTIVE" : "ACTIVE",
+        tradeStatusText: fc?.isPlanBActive
+          ? "⚡ План Б — слом SL, жди разворот"
+          : helperStatus(isBull, m15Entry, m15Tp1, m15Tp2, m15EntryHit, m15Tp1Hit, m15Tp2Hit),
         rsi: isBull ? 52 : 47,
         behaviorNote: "Лоренцевский ML + Zero-Flip: отработка опционных стен дилеров Call/Put Wall"
       },
@@ -941,15 +1022,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Интрадей-баланс и фильтр ложных пробоев",
         trend: isBull ? "BULLISH" : "BEARISH",
         bias: "Консенсус средних таймфреймов и равновесие 0.50 EQ",
-        entry: Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2)),
-        tp1: Number((basePrice * (isBull ? 1.0100 : 0.9900)).toFixed(2)),
-        tp2: Number((basePrice * (isBull ? 1.0190 : 0.9810)).toFixed(2)),
-        sl: Number((basePrice * (isBull ? 0.9920 : 1.0080)).toFixed(2)),
-        trailingSl: Number((basePrice * (isBull ? 0.9960 : 1.0040)).toFixed(2)),
-        entryTriggered: true,
-        tp1Hit: Boolean(indicatorOutput?.forecast?.leg1Hit),
-        tp2Hit: false,
+        entry: m30Entry,
+        tp1: m30Tp1,
+        tp2: m30Tp2,
+        sl: m30Sl,
+        trailingSl: m30Trailing,
+        entryTriggered: m30EntryHit,
+        tp1Hit: m30Tp1Hit,
+        tp2Hit: m30Tp2Hit,
         setupStatus: "ACTIVE",
+        tradeStatusText: helperStatus(isBull, m30Entry, m30Tp1, m30Tp2, m30EntryHit, m30Tp1Hit, m30Tp2Hit),
         rsi: isBull ? 53 : 48,
         behaviorNote: "Удержание структуры интрадей-баланса, сглаживание шума младших ТФ"
       },
@@ -959,15 +1041,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Институциональный поток и зоны ликвидности FVG",
         trend: isBull ? "BULLISH" : "BEARISH",
         bias: "OTE 0.618 + FVG Свип сессионной ликвидности",
-        entry: Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
-        tp1: Number((basePrice * (isBull ? 1.0120 : 0.9880)).toFixed(2)),
-        tp2: Number((basePrice * (isBull ? 1.0220 : 0.9780)).toFixed(2)),
-        sl: Number((basePrice * (isBull ? 0.9890 : 1.0110)).toFixed(2)),
-        trailingSl: Number((basePrice * (isBull ? 0.9940 : 1.0060)).toFixed(2)),
-        entryTriggered: true,
-        tp1Hit: true,
-        tp2Hit: false,
+        entry: h1Entry,
+        tp1: h1Tp1,
+        tp2: h1Tp2,
+        sl: h1Sl,
+        trailingSl: h1Trailing,
+        entryTriggered: h1EntryHit,
+        tp1Hit: h1Tp1Hit,
+        tp2Hit: h1Tp2Hit,
         setupStatus: "ACTIVE",
+        tradeStatusText: helperStatus(isBull, h1Entry, h1Tp1, h1Tp2, h1EntryHit, h1Tp1Hit, h1Tp2Hit),
         rsi: isBull ? 55 : 45,
         behaviorNote: "Свип азиатской/европейской ликвидности и продолжение трендовой волны"
       },
@@ -977,15 +1060,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Крупные ордерблоки SMC и EMA 200",
         trend: "BULLISH",
         bias: "SMC +OB Demand Zone + удержание экспоненциальной средней 200 EMA",
-        entry: Number((basePrice * 0.9900).toFixed(2)),
-        tp1: Number((basePrice * 1.0180).toFixed(2)),
-        tp2: Number((basePrice * 1.0300).toFixed(2)),
-        sl: Number((basePrice * 0.9820).toFixed(2)),
-        trailingSl: Number((basePrice * 0.9950).toFixed(2)),
-        entryTriggered: true,
-        tp1Hit: true,
-        tp2Hit: true,
+        entry: h4Entry,
+        tp1: h4Tp1,
+        tp2: h4Tp2,
+        sl: h4Sl,
+        trailingSl: h4Trailing,
+        entryTriggered: h4EntryHit,
+        tp1Hit: h4Tp1Hit,
+        tp2Hit: h4Tp2Hit,
         setupStatus: "ACTIVE",
+        tradeStatusText: helperStatus(true, h4Entry, h4Tp1, h4Tp2, h4EntryHit, h4Tp1Hit, h4Tp2Hit),
         rsi: 56,
         behaviorNote: "Институциональная защита трендового рубежа крупными покупателями"
       },
@@ -995,15 +1079,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         role: "Глобальный тренд и открытый интерес",
         trend: "BULLISH",
         bias: "Глобальный бычий макро-цикл + накопление физического металла центробанками",
-        entry: Number((basePrice * 0.9850).toFixed(2)),
-        tp1: Number((basePrice * 1.0250).toFixed(2)),
-        tp2: Number((basePrice * 1.0450).toFixed(2)),
-        sl: Number((basePrice * 0.9700).toFixed(2)),
-        trailingSl: Number((basePrice * 0.9900).toFixed(2)),
-        entryTriggered: true,
-        tp1Hit: true,
-        tp2Hit: true,
+        entry: d1Entry,
+        tp1: d1Tp1,
+        tp2: d1Tp2,
+        sl: d1Sl,
+        trailingSl: d1Trailing,
+        entryTriggered: d1EntryHit,
+        tp1Hit: d1Tp1Hit,
+        tp2Hit: d1Tp2Hit,
         setupStatus: "ACTIVE",
+        tradeStatusText: helperStatus(true, d1Entry, d1Tp1, d1Tp2, d1EntryHit, d1Tp1Hit, d1Tp2Hit),
         rsi: 59,
         behaviorNote: "Глобальный приток ликвидности центробанков (PBOC, Индия) удерживает восходящий тренд"
       }
@@ -1051,10 +1136,37 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           p1Entry: indicatorOutput.forecast.p1Entry,
           p2Tp1: indicatorOutput.forecast.p2Tp1,
           p3Tp2: indicatorOutput.forecast.p3Tp2,
+          p5Tp3: indicatorOutput.forecast.p5Tp3,
           activeTrailingSl: indicatorOutput.forecast.activeTrailingSl,
+          invalidLevelSl: indicatorOutput.forecast.invalidLevelSl,
           probability: indicatorOutput.forecast.probability,
           altTp1: indicatorOutput.forecast.altTp1,
-          trailingStageStr: indicatorOutput.forecast.trailingStageStr
+          trailingStageStr: indicatorOutput.forecast.trailingStageStr,
+          leg1Hit: Boolean(indicatorOutput.forecast.leg1Hit),
+          leg2Hit: Boolean(indicatorOutput.forecast.leg2Hit),
+          leg3Hit: Boolean(indicatorOutput.forecast.leg3Hit),
+          isPlanBActive: Boolean(indicatorOutput.forecast.isPlanBActive),
+          entryTriggered: Boolean(indicatorOutput.forecast.leg1Hit),
+          tp1Hit: Boolean(indicatorOutput.forecast.leg2Hit),
+          tp2Hit: Boolean(indicatorOutput.forecast.leg3Hit),
+          currentStatusText: indicatorOutput.forecast.isPlanBActive
+            ? "⚡ План Б — слом SL, жди разворот"
+            : indicatorOutput.forecast.leg3Hit
+            ? "🏆 TP2 взят — все цели выполнены"
+            : indicatorOutput.forecast.leg2Hit
+            ? `📈 TP1 взят → держим до TP2 ${indicatorOutput.forecast.p3Tp2}`
+            : indicatorOutput.forecast.leg1Hit
+            ? `📍 В позиции → ждём TP1 ${indicatorOutput.forecast.p2Tp1}`
+            : `⏳ Ждём вход @${indicatorOutput.forecast.p1Entry}`,
+          humanExplanation: indicatorOutput.forecast.isPlanBActive
+            ? "Активирован альтернативный План Б из-за истинного пробоя защитного стопа."
+            : indicatorOutput.forecast.leg3Hit
+            ? "Позиция полностью закрыта по максимальному тейк-профиту TP2."
+            : indicatorOutput.forecast.leg2Hit
+            ? `Тейк-профит 1 (${indicatorOutput.forecast.p2Tp1}) взят! Часть зафиксирована, остаток защищен безубытком.`
+            : indicatorOutput.forecast.leg1Hit
+            ? `Ордер на вход по ${indicatorOutput.forecast.p1Entry} сработал, позиция открыта в рынке. Цель TP1 (${indicatorOutput.forecast.p2Tp1}) ЕЩЁ НЕ ДОСТИГНУТА (ждём её). Стоп подтянут в безубыток (${indicatorOutput.forecast.activeTrailingSl}).`
+            : `Ожидаем срабатывания входа по ${indicatorOutput.forecast.p1Entry}. Если сетап сменится до активации входа — он будет аннулирован как неисполненный.`
         } : null,
         gex: {
           regime: dayGexReport?.netGexRegime || gexReport?.netGexRegime || "POSITIVE_GAMMA",
@@ -1124,7 +1236,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         tp2: String(payload.indicatorForecast?.p3Tp2 ?? (currentPrice * 1.016).toFixed(2)),
         sl: String(payload.indicatorForecast?.activeTrailingSl ?? (currentPrice * 0.995).toFixed(2)),
         gexRegime: payload.gex.regime,
-        dangerWindow: "15:30 & 21:00 МСК"
+        dangerWindow: "15:30 & 21:00 МСК",
+        statusText: payload.indicatorForecast?.currentStatusText || undefined
       };
 
       const updatedTickerState: TickerAiState = {
@@ -1234,16 +1347,25 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 * **В ночь на понедельник в 01:00 МСК:** Возобновление мировых торгов (CME Globex & Сидней). При открытии с гэпом воздержитесь от рыночных ордеров в первые 15 минут.`;
     }
 
+    const isEntryHit = Boolean(payload.indicatorForecast?.leg1Hit ?? payload.indicatorForecast?.entryTriggered);
+    const isTp1Hit = Boolean(payload.indicatorForecast?.leg2Hit ?? payload.indicatorForecast?.tp1Hit);
+    const isTp2Hit = Boolean(payload.indicatorForecast?.leg3Hit ?? payload.indicatorForecast?.tp2Hit);
+    const statusText = payload.indicatorForecast?.currentStatusText || (
+      isTp2Hit ? "🏆 TP2 взят — все цели выполнены" : isTp1Hit ? `📈 TP1 взят → держим до TP2 ${tp2}` : isEntryHit ? `📍 В позиции → ждём TP1 ${tp1}` : `⏳ Ждём вход @${entry}`
+    );
+
     if (style === "short") {
       return `### ⚡ Короткий ответ ИИ: ${payload.ticker} (${payload.timeframe})
-* **Сигнал:** **${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}** | Вход: \`${entry}\`
-* **Цели и риск:** TP1: \`${tp1}\` | TP2: \`${tp2}\` | Стоп SL: \`${sl}\`
+* **Текущий статус:** ${statusText}
+* **Сигнал:** **${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}** | Вход: \`${entry}\` (${isEntryHit ? "✅ В рынке" : "⏳ Ждём вход"})
+* **Цели и риск:** TP1: \`${tp1}\` (${isTp1Hit ? "✅ Взят" : isEntryHit ? "⏳ Ожидаем TP1" : "⏳ Ожидание"}) | TP2: \`${tp2}\` | Стоп SL: \`${sl}\`
 * **Опционы GEX (\`${regime}\`):** Потолок \`${callWall}\` | Поддержка \`${putWall}\` | Flip \`${gammaFlip}\`
-* **Тайминг:** Контроль волатильности в **10:00** и **15:30 МСК**.`;
+* **Тайминг:** Контроль сессионной волатильности в **10:00** и **15:30 МСК**.`;
     }
 
     return `### ${style === "autonomous" ? "🤖 Автономный ИИ QUANTEX" : "📊 Развёрнутый план"} по ${payload.ticker} (${payload.timeframe})
 
+**Текущий статус сделки:** ${statusText}  
 **Глобальный консенсус Multi-TF:** ${isBull ? "🟢 BULLISH (Преимущество покупателей)" : "🔴 BEARISH (Преимущество продавцов)"}  
 **Опционный режим:** \`${regime}\`  
 **Ключевой диапазон ликвидности:** \`${putWall}\` (Put Wall) — \`${callWall}\` (Call Wall)  
@@ -1252,19 +1374,19 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 ---
 
 ### 🎯 Торговый сетап QUANTEX Pro v8
-* **Направление:** **${isBull ? "LONG (Покупка на тесте поддержки)" : "SHORT (Продажа от сопротивления)"}**
-* **Зона входа (Entry):** \`${entry}\` (лимитный ордер на подтверждении 15м свечи)
-* **Цель 1 (TP1):** \`${tp1}\` — фиксация 50% позиции и перенос SL в безубыток
-* **Цель 2 (TP2):** \`${tp2}\` — финальный пул ликвидности перед Call Wall
-* **Защитный стоп (SL):** \`${sl}\` (Sweep Protection: не закрывать позицию при уколе тенью)
-* **План Б (Инвалидация):** Закрытие 15м свечи телом за уровнем \`${sl}\` отменяет сценарий.
+* **Направление сделки:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
+* **1. Зона входа (Entry):** \`${entry}\` (${isEntryHit ? "✅ Вход сработал, позиция открыта в рынке" : "⏳ Лимитный ордер активен. Если сетап сменится до достижения уровня — статус фиксируется как «Не исполнен»"})
+* **2. Первая цель (TP1):** \`${tp1}\` (${isTp1Hit ? "✅ TP1 успешно взят (50% зафиксировано)" : isEntryHit ? "⏳ Мы находимся в позиции: ожидаем достижения цели TP1" : "⏳ В ожидании активации входа"})
+* **3. Вторая цель (TP2):** \`${tp2}\` (${isTp2Hit ? "✅ TP2 достигнут" : "⏳ Финальный пул ликвидности перед Call Wall"})
+* **4. Защитный стоп (SL):** \`${sl}\` (${payload.indicatorForecast?.trailingStageStr || "🛡️ Sweep Protection: закрытие свечи"})
+* **🔄 План Б:** Закрытие свечи за уровнем \`${sl}\` инвалидирует базовый сценарий.
 
 ---
 
 ### ⚠️ Опасные окна макроэкономической волатильности (МСК)
 * **10:00 МСК:** Открытие Лондона (LSE Open) — приток европейского объема.
 * **15:30 МСК:** Премаркет США и публикации макростатистики (CPI / Claims).
-* **21:00 МСК:** Вечерняя сессия / решения FOMC. Перед новостями рекомендуется подтянуть стоп-лосс.`;
+* **21:00 МСК:** Вечерняя сессия / решения FOMC. Перед новостями стоп-лосс подтягивается в безубыток.`;
   };
 
   // Switch response style mode and immediately refresh active plan
@@ -2004,6 +2126,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                         <span className="text-[9px] text-gray-400 block">ОПАСНЫЕ ОКНА</span>
                         <span className="font-bold text-[10px] text-amber-300">{tickerState.dailyPlanSummary.dangerWindow}</span>
                       </div>
+                    </div>
+                  )}
+
+                  {tickerState.dailyPlanSummary?.statusText && (
+                    <div className="mt-2 py-1.5 px-2.5 rounded-lg bg-[#0b0e1a] border border-cyan-500/30 flex items-center justify-between text-[11px]">
+                      <span className="text-gray-400 font-medium">Текущий статус сделки:</span>
+                      <span className="font-mono font-bold text-cyan-300">{tickerState.dailyPlanSummary.statusText}</span>
                     </div>
                   )}
                 </div>

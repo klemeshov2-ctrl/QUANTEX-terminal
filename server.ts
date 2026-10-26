@@ -8930,6 +8930,20 @@ ${scheduleRuleInstruction}
 - Затем переходи к техническому и алгоритмическому плану (сетап QUANTEX, опционные уровни Call/Put Wall, конкретная точка входа, TP1, TP2, Trailing Stop-Loss).
 - Обязательно указывай реальный статус биржи и альтернативный План Б.
 
+⚠️ СТРОЖАЙШЕЕ ПРАВИЛО ПО СТАТУСАМ СДЕЛКИ И ЧЕЛОВЕЧЕСКИМ ФОРМУЛИРОВКАМ:
+1. НИКОГДА НЕ ПУТАЙ «ВХОД ВЗЯТ» И «ТЕЙК-ПРОФИТ 1 ВЗЯТ»!
+   - Если статус входа «ВХОД УЖЕ СРАБОТАЛ», а статус TP1 «TP1 ЕЩЁ НЕ ВЗЯТ / ЖДЁМ TP1»:
+     Ты ОБЯЗАН писать предельно понятно для любого человека:
+     «Позиция открыта: вход сработал на отметке {Вход}. Сейчас мы находимся в позиции и ожидаем первую цель TP1 ({TP1}). До цели осталось ... пунктов. Защитный стоп перенесен в безубыток ({SL}), поэтому риск потери исключен.»
+     КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «TP1 взят», пока цена не достигла уровня TP1!
+   - Если вход еще не сработал:
+     Пиши: «Позиция не открыта: ждем срабатывания лимитного входа на отметке {Вход}. Если сетап сменится до активации точки входа — он будет аннулирован со статусом "Не исполнен".»
+   - Если TP1 действительно взят:
+     Пиши: «Тейк-профит 1 ({TP1}) успешно взят! 50% прибыли зафиксировано, стоп подтянут в безубыток, держим остаток объема до TP2 ({TP2}).»
+2. ИСПОЛЬЗУЙ ПОНЯТНЫЙ, ЖИВОЙ, ЧЕЛОВЕЧЕСКИЙ ЯЗЫК:
+   - Не используй сухие скомканные шифры вроде «(уже в рынке, TP1 взят, BE+0.15)».
+   - Разъясняй трейдеру понятными словами: где цена, открыта ли сделка, чего ждем дальше, как защищен капитал.
+
 ${expiryRuleInstruction}
 ${feedbackLoopContext}`;
 
@@ -8940,6 +8954,30 @@ ${feedbackLoopContext}`;
     const liveWorldNewsFormatted = (Array.isArray(liveWorldNews) && liveWorldNews.length > 0)
       ? `\n🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ (Google News Live Search):\n${liveWorldNews.map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate}) -> ${n.link}`).join("\n")}\n`
       : "";
+
+    const dec = (ticker === "XRPUSDT") ? 4 : (ticker.includes("GOLD") || ticker.includes("MOEX")) ? 1 : 2;
+    const entryPriceFormatted = Number(indicatorForecast?.p1Entry ?? currentPrice).toFixed(dec);
+    const tp1Formatted = Number(indicatorForecast?.p2Tp1 ?? (currentPrice * (isBull ? 1.008 : 0.992))).toFixed(dec);
+    const tp2Formatted = Number(indicatorForecast?.p3Tp2 ?? (currentPrice * (isBull ? 1.016 : 0.984))).toFixed(dec);
+    const slFormatted = Number(indicatorForecast?.activeTrailingSl ?? (currentPrice * (isBull ? 0.995 : 1.005))).toFixed(dec);
+    const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
+
+    const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
+    const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
+    const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
+    const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
+    const hudStatus = indicatorForecast?.currentStatusText || (
+      isPlanB
+        ? "⚡ План Б — слом SL, жди разворот"
+        : isTp2Hit
+        ? "🏆 TP2 взят — все цели выполнены"
+        : isTp1Hit
+        ? `📈 TP1 взят → держим до TP2 ${tp2Formatted}`
+        : isEntryTriggered
+        ? `📍 В позиции → ждём TP1 ${tp1Formatted}`
+        : `⏳ Ждём вход @${entryPriceFormatted}`
+    );
+    const distToTp1 = Math.abs(Number(currentPrice) - Number(tp1Formatted)).toFixed(dec);
 
     let prompt = isEducationalOrConceptQuery
       ? `❓ ОБУЧАЮЩИЙ / МЕТОДОЛОГИЧЕСКИЙ ВОПРОС ТРЕЙДЕРА:
@@ -8962,12 +9000,16 @@ ${effectiveEvents.map((e: any) => `- ${e.timeMsk}: ${e.title} [${e.impact || "В
 ${newsListFormatted}
 ${liveWorldNewsFormatted}
 
-📊 АЛГОРИТМИЧЕСКИЙ СЕТАП QUANTEX И МНОГОТАЙМФРЕЙМ:
-- Направление: ${isBull ? "LONG (Покупка)" : "SHORT (Продажа)"}
-- Точка входа: ${indicatorForecast?.p1Entry ?? currentPrice}
-- TP1: ${indicatorForecast?.p2Tp1 ?? (currentPrice * 1.008).toFixed(2)}
-- TP2: ${indicatorForecast?.p3Tp2 ?? (currentPrice * 1.016).toFixed(2)}
-- Trailing SL: ${indicatorForecast?.activeTrailingSl ?? (currentPrice * 0.995).toFixed(2)}
+📊 ТОЧНЫЙ ТЕКУЩИЙ СТАТУС СДЕЛКИ С ГРАФИКА И ИНДИКАТОРА (${timeframe}):
+- Текущий статус на экране трейдера (HUD): "${hudStatus}"
+- Направление: ${isBull ? "🟢 LONG (Покупка)" : "🔴 SHORT (Продажа)"}
+- Точка входа (Entry): ${entryPriceFormatted}
+  • Статус входа: ${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ (мы находимся в позиции в рынке)" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ (лимитный ордер активен, ждем подхода цены)"}
+- Первый тейк-профит (TP1): ${tp1Formatted}
+  • Статус TP1: ${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ (50% прибыли зафиксировано, остаток в безубытке)" : isEntryTriggered ? `⏳ TP1 ЕЩЁ НЕ ВЗЯТ! МЫ В ПОЗИЦИИ И ЖДЁМ ДОСТИЖЕНИЯ TP1 (ЗАПРЕЩЕНО ПИСАТЬ 'TP1 взят'!). До цели осталось: ${distToTp1} п.` : "⏳ В ожидании активации входа"}
+- Второй тейк-профит (TP2): ${tp2Formatted}
+  • Статус TP2: ${isTp2Hit ? "✅ TP2 ДОСТИГНУТ" : "⏳ В ожидании"}
+- Защитный стоп (SL): ${slFormatted} (${trailingStageStr})
 - План Б: ${indicatorForecast?.altTp1 ?? "Тест границы Put Wall"}
 - Вероятность успеха алгоритма: ${indicatorForecast?.probability ?? 84}%
 - Опционные уровни GEX (CME/FORTS): Call Wall: ${gex?.callWall || "N/A"}, Put Wall: ${gex?.putWall || "N/A"}, Gamma Flip: ${gex?.gammaFlip || "N/A"}, Max Pain: ${gex?.maxPain || "N/A"}
@@ -9589,6 +9631,22 @@ function generateAutonomousAiPlan(params: {
   const emLow = gex?.expectedMove68?.low || (currentPrice * 0.99).toFixed(dec);
   const emHigh = gex?.expectedMove68?.high || (currentPrice * 1.01).toFixed(dec);
   const gexRegime = gex?.regime || "POSITIVE_GAMMA";
+  const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
+  const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
+  const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
+  const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
+  const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
+  const distToTp1 = Math.abs(Number(currentPrice) - Number(tp1)).toFixed(dec);
+
+  const humanStatusText = isPlanB
+    ? "⚡ План Б — слом SL, жди разворот"
+    : isTp2Hit
+    ? "🏆 TP2 взят — все цели выполнены"
+    : isTp1Hit
+    ? `📈 TP1 взят → 50% закрыто, стоп в безубытке, держим до TP2 ${tp2}`
+    : isEntryTriggered
+    ? `📍 В позиции → ожидаем первую цель TP1 ${tp1} (до цели ${distToTp1} п.)`
+    : `⏳ Ждём вход @${entry}`;
 
   const liveNewsSection = (Array.isArray(liveWorldNews) && liveWorldNews.length > 0)
     ? `\n\n#### 🌐 Свежие мировые сводки и новости из сети (Google News Live):\n` +
@@ -10062,8 +10120,8 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-
 - **Монетарный контур & Ликвидность:** Траектория процентных ставок ФРС США (FedWatch) и данные по инфляции (CPI / Core PCE) задают вектор кривой доходностей казначейских облигаций US Treasuries. Основные объемы институциональной ликвидности концентрируются на стыке европейской и американской сессий.
 
 #### 2. 📊 Полный анализ 6 таймфреймов индикатора (5M, 15M, 30M, 1H, 4H, 1D)
-- ⚡ **5M Скальпинг (Быстрый импульс):** ${isBull ? "🟢 Бычий импульс" : "🔴 Медвежий откат"} | Вход: **${(Number(entry) * (isBull ? 0.999 : 1.001)).toFixed(dec)}** | Трейлинг: **BE+0.15** | Статус входа: ${indicatorForecast?.leg1Hit ? "✅ Сработал" : "⏳ В ожидании"} | *Реакция на OTE 0.618 с быстрым подтягиванием безубытка*.
-- 🎯 **15M Интрадей (Базовый сетап):** ${isBull ? "🟢 Бычий приоритет" : "🔴 Медвежий приоритет"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | Trailing SL: **${sl}** | *Лоренцевский ML + Zero-Flip: отработка опционных границ Call/Put Wall*.
+- ⚡ **5M Скальпинг (Быстрый импульс):** ${isBull ? "🟢 Бычий импульс" : "🔴 Медвежий откат"} | Вход: **${(Number(entry) * (isBull ? 0.999 : 1.001)).toFixed(dec)}** | Трейлинг: **BE+0.15** | Статус входа: ${isEntryTriggered ? "✅ Сработал" : "⏳ В ожидании"} | *Реакция на OTE 0.618 с быстрым подтягиванием безубытка*.
+- 🎯 **15M Интрадей (Базовый сетап):** ${isBull ? "🟢 Бычий приоритет" : "🔴 Медвежий приоритет"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | Trailing SL: **${sl}** | *Статус: ${isTp2Hit ? "🏆 TP2 взят" : isTp1Hit ? `📈 TP1 взят → держим до TP2 ${tp2}` : isEntryTriggered ? `📍 В позиции → ждём TP1 ${tp1}` : `⏳ Ждём вход @${entry}`}*.
 - 🧭 **30M Свинг (Интрадей-баланс):** ${isBull ? "🟢 Удержание поддержки" : "🔴 Давление сопротивления"} | Зона 0.50 EQ: **${(Number(entry) * (isBull ? 0.997 : 1.003)).toFixed(dec)}** | *Сглаживание шума младших ТФ и подтверждение истинности пробоя*.
 - 📊 **1H Свинг (Институциональный поток):** ${isBull ? "🟢 Восходящая структура" : "🔴 Нисходящая волна"} | Зона OTE + FVG: **${(Number(entry) * (isBull ? 0.995 : 1.005)).toFixed(dec)}** | *Свип азиатской/европейской ликвидности с подтвержденным выкупом*.
 - 🏛️ **4H Трендовый Свинг (SMC ордерблоки):** 🟢 **BULLISH** | База +OB: **${(Number(entry) * 0.990).toFixed(dec)}** | 200 EMA: защита рубежа институционалами.
@@ -10078,11 +10136,12 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-
 - **🎯 Магнит экспирации (Max Pain):** **${maxPain}** | **Коридор ММ 68% (1σ):** **${emLow} – ${emHigh}**
 
 #### 4. 🎯 Исполнительный Торговый Сетап и Milestones
+- **Текущее состояние позиции:** **${humanStatusText}**
 - **Направление:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
-- **1. Точка входа:** **${entry}** *(Статус: ${indicatorForecast?.leg1Hit ? "✅ Сработала" : "⏳ Лимитный ордер активен. Если сетап сменится до достижения уровня — статус фиксируется как НЕ ИСПОЛНЕН"})*
-- **2. Тейк-Профит 1 (TP1):** **${tp1}** *(50% фиксация и перевод SL в безубыток BE+0.15)*
-- **3. Тейк-Профит 2 (TP2):** **${tp2}** *(расширение к институциональному барьеру Call Wall)*
-- **4. Трейлинг-стоп и риск (SL):** **${sl}** *(динамическая ступень: ${indicatorForecast?.trailingStageStr || "🛡️ Начальный SL"}, выход строго по закрытию тела свечи ${timeframe})*
+- **1. Точка входа:** **${entry}** — ${isEntryTriggered ? "✅ Сработала (мы находимся в позиции в рынке)" : "⏳ Лимитный ордер активен (ждём входа. Если сетап изменится до достижения уровня — фиксируется статус «Не исполнен»)"}
+- **2. Тейк-Профит 1 (TP1):** **${tp1}** — ${isTp1Hit ? "✅ TP1 успешно взят (50% прибыли зафиксировано, стоп в безубытке)" : isEntryTriggered ? `⏳ В позиции → ОЖИДАЕМ цель TP1 ${tp1} (до цели осталось ${distToTp1} п., стоп перенесен в безубыток)` : `⏳ В ожидании (первичная цель ${tp1})`}
+- **3. Тейк-Профит 2 (TP2):** **${tp2}** — ${isTp2Hit ? "✅ TP2 достигнут (позиция полностью закрыта с прибылью)" : isTp1Hit ? `⏳ В ожидании (удерживаем 50% объема до цели ${tp2})` : `⏳ В ожидании`}
+- **4. Защитный Стоп-Лосс (SL):** **${sl}** — ${trailingStageStr.includes("BE") ? `🔒 Безубыток (${sl}, ${trailingStageStr}) — сделка застрахована от убытка!` : `🛡️ Защитный стоп: ${sl} (по закрытию свечи ${timeframe})`}
 - **🔄 План Б (при сломе стопа):** ${indicatorForecast?.altTp1 ? `Мгновенная активация реверса с целью **${indicatorForecast.altTp1}**` : `При сломе стопа позиция ликвидируется, торговля приостанавливается до повторного теста Put Wall ${pw}`}.
 - **💡 Поведение индикатора в текущей фазе:** ${isBull ? "Удержание базы OTE 0.618 и подтягивание трейлинг-стопа вслед за импульсом покупателей" : "Срыв под Zero-Flip в отрицательной гамме с целями на Put Wall"}.
 
@@ -10099,7 +10158,7 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-
 
 #### 1. 📊 Анализ всех 6 таймфреймов индикатора (5M – 1D)
 - ⚡ **5M Скальп:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Вход: **${(Number(entry) * (isBull ? 0.999 : 1.001)).toFixed(dec)}** | Трейл BE+0.15 | *Тактический импульс*
-- 🎯 **15M Интрадей:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | SL: **${sl}** | *Лоренцевский ML + Zero-Flip*
+- 🎯 **15M Интрадей:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Вход: **${entry}** | TP1: **${tp1}** | TP2: **${tp2}** | SL: **${sl}** | *Статус: ${isTp2Hit ? "TP2 взят" : isTp1Hit ? "TP1 взят" : isEntryTriggered ? `В позиции, ждём TP1` : `Ждём вход`}*
 - 🧭 **30M Свинг:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Зона EQ 0.50 | *Консенсус средних ТФ*
 - 📊 **1H Свинг:** ${isBull ? "🟢 Лонг" : "🔴 Шорт"} | Зона OTE + FVG имбаланс | *Свип сессионной ликвидности*
 - 🏛️ **4H Позиция:** 🟢 **BULLISH** | Поддержка SMC +OB и 200 EMA | *Институциональный тренд*
@@ -10114,11 +10173,12 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}- **Макро-
 - **🎯 Магнит дня (Max Pain):** **${maxPain}** | **📐 Коридор ММ 68%:** **${emLow} – ${emHigh}**
 
 #### 3. 🎯 Конкретный Торговый Сетап и Milestones
+- **Текущее состояние сделки:** **${humanStatusText}**
 - **Рекомендация:** **${isBull ? "🟢 ПОКУПКА (LONG)" : "🔴 ПРОДАЖА (SHORT)"}**
-- **1. Зона входа:** **${entry}** *(Статус: ${indicatorForecast?.leg1Hit ? "✅ Вход сработал" : "⏳ Лимит в рынке. При смене сетапа — статус «Не исполнен»"})*
-- **2. Цель 1 (TP1):** **${tp1}** *(фиксация 50% объема + перевод стопа в безубыток BE+0.15)*
-- **3. Цель 2 (TP2 / Расширение к Call Wall):** **${tp2}**
-- **4. Защитный Стоп-Лосс (SL):** **${sl}** *(Трейлинг: ${indicatorForecast?.trailingStageStr || "🛡️ Начальный SL"})*
+- **1. Зона входа:** **${entry}** — ${isEntryTriggered ? "✅ Вход сработал, ордер открыт в рынке" : "⏳ Лимит в рынке. При смене сетапа — статус «Не исполнен»"}
+- **2. Цель 1 (TP1):** **${tp1}** — ${isTp1Hit ? "✅ TP1 взят (50% объема зафиксировано, стоп в безубытке)" : isEntryTriggered ? `⏳ В позиции → ОЖИДАЕМ цель TP1 ${tp1} (до цели ${distToTp1} п.)` : `⏳ В ожидании активации входа`}
+- **3. Цель 2 (TP2 / Расширение к Call Wall):** **${tp2}** — ${isTp2Hit ? "✅ TP2 взят" : "⏳ В ожидании"}
+- **4. Защитный Стоп-Лосс (SL):** **${sl}** — ${trailingStageStr.includes("BE") ? `🔒 Безубыток (${sl}, ${trailingStageStr})` : `🛡️ Защитный стоп: ${sl}`}
 - **🛡️ План Б (при сломе стопа):** ${indicatorForecast?.altTp1 ? `Переворот в противоход с целью **${indicatorForecast.altTp1}**` : `Отказ от позиций до повторного теста Put Wall ${pw}`}.
 - **💡 Поведение индикатора:** ${isBull ? "Идеальная реакция на бычий импульс с защитой по трейлингу" : "Срыв под Zero-Flip в отрицательной гамме"}.
 
