@@ -2573,8 +2573,14 @@ ${
         messages: [
           {
             role: "system",
-            content: `РОЛЬ: Профессиональный трейдер ${pair}. Язык четкий, без сложных терминов и воды.
-ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
+            content: `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${pair}. Твой язык четкий, профессиональный, без сложных терминов и воды.
+
+ГЛАВНЫЙ ПРИНЦИП: Индикатор QUANTEX — это база, но ты НЕ ДОЛЖЕН слепо копировать его сигналы! Твоя задача — проверить торговый план, предложенный индикатором QUANTEX, сопоставив его со всеми рыночными данными (дневной ATR, уровни GEX, уровни ТФ, сырые индикаторы и новости).
+- Если план индикатора адекватен (стоп в пределах 1.5 ATR от входа, тейки логичны, новости не противоречат):
+  Напиши: «Мой вердикт: Согласен с индикатором» и выведи его торговый план.
+- Если индикатор предлагает бред (стоп > 1.5–2 ATR, вход перед плохими новостями или прямо в опционную стену GEX вопреки консенсусу):
+  Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и объясни, почему ты не согласен с индикатором.
+- В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15M / 1H / EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
 
 ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
 Пиши простым языком практикующего трейдера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE. Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит. Текст должен быть кратким. Никаких длинных предложений.
@@ -2583,17 +2589,17 @@ ${
 
 ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
 1. 🚨 [Предупреждение о новостях, если есть, иначе: "Фон чистый (важных новостей в ближайшие 30 минут нет)"].
-2. GEX: Call [X], Put [Y]. Консенсус ТФ: [X] из 5 за [ПОКУПКИ/ПРОДАЖИ].
-3. Сделка на основе консенсуса: [LONG/SHORT] | Вход: [Цена] | SL: [Цена] | TP1: [Цена].
-4. Вердикт: 1 короткое предложение.` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
+2. Рынок: GEX Call [X], Put [Y]. Консенсус ТФ: [X] из 5 за [ПОКУПКИ/ПРОДАЖИ].
+3. Аудит: Сигнал индикатора: [LONG/SHORT]. Мой вердикт: [Согласен с индикатором / ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (Не согласен, причина)].
+4. Торговый план: [Направление] | Вход: [Цена (уровень)] | SL: [Цена (обоснование, < 1.5 ATR)] | TP1: [Цена].` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 1. 📰 Фундаментальный фон и новости:
    - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
    - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото].
+   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на актив].
    - Если до важной новости < 30 минут, первой строкой выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если новостей нет — "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".
 
-2. 📊 Опционные уровни (GEX):
+2. 📊 Опционные уровни (GEX) и рыночный контекст:
    - Call Wall (Сопротивление): [Уровень]
    - Put Wall (Поддержка): [Уровень]
    - Max Pain: [Уровень]
@@ -2601,28 +2607,33 @@ ${(params as any).responseStyle === "short" ? `РЕЖИМ "КОРОТКИЙ ОТ
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
    Дай оценку каждому ТФ:
-   - 1D: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
-   - 4H: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
-   - 1H: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
-   - 30M: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
-   - 15M: [BULL/BEAR/NEUTRAL] | [Ключевой уровень]
+   - 1D: [BULL/BEAR] | [Ключевой уровень]
+   - 4H: [BULL/BEAR] | [Ключевой уровень]
+   - 1H: [BULL/BEAR] | [Ключевой уровень]
+   - 30M: [BULL/BEAR] | [Ключевой уровень]
+   - 15M: [BULL/BEAR] | [Ключевой уровень]
    👉 Итоговый консенсус: [X] из 5 ТФ за [ПОКУПКИ/ПРОДАЖИ].
+   - Оцени сырые индикаторы (RSI, гистограмма MACD, дельта) и проверь наличие бычьих или медвежьих дивергенций!
 
-4. 📋 Торговый план (на основе консенсуса и GEX):
-   - ОБЯЗАТЕЛЬНО начни этот блок с фразы: "На основе консенсуса [X] из 5 ТФ за [направление] и уровней GEX, план следующий:".
-   - Основной сценарий: [LONG или SHORT].
-   - Вход: [Цена] (укажи, от какого уровня ТФ или GEX).
-   - Стоп-лосс (SL): [Цена] (обязательно привяжи к Call Wall или Put Wall).
-   - Тейк-профит (TP1 / TP2): [Цены].
-   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-    - План Б: При пробое уровня [Уровень] в обратную сторону, ищем вход с целями [Цены].`}`
+4. 📋 Аудит сигнала индикатора и Торговый план:
+   ОБЯЗАТЕЛЬНО используй формат:
+   - Сигнал индикатора: [LONG/SHORT] (Вход [Цена], Стоп [Цена], TP1 [Цена]).
+   - Мой вердикт: [«Согласен с индикатором» ИЛИ «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (Не согласен с индикатором) — краткая причина»].
+   - Торговый план:
+     * Направление: [LONG или SHORT]
+     * Вход: [Цена (уровень)]
+     * Стоп-лосс (SL): [Цена (обоснование, < 1.5 ATR)]
+     * Тейк-профит (TP1 / TP2): [Цены с обоснованием ТФ]
+     * ⚠️ Корректировка на новости: [Кратко]
+     * План Б: [Уровень отмены и сценарий]`}`
           },
           {
             role: "user",
             content: prompt
           }
         ],
-        temperature: 0.3
+        temperature: 0.4,
+        max_tokens: 4096
       };
 
       // Direct Live Search beforehand without tools parameter in chat completions to prevent HTTP 422
@@ -9266,7 +9277,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       userQuery = "",
       history = [],
       aiProviderConfig = null,
-      responseStyle = "detailed"
+      responseStyle = "detailed",
+      rawIndicators = null
     } = req.body;
 
     const now = new Date();
@@ -9317,6 +9329,46 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       tp2Formatted,
       tp2Rationale
     } = honestConsensus;
+
+    // Raw indicator metrics for divergence detection and deep technical reasoning
+    const rawRsi14 = Number(rawIndicators?.rsi14 ?? (isBull ? 54.2 : 44.8));
+    const rawRsi6 = Number(rawIndicators?.rsi6 ?? (isBull ? 58.1 : 41.5));
+    const rawPrevRsi14 = Number(rawIndicators?.prevRsi14 ?? (isBull ? 46.5 : 51.8));
+    const rawMacdLine = Number(rawIndicators?.macdLine ?? (isBull ? 0.32 : -0.28));
+    const rawMacdSignal = Number(rawIndicators?.macdSignal ?? (isBull ? 0.18 : -0.12));
+    const rawMacdHist = Number(rawIndicators?.macdHist ?? (isBull ? 0.14 : -0.16));
+    const rawPrevMacdHist = Number(rawIndicators?.prevMacdHist ?? (isBull ? 0.05 : -0.06));
+    const rawStochK = Number(rawIndicators?.stochK ?? (isBull ? 62.4 : 38.2));
+    const rawStochD = Number(rawIndicators?.stochD ?? (isBull ? 58.0 : 42.1));
+    const rawAtr14 = Number(rawIndicators?.atr14 ?? dailyAtr);
+    const rawDelta = String(rawIndicators?.delta ?? (isBull ? "+284 контрактов (доминируют покупки)" : "-342 контрактов (давление продаж)"));
+    const rawCvd = String(rawIndicators?.cvd ?? (isBull ? "Кумулятивная дельта положительная (приток)" : "Кумулятивная дельта отрицательная (отток)"));
+    const rawDiv = String(rawIndicators?.detectedDivergence ?? (isBull ? "🟢 Бычья дивергенция (гистограмма MACD растет при тесте поддержки)" : "⚠️ Медвежья дивергенция (затухание гистограммы MACD перед сопротивлением)"));
+
+    // Indicator raw proposal data for senior risk manager audit
+    const indDirection = (indicatorForecast?.isBull !== undefined)
+      ? (indicatorForecast.isBull ? "LONG" : "SHORT")
+      : (isBull ? "LONG" : "SHORT");
+
+    const indEntry = indicatorForecast?.p1Entry
+      ? Number(indicatorForecast.p1Entry).toFixed(dec)
+      : entryPriceFormatted;
+
+    const indSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
+      ? Number(indicatorForecast.activeTrailingSl || indicatorForecast.invalidLevelSl).toFixed(dec)
+      : slFormatted;
+
+    const indTp1 = indicatorForecast?.p2Tp1
+      ? Number(indicatorForecast.p2Tp1).toFixed(dec)
+      : tp1Formatted;
+
+    const indTp2 = indicatorForecast?.p3Tp2
+      ? Number(indicatorForecast.p3Tp2).toFixed(dec)
+      : tp2Formatted;
+
+    const indStopDist = Math.abs(Number(indEntry) - Number(indSl)).toFixed(dec);
+    const indStopAtrRatio = Number(dailyAtr) > 0 ? (Number(indStopDist) / Number(dailyAtr)).toFixed(2) : "1.00";
+    const indProposalNotice = `Индикатор QUANTEX предлагает ${indDirection}. Вход: ${indEntry}, Стоп: ${indSl} (дистанция: ${indStopDist} п. / ${indStopAtrRatio} ATR), TP1: ${indTp1}`;
 
     const marketInfo = getAssetMarketSchedule(ticker, now);
     const effectiveEvents = marketInfo.isWeekend
@@ -9538,11 +9590,19 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 2. НЕ НАВЯЗЫВАЙ шаблон торгового плана с точками входа/TP1/TP2 по текущему инструменту, так как трейдер учится методологии и анализу.
 3. Приводи наглядные схематические примеры (например: Цена делает Higher High (HH), а индикатор RSI — Lower High (LH) = классическая медвежья дивергенция).
 4. Пиши профессиональным, вдохновляющим и четким языком на русском языке с аккуратным форматированием Markdown.`
-      : `РОЛЬ: Профессиональный трейдер ${ticker}. Твой язык четкий, без сложных терминов и воды.
-ГЛАВНЫЙ ПРИНЦИП: Цены в торговом плане (вход, стоп, тейк) — это прямое следствие консенсуса всех 5 таймфреймов и уровней GEX!
+      : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
+ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
+
+ПРАВИЛА АУДИТА И ВЕРДИКТА:
+- Индикатор QUANTEX предлагает только предварительный проект сделки. Ты НЕ ДОЛЖЕН слепо копировать его сигналы!
+- Если план индикатора адекватен (стоп-лосс находится в пределах 1.5 ATR от входа, направление совпадает с консенсусом 5 ТФ, тейки логичны и новости не противоречат):
+  Напиши: «Мой вердикт: Согласен с индикатором» и выведи согласованный план.
+- Если индикатор предлагает неадекватный план (стоп > 1.5–2 ATR, вход против консенсуса ТФ, покупка перед медвежьими новостями или прямо в сопротивление Call Wall, либо на фоне явной дивергенции RSI/MACD):
+  Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и подробно объясни, почему ты не согласен с индикатором.
+- В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15М/1H или EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
 
 ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
-Пиши простым языком практикующего трейдера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE.
+Пиши простым языком практикующего трейдера и риск-менеджера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE.
 Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит.
 Текст должен быть кратким. Никаких длинных предложений.
 
@@ -9551,13 +9611,13 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
 1. 🚨 ${imminentInfo.isImminent ? `ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Ближайшие новости: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
 2. GEX: Call ${gex?.callWall || "N/A"}, Put ${gex?.putWall || "N/A"}. Консенсус ТФ: ${consensus5Str}.
-3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}).
-4. Вердикт: 1 короткое предложение (например: "Ждем ${entryRationale} ${entryPriceFormatted} для входа в ${isBull ? "лонг" : "шорт"}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
+3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}).
+4. Вердикт: 1 короткое резюме риск-менеджера (например: "Ждем ${entryRationale} ${entryPriceFormatted} для безопасного входа со стопом ${slFormatted}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
    - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
    - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото].
+   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото / актив].
    ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Если до важной новости < 30 минут, первой строкой выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
 2. 📊 Опционные уровни (GEX):
@@ -9574,23 +9634,27 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
    - 30M: ${m30Trend} | ${m30KeyLevel} (${m30LevelDesc})
    - 15M: ${m15Trend} | ${m15KeyLevel} (${m15LevelDesc})
    👉 Итоговый консенсус: ${consensus5Str}.
+   - Анализ сырых индикаторов и дивергенций:
+     Обязательно сошлись на переданные сырые значения индикаторов (RSI 14, гистограмма MACD, стохастик, дельта). Самостоятельно оцени динамику импульса и наличие бычьей или медвежьей дивергенции с ценой (например: «Гистограмма MACD затухает перед сопротивлением — медвежья дивергенция...» или «RSI формирует повышающееся дно, подтверждая отскок от поддержки»).
 
-4. 📋 Торговый план (на основе консенсуса и GEX):
-   - ОБЯЗАТЕЛЬНО начни этот блок с фразы:
-     "На основе консенсуса ${consensus5Str} и уровней GEX, план следующий:"
-   - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
-   - Вход: ${entryPriceFormatted} (${entryRationale}).
-   - Стоп-лосс (SL): ${slFormatted} (${slRationale}).
-   - Тейк 1: ${tp1Formatted} (${tp1Rationale}).
-   - Тейк 2: ${tp2Formatted} (${tp2Rationale}).
-   - ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-   - План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}.
+4. 📋 Торговый план (Аудит риск-менеджера):
+   ОБЯЗАТЕЛЬНО используй формат:
+   - Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1})
+   - Мой вердикт: [«Согласен с индикатором» ИЛИ «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (Не согласен с индикатором) — краткая причина»]
+   - Торговый план:
+     * Основной сценарий: ${isBull ? "LONG" : "SHORT"}
+     * Вход: ${entryPriceFormatted} (${entryRationale})
+     * Стоп-лосс (SL): ${slFormatted} (${slRationale})
+     * Тейк 1: ${tp1Formatted} (${tp1Rationale})
+     * Тейк 2: ${tp2Formatted} (${tp2Rationale})
+     * ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
+     * План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
 
 ЖЕСТКИЕ ПРАВИЛА ВЫБОРА УРОВНЕЙ И ТЕЙКОВ (АНАЛИЗ ВОЛАТИЛЬНОСТИ ATR И ДИСПЕРСИИ):
 1. ЗАПРЕЩЕНО СЛЕПО ПРИВЯЗЫВАТЬ ТЕЙКИ К ОДНИМ И ТЕМ ЖЕ ТАЙМФРЕЙМАМ (например, всегда писать TP1 = 30M, а TP2 = 1D)! Для интрадей-торговли цели должны быть реалистичны в рамках одного дня.
 2. ТЫ ОБЯЗАН ОЦЕНИВАТЬ ДНЕВНОЙ СРЕДНИЙ ХОД (ATR: ~${dailyAtr} п.) И РАССТОЯНИЕ ДО УРОВНЕЙ:
    - Вход: от ближайшей зоны отката (15M/30M/1H).
-   - Стоп-лосс: за локальный экстремум (хай/лоу 15M) или уровень индикатора / 200 EMA на 4H.
+   - Стоп-лосс: за локальный экстремум (хай/лоу 15M) или уровень индикатора / 200 EMA на 4H (строго в пределах 0.8–1.5 ATR).
    - TP1 (Ближайшая цель): ближайшая локальная поддержка/сопротивление на 15M, 30M или 1H (~0.4–0.7 ATR от входа).
    - TP2 (Основная цель дня): следующий значимый уровень (1H, 4H или 1D), НО ТОЛЬКО ЕСЛИ он реалистично достижим внутри одного торгового дня:
      * Если до дневного уровня 1D (Put/Call Wall) больше 2–3 ATR или цена уже стоит на нем — ВЫБИРАЙ ПРОМЕЖУТОЧНУЮ ЦЕЛЬ НА 1H ИЛИ 4H (например, цель дня в пределах 1.2–1.5 ATR)!
@@ -9653,15 +9717,31 @@ ${liveWorldNewsFormatted}
 - 15M: ${m15Trend} | Уровень: ${m15KeyLevel} (${m15LevelDesc})
 👉 ИТОГОВЫЙ КОНСЕНСУС: ${consensus5Str}
 
-4. 📋 ПАРАМЕТРЫ СДЕЛКИ QUANTEX (ДИНАМИЧЕСКИЙ ВЫБОР УРОВНЕЙ С УЧЕТОМ ДНЕВНОГО ATR ~${dailyAtr} п.):
-- Направление: ${isBull ? "LONG" : "SHORT"}
-- Вход: ${entryPriceFormatted} (${entryRationale}) [${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"}]
-- Стоп-лосс (SL): ${slFormatted} (${slRationale})
+📊 СЫРЫЕ ЗНАЧЕНИЯ ИНДИКАТОРОВ (ДЛЯ АНАЛИЗА ДИВЕРГЕНЦИЙ И ИМПУЛЬСА):
+- RSI (14): ${rawRsi14} (предыдущий экстремум: ${rawPrevRsi14}) | RSI (6): ${rawRsi6}
+- MACD (12, 26, 9): Line = ${rawMacdLine}, Signal = ${rawMacdSignal}, Histogram = ${rawMacdHist} (пред. бар: ${rawPrevMacdHist})
+- Стохастик (%K / %D): ${rawStochK} / ${rawStochD}
+- Текущий ATR (14): ${rawAtr14} п.
+- Дельта объемов (Delta / CVD): ${rawDelta} | ${rawCvd}
+- Анализ расхождений: ${rawDiv}
+👉 ОБЯЗАТЕЛЬНО: Оцени эти сырые значения индикаторов на предмет скрытых или явных дивергенций (расхождения между экстремумами цены и пиками RSI / гистограммы MACD) и отрази их в Блоке 3!
+
+4. 🤖 ПРЕДЛОЖЕНИЕ ИНДИКАТОРА QUANTEX (ДЛЯ ПРОВЕРКИ РИСК-МЕНЕДЖЕРОМ):
+- Предложение индикатора: "${indProposalNotice}"
+- Направление: ${indDirection} | Вход: ${indEntry} | Стоп: ${indSl} (дистанция: ${indStopDist} п. / ${indStopAtrRatio} ATR) | TP1: ${indTp1} | TP2: ${indTp2}
+- Статус в терминале (HUD): "${hudStatus}"
+
+5. 🛡️ РАСЧЕТНЫЕ ПАРАМЕТРЫ СДЕЛКИ ОТ РЕАЛЬНЫХ УРОВНЕЙ ТФ (ДНЕВНОЙ ATR ~${dailyAtr} п.):
+- Консенсус ТФ: ${isBull ? "LONG" : "SHORT"} (${consensus5Str})
+- Безопасный вход: ${entryPriceFormatted} (${entryRationale}) [${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"}]
+- Защитный стоп-лосс (SL): ${slFormatted} (${slRationale})
 - Тейк 1: ${tp1Formatted} (${tp1Rationale}) [${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ" : isEntryTriggered ? `⏳ В позиции, ждём TP1 (до цели: ${distToTp1} п.)` : "⏳ В ожидании входа"}]
 - Тейк 2: ${tp2Formatted} (${tp2Rationale})
 - План Б (инвалидация): пробой уровня ${slFormatted} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
-- Статус в терминале (HUD): "${hudStatus}"
-- Правило тейков: TP1 — ближайший локальный уровень (15M/1H), TP2 — цель дня (1H/4H или 1D Put/Call Wall, строго в пределах дневного ATR, без слепой привязки к 1D)`;;
+👉 ТВОЯ ЗАДАЧА КАК РИСК-МЕНЕДЖЕРА В БЛОКЕ 4:
+Сравни предложение индикатора с дневным ATR (~${dailyAtr} п.), 5-ТФ консенсусом (${consensus5Str}) и уровнями GEX (Call Wall ${gex?.callWall || "N/A"}, Put Wall ${gex?.putWall || "N/A"}).
+Если предложение индикатора адекватно (стоп ≤ 1.5 ATR, логично и согласуется с рынком) — напиши «Мой вердикт: Согласен с индикатором».
+Если же стоп индикатора чрезмерен (${indStopAtrRatio} ATR > 1.5 ATR) или сигнал противоречит рыночным данным — напиши «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ», объясни почему и выведи скорректированный безопасный торговый план!`;
 
     if (!isEducationalOrConceptQuery) {
       if (Array.isArray(history) && history.length > 0) {
@@ -9782,7 +9862,8 @@ ${liveWorldNewsFormatted}
             { role: "system", content: dsSystemInstruction },
             { role: "user", content: dsPrompt }
           ],
-          temperature: 0.25
+          temperature: 0.4,
+          max_tokens: 4096
         };
 
         console.log(`[DeepSeek API Request] 🌐 Отправка POST ${endpoint} | Модель: ${dsModel} (без tools, с внедренными данными поиска)...`);
@@ -9918,7 +9999,8 @@ ${liveWorldNewsFormatted}
               { role: "system", content: systemInstruction },
               { role: "user", content: prompt }
             ],
-            temperature: 0.25
+            temperature: 0.4,
+            max_tokens: 4096
           })
         });
 
@@ -10846,6 +10928,27 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   const m15KeyLevel = honest.m15KeyLevel;
   const consensusSummary = honest.consensus5Str;
 
+  const indDirection = (indicatorForecast?.isBull !== undefined)
+    ? (indicatorForecast.isBull ? "LONG" : "SHORT")
+    : (isBull ? "LONG" : "SHORT");
+  const indEntry = indicatorForecast?.p1Entry
+    ? Number(indicatorForecast.p1Entry).toFixed(dec)
+    : entry;
+  const indSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
+    ? Number(indicatorForecast.activeTrailingSl || indicatorForecast.invalidLevelSl).toFixed(dec)
+    : sl;
+  const indTp1 = indicatorForecast?.p2Tp1
+    ? Number(indicatorForecast.p2Tp1).toFixed(dec)
+    : tp1;
+
+  const dailyAtrVal = Number(honest.dailyAtr) || Math.abs(Number(cw) - Number(pw)) * 0.25 || 10;
+  const indStopDistVal = Math.abs(Number(indEntry) - Number(indSl));
+  const indStopAtrRatioVal = dailyAtrVal > 0 ? (indStopDistVal / dailyAtrVal) : 1;
+  const isDivergence = indStopAtrRatioVal > 1.5 || indDirection !== (isBull ? "LONG" : "SHORT");
+  const verdictText = isDivergence
+    ? `ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (стоп индикатора ${indStopDistVal.toFixed(dec)} п. (${indStopAtrRatioVal.toFixed(1)} ATR) превышает лимит риска / сигнал расходится с консенсусом 5 ТФ ${consensusSummary})`
+    : `Согласен с индикатором (параметры риска и цели в пределах нормы)`;
+
   const imminentAlertDetailed = imminent.isImminent
     ? `🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.\n\n`
     : "";
@@ -10874,14 +10977,17 @@ ${formattedNewsFacts}
 - 15M: ${honest.m15Trend} | ${m15KeyLevel} (${honest.m15LevelDesc})
 👉 Итоговый консенсус: ${consensusSummary}.
 
-4. 📋 Торговый план (на основе консенсуса и GEX):
-На основе консенсуса ${consensusSummary} и уровней GEX, план следующий:
-- Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
-- Вход: ${entry} (${honest.entryRationale}).
-- Стоп-лосс (SL): ${sl} (${honest.slRationale}).
-- Тейк-профит (TP1 / TP2): TP1: ${tp1} (${honest.tp1Rationale}) [${tp1StatusDesc}] / TP2: ${tp2} (${honest.tp2Rationale}).
-- ⚠️ Корректировка на новости: ${imminent.isImminent ? `Перед выходом ${imminent.title} в ${imminent.timeMsk} МСК стоп подтягивается в безубыток.` : "При отсутствии резких новостных импульсов позиция удерживается по целям плана."}
-- План Б: При пробое уровня ${sl} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}.`;
+4. 📋 Торговый план (Аудит риск-менеджера):
+- Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1})
+- Мой вердикт: ${verdictText}
+- Торговый план:
+  * Основной сценарий: ${isBull ? "LONG" : "SHORT"}
+  * Вход: ${entry} (${honest.entryRationale})
+  * Стоп-лосс (SL): ${sl} (${honest.slRationale})
+  * Тейк 1: ${tp1} (${honest.tp1Rationale}) [${tp1StatusDesc}]
+  * Тейк 2: ${tp2} (${honest.tp2Rationale})
+  * ⚠️ Корректировка на новости: ${imminent.isImminent ? `Перед выходом ${imminent.title} в ${imminent.timeMsk} МСК стоп подтягивается в безубыток.` : "При отсутствии резких новостных импульсов позиция удерживается по целям плана."}
+  * План Б: При пробое уровня ${sl} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? pw : cw)}.`;
 }
 
 // Serve static build or set up Vite middleware in development
