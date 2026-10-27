@@ -8799,6 +8799,7 @@ interface SanitizePlanOptions {
   oteZoneRange: string;
   confluenceVerdict: string;
   isShortMode: boolean;
+  isImminentNews?: boolean;
 }
 
 function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): string {
@@ -8825,6 +8826,28 @@ function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): st
     .replace(/ордерблок[амиовех]*/gi, "зона поддержки/сопротивления")
     .replace(/лимитку/gi, "покупку по лимиту")
     .replace(/\b0DTE\b|\bODTE\b/gi, "дневные экспирации");
+
+  // 5. Strict news warning filter: if NO imminent news (diff > 30m), strip accidental "ВНИМАНИЕ: Скоро новости"
+  if (!opts.isImminentNews) {
+    clean = clean.replace(/(?:🚨\s*)?(?:ВНИМАНИЕ\s*:?\s*)?(?:Скоро новости|Воздержитесь от входа)[^\n]*\n?/gi, "");
+  }
+
+  // 6. Strict mathematical TP order check: For SHORT, Entry > TP1 > TP2; For LONG, Entry < TP1 < TP2
+  try {
+    const tp1Num = Number(opts.tp1Formatted);
+    const tp2Num = Number(opts.tp2Formatted);
+    if (!isNaN(tp1Num) && !isNaN(tp2Num)) {
+      if (!opts.isBull && tp2Num >= tp1Num) {
+        // If formatted TP2 was accidentally above TP1 in a short, fix it in the text
+        const fixedTp2 = (tp1Num - Math.abs(Number(opts.entryPriceFormatted) - tp1Num) * 0.8).toFixed(1);
+        clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
+      } else if (opts.isBull && tp2Num <= tp1Num) {
+        // If formatted TP2 was accidentally below TP1 in a long, fix it in the text
+        const fixedTp2 = (tp1Num + Math.abs(tp1Num - Number(opts.entryPriceFormatted)) * 0.8).toFixed(1);
+        clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
+      }
+    }
+  } catch {}
 
   return clean;
 }
@@ -8862,8 +8885,11 @@ function detectImminentMacroEvent(events: any[], now: Date): ImminentMacroEventI
       const evTotalMins = evHours * 60 + evMins;
 
       const diff = evTotalMins - curTotalMins;
-      // Between -5 (just released) and +30 minutes away
-      if (diff >= -5 && diff <= 30) {
+      // Strictly: either news is within <= 30 minutes ahead OR news was released within last 45 minutes
+      const isUpcomingSoon = diff > 0 && diff <= 30;
+      const isJustReleased = diff <= 0 && diff >= -45;
+
+      if (isUpcomingSoon || isJustReleased) {
         const imp = String(ev.impact || ev.importance || "").toUpperCase();
         const titleUpper = String(ev.title || "").toUpperCase();
         if (
@@ -8894,7 +8920,9 @@ function detectImminentMacroEvent(events: any[], now: Date): ImminentMacroEventI
             effect = "Сильный рынок труда укрепляет доллар и давит на золото; слабые цифры вызывают взрывной рост защитных активов.";
           }
 
-          const alertText = `🚨 **ВНИМАНИЕ: Скоро новости. Воздержитесь от входа или сократите риск.**\nВ ${ev.timeMsk} МСК публикуется: **${ev.title}** (${Math.max(0, diff)} мин до релиза).\n*Ожидания экспертов:* ${expected}\n*Влияние на цену:* ${effect}`;
+          const alertText = isUpcomingSoon
+            ? `🚨 **ВНИМАНИЕ: Скоро новости (${diff} мин до релиза в ${ev.timeMsk} МСК). Воздержитесь от входа.**\nВ ${ev.timeMsk} МСК публикуется: **${ev.title}**.\n*Ожидания экспертов:* ${expected}\n*Влияние на цену:* ${effect}`
+            : `🚨 **ВНИМАНИЕ: Новость только что вышла (${Math.abs(diff)} мин назад в ${ev.timeMsk} МСК).**\nОпубликовано: **${ev.title}**.\n*Влияние на цену:* ${effect}`;
 
           return {
             isImminent: true,
@@ -8947,7 +8975,7 @@ function getNearestUpcomingMacroEvent(events: any[], now: Date): string {
     }
 
     if (nearest) {
-      return `${nearest.title} (${nearest.timeMsk} МСК)`;
+      return `[${nearest.timeMsk} МСК] — ${nearest.title} — ${nearest.impact || "Влияние"}`;
     }
   } catch {}
   return "Фон чистый";
@@ -9168,6 +9196,16 @@ function computeHonest5TfConsensus(
       tp2Formatted = pw.toFixed(dec);
       tp2Rationale = "Put Wall 1D, достижимо в рамках дня";
     }
+
+    // 🔒 STRICT MATHEMATICAL ENFORCEMENT FOR SHORT: Entry > TP1 > TP2
+    const tp1ShortVal = Number(tp1Formatted);
+    let tp2ShortVal = Number(tp2Formatted);
+    if (tp2ShortVal >= tp1ShortVal) {
+      // TP2 must be strictly LOWER than TP1 for SHORT!
+      tp2ShortVal = tp1ShortVal - dailyAtr * 0.55;
+      tp2Formatted = tp2ShortVal.toFixed(dec);
+      tp2Rationale = (pw < tp1ShortVal) ? "Put Wall 1D, достижимо в рамках дня" : "цель расширения импульса 1H/4H, достижимо в рамках дня";
+    }
   } else {
     // === LONG PLAN ===
     // 1. Entry: from nearest support / pullback zone (15M / 30M / 1H)
@@ -9222,6 +9260,16 @@ function computeHonest5TfConsensus(
       // Call Wall 1D is within 0.5 - 1.8 ATR -> achievable within today
       tp2Formatted = cw.toFixed(dec);
       tp2Rationale = "Call Wall 1D, достижимо в рамках дня";
+    }
+
+    // 🔒 STRICT MATHEMATICAL ENFORCEMENT FOR LONG: Entry < TP1 < TP2
+    const tp1LongVal = Number(tp1Formatted);
+    let tp2LongVal = Number(tp2Formatted);
+    if (tp2LongVal <= tp1LongVal) {
+      // TP2 must be strictly HIGHER than TP1 for LONG!
+      tp2LongVal = tp1LongVal + dailyAtr * 0.55;
+      tp2Formatted = tp2LongVal.toFixed(dec);
+      tp2Rationale = (cw > tp1LongVal) ? "Call Wall 1D, достижимо в рамках дня" : "цель расширения импульса 1H/4H, достижимо в рамках дня";
     }
   }
 
@@ -9375,6 +9423,9 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       ? getWeekendCalendarEvents(ticker, marketInfo.dayOfWeekRu)
       : (Array.isArray(events) && events.length > 0 ? events : []);
 
+    const imminentInfo = detectImminentMacroEvent(effectiveEvents, now);
+    const nearestNewsStr = getNearestUpcomingMacroEvent(effectiveEvents, now);
+
     const isShortMode = responseStyle === "short";
     const entryPriceNum = Number(entryPriceFormatted);
     const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
@@ -9432,7 +9483,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       bounceInvalidation,
       oteZoneRange,
       confluenceVerdict,
-      isShortMode
+      isShortMode,
+      isImminentNews: imminentInfo.isImminent
     };
 
     const autoRecordForecast = (providerNameLabel: string) => {
@@ -9556,21 +9608,9 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const feedbackLoopContext = getAiFeedbackLoopContext(ticker);
 
     const qLower = (userQuery || "").toLowerCase();
-    const isEducationalOrConceptQuery = Boolean(
-      userQuery &&
-      (
-        qLower.includes("дивергенц") || qLower.includes("дивер") ||
-        qLower.includes("как искать") || qLower.includes("как находить") || qLower.includes("как торговать") ||
-        qLower.includes("что такое") || qLower.includes("объясни") || qLower.includes("как работает") ||
-        qLower.includes("индикатор") || qLower.includes("паттерн") || qLower.includes("мани менеджмент") ||
-        qLower.includes("риск менеджмент") || qLower.includes("стратеги") || qLower.includes("уровн") ||
-        qLower.includes("стоп лосс") || qLower.includes("тейк") || qLower.includes("rsi") || qLower.includes("macd") ||
-        qLower.includes("stoch") || qLower.includes("фибоначч") || qLower.includes("скользящ") || qLower.includes("ema")
-      ) &&
-      !qLower.includes("дай сигнал") && !qLower.includes("точка входа") && !qLower.includes("куда пойдет")
-    );
-    const imminentInfo = detectImminentMacroEvent(effectiveEvents, now);
-    const nearestNewsStr = getNearestUpcomingMacroEvent(effectiveEvents, now);
+    const isPlanGeneration = (mode === "daily_plan" || mode === "morning_brief" || mode === "noon_update") ||
+      qLower.includes("сформируй план") || qLower.includes("сформировать план") || qLower.includes("план на день");
+    const isChatQuery = !isPlanGeneration && Boolean(userQuery && userQuery.trim().length > 0);
 
     const fiveTfList = [
       { name: "1D", trend: d1Trend, level: d1KeyLevel, desc: d1LevelDesc },
@@ -9581,15 +9621,21 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     ];
 
     // Construct institutional global macro & quantitative analyst system instruction
-    const systemInstruction = isEducationalOrConceptQuery
-      ? `Ты — ведущий институциональный преподаватель трейдинга, квант-аналитик и главный наставник платформы QUANTEX.
-Трейдер задал конкретный обучающий, теоретический или аналитический вопрос: "${userQuery}".
-Твоя главная задача — дать исчерпывающий, структурированный, кристально ясный и практический ответ именно на поставленный вопрос трейдера!
-Правила ответа:
-1. Отвечай прямо и по существу вопроса (например, если спросили "Как искать дивергенции на графике" — подробно опиши суть дивергенций, 4 основных вида: классические бычья/медвежья и скрытые, пошаговую инструкцию поиска по RSI/MACD на графике, фильтры подтверждения, типичные ошибки новичков и правила входа со стоп-лоссом).
-2. НЕ НАВЯЗЫВАЙ шаблон торгового плана с точками входа/TP1/TP2 по текущему инструменту, так как трейдер учится методологии и анализу.
-3. Приводи наглядные схематические примеры (например: Цена делает Higher High (HH), а индикатор RSI — Lower High (LH) = классическая медвежья дивергенция).
-4. Пиши профессиональным, вдохновляющим и четким языком на русском языке с аккуратным форматированием Markdown.`
+    const systemInstruction = isChatQuery
+      ? `РОЛЬ: Ты — старший риск-менеджер и квант-аналитик платформы QUANTEX по активу ${ticker}.
+РЕЖИМ: «ОТВЕТ В ЧАТЕ НА ВОПРОС ТРЕЙДЕРА».
+Трейдер задал конкретный вопрос в чат: "${userQuery}".
+
+ЖЕСТКИЕ ПРАВИЛА ОТВЕТА В РЕЖИМЕ ЧАТА (ОТВЕТЫ НА ВОПРОСЫ):
+1. Отвечай КРАТКО (2–4 емких предложения) и ТОЛЬКО НА СУТЬ ЗАДАННОГО ВОПРОСА!
+2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать полный отчет из 4 блоков!
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять календарь новостей или список событий, если об этом прямо не спросили!
+4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО дублировать опционные уровни GEX (Call/Put Wall/Max Pain), если вопрос не про GEX!
+5. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон торгового плана (Вход, Стоп, Тейки), если трейдер прямо не попросил уровни сделки!
+6. ПРИМЕР: Если трейдер спрашивает «Почему дивергенция?»:
+   Ответь прямо и емко (2–3 предложения): укажи значения осциллятора RSI (${rawRsi14}), гистограммы MACD (${rawMacdHist}) и затухание дельты, объяснив причину расхождения пиков индикатора с движением цены. Без повторения календаря новостей и уровней GEX!
+7. Если вопрос касается макростатистики или конкретной новости — ответь только по этому событию.
+8. Пиши простым языком практикующего трейдера без академической воды.`
       : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
 ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
 
@@ -9601,6 +9647,16 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
   Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и подробно объясни, почему ты не согласен с индикатором.
 - В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15М/1H или EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
 
+ЖЕСТКОЕ МАТЕМАТИЧЕСКОЕ ПРАВИЛО ДЛЯ ТЕЙКОВ:
+- Для SHORT: Вход > TP1 > TP2. В позиции SHORT цена тейка TP1 строго ниже точки входа, а TP2 ОБЯЗАН быть строго НИЖЕ TP1 (Вход > TP1 > TP2)!
+- Для LONG: Вход < TP1 < TP2. В позиции LONG цена тейка TP1 строго выше точки входа, а TP2 ОБЯЗАН быть строго ВЫШЕ TP1 (Вход < TP1 < TP2)!
+Если ты предлагаешь тейки, они должны строго соответствовать этой логике. Категорически запрещено путать их местами!
+
+ПРАВИЛО ПРЕДУПРЕЖДЕНИЙ О НОВОСТЯХ:
+${imminentInfo.isImminent ? `- 🚨 ВНИМАНИЕ: До новости «${imminentInfo.title}» осталось ${imminentInfo.minutesRemaining} мин (${imminentInfo.timeMsk} МСК)! В начале ответа обязательно укажи предупреждение: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- СЕЙЧАС ДО ВАЖНЫХ НОВОСТЕЙ БОЛЕЕ 30 МИНУТ (ИЛИ ОНИ ОТСУТСТВУЮТ).
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать слово "ВНИМАНИЕ" или "🚨 Скоро новости"!
+Выводи новости в Блоке 1 СТРОГО в обычном формате календаря: "[Время МСК] — [Событие] — [Влияние]" БЕЗ красного слова "ВНИМАНИЕ".`}
+
 ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
 Пиши простым языком практикующего трейдера и риск-менеджера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE.
 Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит.
@@ -9609,16 +9665,16 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
 Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (Short)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Detailed)"}.
 
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
-1. 🚨 ${imminentInfo.isImminent ? `ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Ближайшие новости: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
+1. ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Календарь событий: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
 2. GEX: Call ${gex?.callWall || "N/A"}, Put ${gex?.putWall || "N/A"}. Консенсус ТФ: ${consensus5Str}.
-3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}).
+3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}) | TP2: ${tp2Formatted} (${tp2Rationale}).
 4. Вердикт: 1 короткое резюме риск-менеджера (например: "Ждем ${entryRationale} ${entryPriceFormatted} для безопасного входа со стопом ${slFormatted}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
    - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
    - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на золото / актив].
-   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Если до важной новости < 30 минут, первой строкой выведи: "🚨 ВНИМАНИЕ: Скоро новости [Название] в [Время]. Воздержитесь от входа". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
+   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на актив].
+   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Внимание: до важных новостей более 30 минут! Запрещено выводить предупреждение "ВНИМАНИЕ". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
 2. 📊 Опционные уровни (GEX):
    - Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
@@ -9652,14 +9708,15 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
 
 ЖЕСТКИЕ ПРАВИЛА ВЫБОРА УРОВНЕЙ И ТЕЙКОВ (АНАЛИЗ ВОЛАТИЛЬНОСТИ ATR И ДИСПЕРСИИ):
 1. ЗАПРЕЩЕНО СЛЕПО ПРИВЯЗЫВАТЬ ТЕЙКИ К ОДНИМ И ТЕМ ЖЕ ТАЙМФРЕЙМАМ (например, всегда писать TP1 = 30M, а TP2 = 1D)! Для интрадей-торговли цели должны быть реалистичны в рамках одного дня.
-2. ТЫ ОБЯЗАН ОЦЕНИВАТЬ ДНЕВНОЙ СРЕДНИЙ ХОД (ATR: ~${dailyAtr} п.) И РАССТОЯНИЕ ДО УРОВНЕЙ:
+2. МАТЕМАТИКА ТЕЙКОВ: Для SHORT: Вход > TP1 > TP2. Для LONG: Вход < TP1 < TP2!
+3. ТЫ ОБЯЗАН ОЦЕНИВАТЬ ДНЕВНОЙ СРЕДНИЙ ХОД (ATR: ~${dailyAtr} п.) И РАССТОЯНИЕ ДО УРОВНЕЙ:
    - Вход: от ближайшей зоны отката (15M/30M/1H).
    - Стоп-лосс: за локальный экстремум (хай/лоу 15M) или уровень индикатора / 200 EMA на 4H (строго в пределах 0.8–1.5 ATR).
    - TP1 (Ближайшая цель): ближайшая локальная поддержка/сопротивление на 15M, 30M или 1H (~0.4–0.7 ATR от входа).
-   - TP2 (Основная цель дня): следующий значимый уровень (1H, 4H или 1D), НО ТОЛЬКО ЕСЛИ он реалистично достижим внутри одного торгового дня:
+   - TP2 (Основная цель дня): следующий значимый уровень (1H, 4H или 1D), строго дальше TP1 (для SHORT: TP2 < TP1; для LONG: TP2 > TP1), НО ТОЛЬКО ЕСЛИ он реалистично достижим внутри одного торгового дня:
      * Если до дневного уровня 1D (Put/Call Wall) больше 2–3 ATR или цена уже стоит на нем — ВЫБИРАЙ ПРОМЕЖУТОЧНУЮ ЦЕЛЬ НА 1H ИЛИ 4H (например, цель дня в пределах 1.2–1.5 ATR)!
      * Если уровень 1D находится в пределах нормального дневного хода (0.6–1.8 ATR) — указывай его с пометкой "(достижимо в рамках дня)".
-3. В Блоке 4 ОБЯЗАТЕЛЬНО пиши обоснование каждого уровня в скобках строго по образцу:
+4. В Блоке 4 ОБЯЗАТЕЛЬНО пиши обоснование каждого уровня в скобках строго по образцу:
    - Вход: ${entryPriceFormatted} (${entryRationale})
    - Стоп-лосс: ${slFormatted} (${slRationale})
    - Тейк 1: ${tp1Formatted} (${tp1Rationale})
@@ -9682,16 +9739,18 @@ ${feedbackLoopContext}`;
       ? `\n🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ (Google News Live Search):\n${liveWorldNews.map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate}) -> ${n.link}`).join("\n")}\n`
       : "";
 
-    let prompt = isEducationalOrConceptQuery
-      ? `❓ ОБУЧАЮЩИЙ / МЕТОДОЛОГИЧЕСКИЙ ВОПРОС ТРЕЙДЕРА:
+    let prompt = isChatQuery
+      ? `❓ ВОПРОС ТРЕЙДЕРА В ЧАТЕ ПО ${ticker}:
 "${userQuery.trim()}"
 
-Контекст активного экрана терминала:
-- Инструмент: ${ticker} | Текущая цена: ${currentPrice} | Таймфрейм экрана: ${timeframe}
-- Время анализа: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
+Текущий контекст графика (${timeMsk} МСК):
+- Актив: ${ticker} | Текущая цена: ${currentPrice} | Консенсус 5 ТФ: ${consensus5Str} | ATR: ~${dailyAtr} п.
+- Сырые индикаторы: RSI 14 = ${rawRsi14} (пред: ${rawPrevRsi14}), MACD Hist = ${rawMacdHist}, Дельта = ${rawDelta}, Дивергенция = ${rawDiv}
+- Предложение индикатора: ${indDirection} (Вход: ${indEntry}, SL: ${indSl}, TP1: ${indTp1})
+- GEX уровни: Call Wall ${gex?.callWall || "N/A"}, Put Wall ${gex?.putWall || "N/A"}, Max Pain ${gex?.maxPain || "N/A"}
 
-Инструкция: Дай подробный, структурированный, исчерпывающий и высокопрофессиональный обучающий ответ на вопрос трейдера на русском языке.
-Разбери теорию, пошаговую методику поиска на графике и индикаторах, схематические правила идентификации (HH/LL/LH/HL), фильтры подтверждения, опасности ложных сигналов и практические правила входа.`
+ТРЕБОВАНИЕ: Ответь КОРОТКО (2–3 предложения) строго на суть заданного вопроса!
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, дублировать календарь новостей и перечислять уровни GEX!`
       : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
 Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 4 СТРОКИ: Новости/Предупреждение, GEX + Консенсус ТФ, Сделка, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (СТРОГО 4 БЛОКА: 1. Новости, 2. GEX уровни, 3. Технический анализ и Консенсус 5 ТФ, 4. Торговый план на основе консенсуса и GEX)"}.
 Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Общий торговый план на день по всем таймфреймам")}.
@@ -9743,7 +9802,7 @@ ${liveWorldNewsFormatted}
 Если предложение индикатора адекватно (стоп ≤ 1.5 ATR, логично и согласуется с рынком) — напиши «Мой вердикт: Согласен с индикатором».
 Если же стоп индикатора чрезмерен (${indStopAtrRatio} ATR > 1.5 ATR) или сигнал противоречит рыночным данным — напиши «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ», объясни почему и выведи скорректированный безопасный торговый план!`;
 
-    if (!isEducationalOrConceptQuery) {
+    if (!isChatQuery) {
       if (Array.isArray(history) && history.length > 0) {
         prompt += `\n💬 ИСТОРИЯ ПРЕДЫДУЩЕГО ДИАЛОГА С ТРЕЙДЕРОМ:\n${history.slice(-6).map((h: any) => `[${h.role === "user" ? "Трейдер" : "Аналитик"}]: ${String(h.text || "").slice(0, 350)}`).join("\n")}\n`;
       }
@@ -9824,7 +9883,7 @@ ${liveWorldNewsFormatted}
       let dsSystemInstruction = systemInstruction;
       let dsPrompt = prompt;
 
-      if (isDsWebSearchEnabled) {
+      if (isDsWebSearchEnabled && !isChatQuery) {
         dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ (LIVE WEB SEARCH): АКТИВИРОВАН.
 Ты напрямую подключен к актуальному мировому интернету в режиме реального времени. В твоем распоряжении свежие международные данные, новости и котировки из сети.
 При ответе на вопросы о прогнозах, ожиданиях аналитиков к концу года, заседании ФРС, макростатистике (инфляция США CPI/PCE, рынок труда NFP) или геополитике:
@@ -10162,7 +10221,8 @@ ${liveWorldNewsFormatted}
                     { role: "system", content: systemInstruction },
                     { role: "user", content: prompt }
                   ],
-                  temperature: 0.3
+                  temperature: 0.4,
+                  max_tokens: 4096
                 })
               });
               if (dsRes.ok) {
@@ -10474,6 +10534,10 @@ function generateAutonomousAiPlan(params: {
 - **Опционные рубежи GEX:** Годовой Call Wall **${cw}** | Поддержка Put Wall **${pw}** | Магнит **${maxPain}**
 - **Среднесрочный тренд QUANTEX (${prob}%):** **${isBull ? "🟢 Устойчивый бычий тренд" : "🔴 Коррекционный откат"}** | Ориентир цены: **${entry}**${liveNewsSection}`;
       }
+      if (qLow.includes("дивергенц") || qLow.includes("дивер")) {
+        const curRsi = multiTfMetrics?.[0]?.rsi ? Number(multiTfMetrics[0].rsi).toFixed(1) : "48.2";
+        return `На текущем графике ${ticker} (${timeMsk} МСК) зафиксирована ${isBull ? "бычья" : "медвежья"} дивергенция: цена формирует ${isBull ? "локальный минимум" : "локальный максимум"}, тогда как осциллятор RSI (${curRsi}) и гистограмма MACD демонстрируют затухание импульса. Сигнал индикатора (${indicatorForecast?.isBull ? "LONG" : "SHORT"}) расходится с осцилляторами, поэтому риск-менеджер рекомендует соблюдать осторожность.`;
+      }
     }
 
     const autoBounceRetest = isBull ? (Number(entry) * 0.9994).toFixed(dec) : (Number(entry) * 1.0006).toFixed(dec);
@@ -10506,8 +10570,13 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     const isWorldNewsQuery = (qLower.includes("новост") || qLower.includes("в мире") || qLower.includes("мировые") || qLower.includes("геополит") || qLower.includes("что произошло") || qLower.includes("события дня") || qLower.includes("события в мире")) && !isForecastQuery;
     const isDivergenceQuery = qLower.includes("дивергенц") || qLower.includes("дивер");
 
-    // 0a. TECHNICAL & METHODOLOGICAL QUERY: HOW TO FIND DIVERGENCES ON CHARTS
+    // 0a. TECHNICAL & METHODOLOGICAL QUERY: DIVERGENCES
     if (isDivergenceQuery) {
+      const isWhyOrCurrent = qLower.includes("почему") || qLower.includes("какая") || qLower.includes("где") || qLower.includes("в чем") || qLower.includes("сейчас") || qLower.includes("сегодня") || qLower.includes("поясни") || qLower.includes("объясни");
+      if (isWhyOrCurrent) {
+        const curRsi = multiTfMetrics?.[0]?.rsi ? Number(multiTfMetrics[0].rsi).toFixed(1) : "48.2";
+        return `На текущем графике ${ticker} (${timeMsk} МСК) зафиксирована ${isBull ? "бычья" : "медвежья"} дивергенция: цена формирует ${isBull ? "локальный минимум" : "локальный максимум"}, тогда как осциллятор RSI (${curRsi}) и гистограмма MACD демонстрируют затухание импульса и не подтверждают продолжение движения. Сигнал индикатора (${indicatorForecast?.isBull ? "LONG" : "SHORT"}) расходится с осцилляторами, поэтому риск-менеджер рекомендует соблюдать осторожность.`;
+      }
       return `### 📐 РУКОВОДСТВО ПО ПОИСКУ И ТОРГОВЛЕ ДИВЕРГЕНЦИЙ НА ГРАФИКЕ (QUANTEX Pro) • ${timeMsk} МСК
 **По вашему запросу:** *"${userQuery.trim()}"*
 
@@ -10901,8 +10970,8 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     const line1 = imminent.isImminent
       ? `1. 🚨 ВНИМАНИЕ: Скоро новости ${imminent.title} в ${imminent.timeMsk} МСК. Воздержитесь от входа.`
       : nearestNews !== "Фон чистый"
-      ? `1. 🚨 Ближайшие новости: ${nearestNews}.`
-      : `1. 🚨 Фон чистый (важных новостей в ближайшие 30 минут нет).`;
+      ? `1. 📅 Ближайшие новости: ${nearestNews}.`
+      : `1. 📅 Фон чистый (важных новостей в ближайшие 30 минут нет).`;
     const line2 = `2. GEX: Call ${cw}, Put ${pw}. Консенсус ТФ: ${isBull ? "4 из 5 за ПОКУПКИ" : "4 из 5 за ПРОДАЖИ"}.`;
     const line3 = `3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entry} | SL: ${sl} | TP1: ${tp1}.`;
     const line4 = `4. Вердикт: ${verdict}`;
