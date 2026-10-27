@@ -8969,19 +8969,38 @@ function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): st
     clean = clean.replace(/(?:🚨\s*)?(?:ВНИМАНИЕ\s*:?\s*)?(?:Скоро новости|Воздержитесь от входа)[^\n]*\n?/gi, "");
   }
 
-  // 6. Strict mathematical TP order check: For SHORT, Entry > TP1 > TP2; For LONG, Entry < TP1 < TP2
+  // 6. Strict mathematical TP and SL order check:
+  // For SHORT: Entry > TP1 > TP2 and SL > Entry
+  // For LONG: Entry < TP1 < TP2 and SL < Entry
   try {
     const tp1Num = Number(opts.tp1Formatted);
     const tp2Num = Number(opts.tp2Formatted);
-    if (!isNaN(tp1Num) && !isNaN(tp2Num)) {
-      if (!opts.isBull && tp2Num >= tp1Num) {
-        // If formatted TP2 was accidentally above TP1 in a short, fix it in the text
-        const fixedTp2 = (tp1Num - Math.abs(Number(opts.entryPriceFormatted) - tp1Num) * 0.8).toFixed(1);
-        clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
-      } else if (opts.isBull && tp2Num <= tp1Num) {
-        // If formatted TP2 was accidentally below TP1 in a long, fix it in the text
-        const fixedTp2 = (tp1Num + Math.abs(tp1Num - Number(opts.entryPriceFormatted)) * 0.8).toFixed(1);
-        clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
+    const entryNum = Number(opts.entryPriceFormatted);
+    const slNum = Number(opts.slFormatted);
+
+    if (!isNaN(tp1Num) && !isNaN(tp2Num) && !isNaN(entryNum)) {
+      if (!opts.isBull) {
+        // SHORT: TP2 must be below TP1
+        if (tp2Num >= tp1Num) {
+          const fixedTp2 = (tp1Num - Math.abs(entryNum - tp1Num) * 0.8).toFixed(1);
+          clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
+        }
+        // SHORT: SL must be above Entry
+        if (!isNaN(slNum) && slNum <= entryNum) {
+          const fixedSl = (entryNum + Math.abs(entryNum - tp1Num) * 0.6).toFixed(1);
+          clean = clean.replace(new RegExp(`(?:SL|Стоп-лосс)[:\\s]+${opts.slFormatted}`, "g"), `SL: ${fixedSl}`);
+        }
+      } else {
+        // LONG: TP2 must be above TP1
+        if (tp2Num <= tp1Num) {
+          const fixedTp2 = (tp1Num + Math.abs(tp1Num - entryNum) * 0.8).toFixed(1);
+          clean = clean.replace(new RegExp(`TP2[:\\s]+${opts.tp2Formatted}`, "g"), `TP2: ${fixedTp2}`);
+        }
+        // LONG: SL must be below Entry
+        if (!isNaN(slNum) && slNum >= entryNum) {
+          const fixedSl = (entryNum - Math.abs(tp1Num - entryNum) * 0.6).toFixed(1);
+          clean = clean.replace(new RegExp(`(?:SL|Стоп-лосс)[:\\s]+${opts.slFormatted}`, "g"), `SL: ${fixedSl}`);
+        }
       }
     }
   } catch {}
@@ -9488,7 +9507,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       history = [],
       aiProviderConfig = null,
       responseStyle = "detailed",
-      rawIndicators = null
+      rawIndicators = null,
+      marketRegimeContext = null
     } = req.body;
 
     const now = new Date();
@@ -9530,15 +9550,16 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       dominantDirectionRu,
       consensus5Str,
       dailyAtr,
-      entryPriceFormatted,
       entryRationale,
-      slFormatted,
       slRationale,
-      tp1Formatted,
       tp1Rationale,
-      tp2Formatted,
       tp2Rationale
     } = honestConsensus;
+
+    let entryPriceFormatted = honestConsensus.entryPriceFormatted;
+    let slFormatted = honestConsensus.slFormatted;
+    let tp1Formatted = honestConsensus.tp1Formatted;
+    let tp2Formatted = honestConsensus.tp2Formatted;
 
     // Raw indicator metrics for divergence detection and deep technical reasoning
     const rawRsi14 = Number(rawIndicators?.rsi14 ?? (isBull ? 54.2 : 44.8));
@@ -9560,25 +9581,93 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       ? (indicatorForecast.isBull ? "LONG" : "SHORT")
       : (isBull ? "LONG" : "SHORT");
 
-    const indEntry = indicatorForecast?.p1Entry
+    const rawIndEntry = indicatorForecast?.p1Entry
       ? Number(indicatorForecast.p1Entry).toFixed(dec)
       : entryPriceFormatted;
 
-    const indSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
+    let rawIndSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
       ? Number(indicatorForecast.activeTrailingSl || indicatorForecast.invalidLevelSl).toFixed(dec)
       : slFormatted;
 
-    const indTp1 = indicatorForecast?.p2Tp1
+    let rawIndTp1 = indicatorForecast?.p2Tp1
       ? Number(indicatorForecast.p2Tp1).toFixed(dec)
       : tp1Formatted;
 
-    const indTp2 = indicatorForecast?.p3Tp2
+    let rawIndTp2 = indicatorForecast?.p3Tp2
       ? Number(indicatorForecast.p3Tp2).toFixed(dec)
       : tp2Formatted;
 
+    const dailyAtrNum = Number(dailyAtr) || (ticker.includes("GOLD") || ticker.includes("XAU") ? 38.0 : ticker.includes("BTC") ? 1500.0 : 5.0);
+
+    // Strict mathematical check on Stop Loss:
+    // LONG: SL must be strictly below Entry (SL < Entry)
+    // SHORT: SL must be strictly above Entry (SL > Entry)
+    const indEntryNum = Number(rawIndEntry);
+    let indSlNum = Number(rawIndSl);
+    let indSlMathError = false;
+
+    if (indDirection === "LONG") {
+      if (indSlNum >= indEntryNum) {
+        indSlMathError = true;
+        // Inverted SL detected in LONG! Correct to safe SL = Entry - 1.0 ATR
+        indSlNum = Number((indEntryNum - Math.max(0.5, dailyAtrNum)).toFixed(dec));
+        rawIndSl = indSlNum.toFixed(dec);
+      }
+    } else { // SHORT
+      if (indSlNum <= indEntryNum) {
+        indSlMathError = true;
+        // Inverted SL detected in SHORT! Correct to safe SL = Entry + 1.0 ATR
+        indSlNum = Number((indEntryNum + Math.max(0.5, dailyAtrNum)).toFixed(dec));
+        rawIndSl = indSlNum.toFixed(dec);
+      }
+    }
+
+    const indEntry = rawIndEntry;
+    const indSl = rawIndSl;
+    const indTp1 = rawIndTp1;
+    const indTp2 = rawIndTp2;
+
+    // Strict mathematical check on slFormatted vs entryPriceFormatted
+    const curEntryVal = Number(entryPriceFormatted);
+    let curSlVal = Number(slFormatted);
+    if (isBull && curSlVal >= curEntryVal) {
+      curSlVal = Number((curEntryVal - Math.max(0.5, dailyAtrNum)).toFixed(dec));
+      slFormatted = curSlVal.toFixed(dec);
+    } else if (!isBull && curSlVal <= curEntryVal) {
+      curSlVal = Number((curEntryVal + Math.max(0.5, dailyAtrNum)).toFixed(dec));
+      slFormatted = curSlVal.toFixed(dec);
+    }
+
+    // Strict mathematical check on TP1 and TP2 hierarchy:
+    // LONG: Entry < TP1 < TP2
+    // SHORT: Entry > TP1 > TP2
+    let curTp1Val = Number(tp1Formatted);
+    let curTp2Val = Number(tp2Formatted);
+    if (isBull) {
+      if (curTp1Val <= curEntryVal) curTp1Val = Number((curEntryVal + Math.max(0.5, dailyAtrNum * 0.7)).toFixed(dec));
+      if (curTp2Val <= curTp1Val) curTp2Val = Number((curTp1Val + Math.max(0.5, dailyAtrNum * 0.8)).toFixed(dec));
+    } else {
+      if (curTp1Val >= curEntryVal) curTp1Val = Number((curEntryVal - Math.max(0.5, dailyAtrNum * 0.7)).toFixed(dec));
+      if (curTp2Val >= curTp1Val) curTp2Val = Number((curTp1Val - Math.max(0.5, dailyAtrNum * 0.8)).toFixed(dec));
+    }
+    tp1Formatted = curTp1Val.toFixed(dec);
+    tp2Formatted = curTp2Val.toFixed(dec);
+
+    const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
+    const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
+    const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
+    const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
+
+    // If entry was triggered by the indicator, the active position entry IS indEntry!
+    if (isEntryTriggered) {
+      entryPriceFormatted = indEntry;
+    }
+
     const indStopDist = Math.abs(Number(indEntry) - Number(indSl)).toFixed(dec);
     const indStopAtrRatio = Number(dailyAtr) > 0 ? (Number(indStopDist) / Number(dailyAtr)).toFixed(2) : "1.00";
-    const indProposalNotice = `Индикатор QUANTEX предлагает ${indDirection}. Вход: ${indEntry}, Стоп: ${indSl} (дистанция: ${indStopDist} п. / ${indStopAtrRatio} ATR), TP1: ${indTp1}`;
+    const indProposalNotice = indSlMathError
+      ? `⚠️ ВНИМАНИЕ: Индикатор QUANTEX выдал математически некорректный сигнал (${indDirection}: Вход ${indEntry}, Стоп ${indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl} — стоп ${indDirection === "LONG" ? "выше" : "ниже"} входа!). Программа автоматически скорректировала безопасный SL на ${indSl} (дистанция 1 ATR). Обязательно укажи эту ошибку индикатора!`
+      : `Индикатор QUANTEX предлагает ${indDirection}. Вход: ${indEntry}, Стоп: ${indSl} (дистанция: ${indStopDist} п. / ${indStopAtrRatio} ATR), TP1: ${indTp1}`;
 
     const marketInfo = getAssetMarketSchedule(ticker, now);
     const effectiveEvents = marketInfo.isWeekend
@@ -9592,10 +9681,6 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
     const entryPriceNum = Number(entryPriceFormatted);
     const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
 
-    const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
-    const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
-    const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
-    const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
     const hudStatus = indicatorForecast?.currentStatusText || (
       isPlanB
         ? "⚡ План Б — слом SL, жди разворот"
@@ -9701,7 +9786,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
         dateMsk,
         responseStyle: "autonomous",
         marketInfo,
-        liveWorldNews
+        liveWorldNews,
+        marketRegimeContext
       });
       const autonomousPlan = sanitizeTradePlanOutput(rawAutonomousPlan, sanitizeOpts);
       const autoProvider = "🤖 Автономный ИИ QUANTEX (Мировые данные 🌐)";
@@ -9841,13 +9927,25 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
       if (previousGex.dayCallWall) prevDayCw = Number(previousGex.dayCallWall);
       if (previousGex.monthPutWall) prevMonthPw = Number(previousGex.monthPutWall);
       if (previousGex.dayPutWall) prevDayPw = Number(previousGex.dayPutWall);
-    } else if (gexHistory.length > 0) {
-      const lastSnap = gexHistory[gexHistory.length - 1];
-      prevMonthCw = lastSnap.monthCallWall;
-      prevDayCw = lastSnap.dayCallWall;
-      prevMonthPw = lastSnap.monthPutWall;
-      prevDayPw = lastSnap.dayPutWall;
-    } else {
+    }
+    
+    // If previous still equals current, look back in in-memory history for the last distinct level
+    if (prevMonthCw === currentMonthCw && prevDayCw === currentDayCw && gexHistory.length > 0) {
+      const lastDiff = gexHistory.slice().reverse().find(s => 
+        (s.monthCallWall && s.monthCallWall !== currentMonthCw) ||
+        (s.dayCallWall && s.dayCallWall !== currentDayCw) ||
+        (s.monthPutWall && s.monthPutWall !== currentMonthPw) ||
+        (s.dayPutWall && s.dayPutWall !== currentDayPw)
+      );
+      if (lastDiff) {
+        prevMonthCw = lastDiff.monthCallWall || prevMonthCw;
+        prevDayCw = lastDiff.dayCallWall || prevDayCw;
+        prevMonthPw = lastDiff.monthPutWall || prevMonthPw;
+        prevDayPw = lastDiff.dayPutWall || prevDayPw;
+      }
+    }
+
+    if (prevMonthCw === currentMonthCw && prevDayCw === currentDayCw && gexHistory.length === 0) {
       // First boot: if price is testing or pressing into Day Call Wall (e.g. price ~4020-4030),
       // open interest migration has caused Month Call Wall to shift up (e.g. was 4120, became 4130)
       if (currentPriceNum >= currentDayCw - 5) {
@@ -9878,27 +9976,49 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const isCallWallRunningAway = (monthCwShift > 0 || dayCwShift > 0) || (currentPriceNum >= prevDayCw && monthCwShift >= 0);
     const isPutWallRunningAway = (monthPwShift < 0 || dayPwShift < 0) || (currentPriceNum <= prevDayPw && monthPwShift <= 0);
 
+    // -------------------------------------------------------------
+    // ↔️ ANTI-CHOP & TREND CONTEXT (RANGE DETECTION & GAMMA SQUEEZE)
+    // -------------------------------------------------------------
+    const isRangeModeDetected = Boolean(marketRegimeContext?.isRangeMode);
+    const rangeBounces = Number(marketRegimeContext?.totalBounces ?? 0);
+    const rangeBreakouts = Number(marketRegimeContext?.totalBreakouts ?? 0);
+
+    let antiChopTrendClause = "";
+    if (isRangeModeDetected) {
+      antiChopTrendClause = `Режим: Боковик. Уровни держат цену. Рекомендуется торговля от границ (отбой). (${rangeBounces} отскоков, ${rangeBreakouts} пробоев в коридоре [${currentDayPw} — ${currentDayCw}]).`;
+    } else if (isCallWallRunningAway || isPutWallRunningAway) {
+      antiChopTrendClause = `Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду.`;
+    } else {
+      antiChopTrendClause = isPositiveGamma
+        ? `Режим: Боковик. Уровни держат цену. Рекомендуется торговля от границ (отбой).`
+        : `Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду.`;
+    }
+
     let migrationDiagnosis = "";
     let migrationSummaryShort = "";
 
     if (isCallWallRunningAway) {
       migrationDiagnosis = `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх! Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel}). Дневной Call Wall: был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel}).
 Открытый интерес мигрирует выше вслед за ценой, дилеры вынуждены покупать базовый актив/фьючерсы для дельта-хеджа (Gamma Squeeze).
-⚠️ Шорт от старого пробитого уровня (${prevDayCw}) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН! Старый Call Wall превращается в поддержку (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень ${currentMonthCw}.`;
-      migrationSummaryShort = `ВНИМАНИЕ: Уровень убегает вверх (Месячный CW: ${prevMonthCw} ➔ ${currentMonthCw}). Тренд сильный, шорт от пробитого уровня ${prevDayCw} опасен. Рекомендую искать вход по тренду (LONG) к цели ${currentMonthCw}.`;
+⚠️ Шорт от старого пробитого уровня (${prevDayCw}) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН! Старый Call Wall превращается в поддержку (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень ${currentMonthCw}.
+${antiChopTrendClause}`;
+      migrationSummaryShort = `ВНИМАНИЕ: Уровень убегает вверх (Месячный CW: ${prevMonthCw} ➔ ${currentMonthCw}). Тренд сильный, шорт от пробитого уровня ${prevDayCw} опасен. Рекомендую искать вход по тренду (LONG) к цели ${currentMonthCw}. [${antiChopTrendClause}]`;
     } else if (isPutWallRunningAway) {
       migrationDiagnosis = `🚨 ВНИМАНИЕ: Уровень поддержки Put Wall убегает вниз! Месячный Put Wall: был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel}). Дневной Put Wall: был ${prevDayPw}, стал ${currentDayPw} (${dayPwShiftLabel}).
 Открытый интерес смещается вниз вслед за падением цены, дилеры хеджируются продажами фьючерсов (Negative Gamma Cascade).
-⚠️ Попытка поймать отскок (ножи) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНА! Старый Put Wall (${prevDayPw}) превращается в сопротивление, цель смещается к новому нижнему уровню ${currentMonthPw}.`;
-      migrationSummaryShort = `ВНИМАНИЕ: Поддержка убегает вниз (Месячный PW: ${prevMonthPw} ➔ ${currentMonthPw}). Давление продаж высокое, ловля ножей опасна. Рекомендую работать по тренду (SHORT) к цели ${currentMonthPw}.`;
-    } else if (isPositiveGamma) {
-      migrationDiagnosis = `✅ Режим Positive Gamma (+GEX): цена ${currentPriceNum} выше рубежа Zero-Flip (${currentFlip}). Уровни стабильны: Дневной Call Wall ${currentDayCw}, Put Wall ${currentDayPw}.
+⚠️ Попытка поймать отскок (ножи) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНА! Старый Put Wall (${prevDayPw}) превращается в сопротивление, цель смещается к новому нижнему уровню ${currentMonthPw}.
+${antiChopTrendClause}`;
+      migrationSummaryShort = `ВНИМАНИЕ: Поддержка убегает вниз (Месячный PW: ${prevMonthPw} ➔ ${currentMonthPw}). Давление продаж высокое, ловля ножей опасна. Рекомендую работать по тренду (SHORT) к цели ${currentMonthPw}. [${antiChopTrendClause}]`;
+    } else if (isRangeModeDetected || isPositiveGamma) {
+      migrationDiagnosis = `✅ Режим Positive Gamma / Боковик (+GEX): цена ${currentPriceNum} выше рубежа Zero-Flip (${currentFlip}). Уровни стабильны: Дневной Call Wall ${currentDayCw}, Put Wall ${currentDayPw}.
+${antiChopTrendClause}
 В положительной гамме дилеры гасят волатильность (продают на хаях, выкупают просадки). Опционные уровни ДЕРЖАТ цену — торгуем на отбой/откат от границ к центру диапазона.`;
-      migrationSummaryShort = `Positive Gamma: уровни держат цену (Дневной CW ${currentDayCw}, PW ${currentDayPw}). Торгуем на отбой от границ диапазона.`;
+      migrationSummaryShort = `${antiChopTrendClause} Уровни держат цену (Дневной CW ${currentDayCw}, PW ${currentDayPw}). Торгуем на отбой от границ диапазона.`;
     } else {
       migrationDiagnosis = `⚠️ Режим Negative Gamma (-GEX): цена ${currentPriceNum} ниже рубежа Zero-Flip (${currentFlip}).
+${antiChopTrendClause}
 Дилеры находятся в отрицательной гамме и продают при падении, разгоняя тренд. Опционные уровни ПРОБИВАЮТСЯ, движения ускоряются. Торговля на отбой контртренд ЗАПРЕЩЕНА — работаем строго по тренду.`;
-      migrationSummaryShort = `Negative Gamma: уровни пробиваются, тренд ускоряется. Работаем по тренду, контртренд запрещен.`;
+      migrationSummaryShort = `${antiChopTrendClause} Уровни пробиваются, тренд ускоряется. Работаем по тренду, контртренд запрещен.`;
     }
 
     // Save snapshot in history
@@ -9940,7 +10060,7 @@ ${webSearchStatusClause}
 
 ${interfaceProhibitionClause}
 
-ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX И РЕЖИМА ГАММЫ:
+ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX, РЕЖИМА ГАММЫ И АНТИ-ПИЛЫ:
 1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
    - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
    - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
@@ -9954,6 +10074,11 @@ ${interfaceProhibitionClause}
    - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно торговать на отбой.
    - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется. Учитывай это при ответе.
 
+4. АНТИ-ПИЛА И РЕЖИМ РЫНКА (ANTI-CHOP & TREND CONTEXT):
+   - ${antiChopTrendClause}
+   - Если рынок в Режиме Боковика: "Режим: Боковик. Уровни держат цену. Рекомендуется торговля от границ (отбой)."
+   - Если миграция / Gamma Squeeze: "Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду."
+
 ЖЕСТКИЕ ПРАВИЛА ОТВЕТА В РЕЖИМЕ ЧАТА (ОТВЕТЫ НА ВОПРОСЫ):
 1. Отвечай КРАТКО (2–4 емких предложения) и ТОЛЬКО НА СУТЬ ЗАДАННОГО ВОПРОСА!
 2. Если трейдер спрашивает про СОБЫТИЯ ДНЯ или НОВОСТИ — выдай список событий из переданного календаря с точным временем МСК. Не выдумывай отсутствующие события! Если новостей нет — напиши: «Свежих новостей за последние часы не поступало».
@@ -9965,7 +10090,7 @@ ${interfaceProhibitionClause}
    Ответь прямо и емко (2–3 предложения): укажи значения осциллятора RSI (${rawRsi14}), гистограммы MACD (${rawMacdHist}) и затухание дельты, объяснив причину расхождения пиков индикатора с движением цены. Без повторения календаря новостей и уровней GEX!
 8. Пиши простым языком практикующего трейдера без академической воды и без инструкций к программе.`
       : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
-ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX и их динамика сдвига, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
+ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX и их динамика сдвига, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD, режим боковика/тренда и новости).
 
 ${webSearchStatusClause}
 
@@ -9985,6 +10110,11 @@ ${interfaceProhibitionClause}
 3. ПРАВИЛО РЕЖИМА POSITIVE / NEGATIVE GAMMA:
    - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно и нужно торговать на отбой/откат от границ к центру диапазона.
    - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется дилерами. Торговля на отбой контртренд ЗАПРЕЩЕНА — торговать только ПО ТРЕНДУ (пробои) или дожидаться подтвержденного затухания.
+
+4. ПРАВИЛО АНТИ-ПИЛЫ И РЕЖИМА РЫНКА (ANTI-CHOP & TREND CONTEXT):
+   - ${antiChopTrendClause}
+   - Если Режим: Боковик — уровни держат цену, строго рекомендуй торговлю от границ (отбой).
+   - Если Режим: Сильный тренд (Gamma Squeeze) — уровни сдвигаются за ценой, торговля против тренда (отбой) категорически запрещена, ищи вход строго по тренду.
 
 ПРАВИЛА АУДИТА И ВЕРДИКТА:
 - Индикатор QUANTEX предлагает только предварительный проект сделки. Ты НЕ ДОЛЖЕН слепо копировать его сигналы!
@@ -10072,9 +10202,15 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
    - Тейк 1: ${tp1Formatted} (${tp1Rationale})
    - Тейк 2: ${tp2Formatted} (${tp2Rationale})`}
 
-⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ:
-Если вход сработал, а цель TP1 ещё не достигнута:
-Пиши: «В позиции: вход взят по ${entryPriceFormatted}. Ожидаем первую цель TP1 (${tp1Formatted}), стоп в безубытке.»
+⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ И АКТИВНОЙ ПОЗИЦИИ:
+- Статус сделки: ${isEntryTriggered ? `АКТИВНАЯ ПОЗИЦИЯ (фактический вход по индикатору состоялся по цене ${indEntry})` : `ОЖИДАНИЕ ВХОДА (вход еще не активирован)`}.
+${isEntryTriggered ? `
+- ВНИМАНИЕ: Сделка УЖЕ ОТКРЫТА по цене ${indEntry}!
+  * Если ты согласен с позицией, веди её: укажи вход строго ${indEntry} (Позиция активна), актуальный стоп ${indSl}, цели TP1 (${tp1Formatted}) и TP2 (${tp2Formatted}). Статус: «В позиции: вход взят по ${indEntry}. Ожидаем TP1 ${tp1Formatted}».
+  * Если ты НЕ согласен со сделкой (дивергенция, конфликт со старшими ТФ или риск выноса) и хочешь предложить другой уровень входа, ты ОБЯЗАН прямо написать:
+    «⚠️ Рекомендую закрыть позицию по индикатору (вход ${indEntry}) и перезайти по цене ${entryPriceFormatted}...»
+  * КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «В позиции», указывая при этом другую цену входа, как будто мы в нее вошли!` : `
+- Если сделка еще не открыта: ждем лимитный вход по цене ${entryPriceFormatted}. Статус: «⏳ Ждём вход @${entryPriceFormatted}».`}
 Категорически запрещено писать «TP1 взят», пока цена фактически не коснулась уровня TP1!
 
 ${scheduleRuleInstruction}
@@ -10139,6 +10275,7 @@ ${liveWorldNewsFormatted}
 2. 📊 ОПЦИОННЫЕ УРОВНИ GEX И ДИНАМИКА МИГРАЦИИ (LEVEL SHIFT):
 - Текущая цена: ${currentPrice} | Рубеж Zero-Flip: ${currentFlip}
 - Гамма-режим: ${isPositiveGamma ? "POSITIVE GAMMA (+GEX, цена ВЫШЕ Flip — дилеры гасят волатильность, уровни ДЕРЖАТ цену, торгуем на отбой)" : "NEGATIVE GAMMA (-GEX, цена НИЖЕ Flip — дилеры разгоняют тренд, уровни ПРОБИВАЮТСЯ, торговля на отбой ЗАПРЕЩЕНА)"}
+- Режим рынка (Anti-Chop & Trend): ${antiChopTrendClause}
 - Дневной Call Wall (0DTE/1D): был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel})
 - Дневной Put Wall (0DTE/1D): был ${prevDayPw}, стал ${currentDayPw} (${dayPwShiftLabel})
 - Месячный Call Wall (Monthly OPEX): был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
@@ -10813,6 +10950,7 @@ function generateAutonomousAiPlan(params: {
   responseStyle?: string;
   marketInfo?: MarketScheduleInfo;
   liveWorldNews?: LiveWorldNewsItem[];
+  marketRegimeContext?: any;
 }): string {
   const {
     ticker,
@@ -10829,16 +10967,43 @@ function generateAutonomousAiPlan(params: {
     dateMsk,
     responseStyle = "detailed",
     marketInfo = getAssetMarketSchedule(ticker, new Date()),
-    liveWorldNews = []
+    liveWorldNews = [],
+    marketRegimeContext = null
   } = params;
 
   const dec = ticker === "XRPUSDT" ? 4 : (ticker === "MOEX_GOLD" || ticker === "MOEX_MINI" || ticker.includes("XAU")) ? 1 : 2;
   const honest = computeHonest5TfConsensus(multiTfMetrics, indicatorForecast, Number(currentPrice), gex, dec, ticker);
   const isBull = honest.isBull;
-  const entry = honest.entryPriceFormatted;
-  const tp1 = honest.tp1Formatted;
-  const tp2 = honest.tp2Formatted;
-  const sl = honest.slFormatted;
+  const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
+  const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
+  const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
+  const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
+
+  let entry = (isEntryTriggered && indicatorForecast?.p1Entry)
+    ? Number(indicatorForecast.p1Entry).toFixed(dec)
+    : honest.entryPriceFormatted;
+  let tp1 = honest.tp1Formatted;
+  let tp2 = honest.tp2Formatted;
+  let sl = honest.slFormatted;
+
+  const dailyAtrNum = Number(honest.dailyAtr) || (Number(currentPrice) * 0.01);
+
+  // Strict mathematical check on SL vs Entry
+  if (isBull && Number(sl) >= Number(entry)) {
+    sl = (Number(entry) - Math.max(0.5, dailyAtrNum)).toFixed(dec);
+  } else if (!isBull && Number(sl) <= Number(entry)) {
+    sl = (Number(entry) + Math.max(0.5, dailyAtrNum)).toFixed(dec);
+  }
+
+  // Strict mathematical check on TP1 and TP2 hierarchy
+  if (isBull) {
+    if (Number(tp1) <= Number(entry)) tp1 = (Number(entry) + Math.max(0.5, dailyAtrNum * 0.7)).toFixed(dec);
+    if (Number(tp2) <= Number(tp1)) tp2 = (Number(tp1) + Math.max(0.5, dailyAtrNum * 0.8)).toFixed(dec);
+  } else {
+    if (Number(tp1) >= Number(entry)) tp1 = (Number(entry) - Math.max(0.5, dailyAtrNum * 0.7)).toFixed(dec);
+    if (Number(tp2) >= Number(tp1)) tp2 = (Number(tp1) - Math.max(0.5, dailyAtrNum * 0.8)).toFixed(dec);
+  }
+
   const prob = indicatorForecast?.probability ?? (isBull ? 84 : 86);
   const cw = gex?.callWall || (Number(currentPrice) * 1.015).toFixed(dec);
   const pw = gex?.putWall || (Number(currentPrice) * 0.985).toFixed(dec);
@@ -10847,10 +11012,6 @@ function generateAutonomousAiPlan(params: {
   const emHigh = gex?.expectedMove68?.high || (Number(currentPrice) * 1.01).toFixed(dec);
   const gexRegime = gex?.regime || "POSITIVE_GAMMA";
   const trailingStageStr = indicatorForecast?.trailingStageStr || "🛡️ Начальный SL";
-  const isEntryTriggered = Boolean(indicatorForecast?.leg1Hit ?? indicatorForecast?.entryTriggered);
-  const isTp1Hit = Boolean(indicatorForecast?.leg2Hit ?? indicatorForecast?.tp1Hit);
-  const isTp2Hit = Boolean(indicatorForecast?.leg3Hit ?? indicatorForecast?.tp2Hit);
-  const isPlanB = Boolean(indicatorForecast?.isPlanBActive);
   const distToTp1 = Math.abs(Number(currentPrice) - Number(tp1)).toFixed(dec);
 
   const humanStatusText = isPlanB
@@ -11443,7 +11604,7 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   const indEntry = indicatorForecast?.p1Entry
     ? Number(indicatorForecast.p1Entry).toFixed(dec)
     : entry;
-  const indSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
+  let indSl = (indicatorForecast?.activeTrailingSl || indicatorForecast?.invalidLevelSl)
     ? Number(indicatorForecast.activeTrailingSl || indicatorForecast.invalidLevelSl).toFixed(dec)
     : sl;
   const indTp1 = indicatorForecast?.p2Tp1
@@ -11451,10 +11612,23 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     : tp1;
 
   const dailyAtrVal = Number(honest.dailyAtr) || Math.abs(Number(cw) - Number(pw)) * 0.25 || 10;
+  
+  // Mathematical verification on indicator SL:
+  let indSlMathInverted = false;
+  if (indDirection === "LONG" && Number(indSl) >= Number(indEntry)) {
+    indSlMathInverted = true;
+    indSl = (Number(indEntry) - Math.max(0.5, dailyAtrVal)).toFixed(dec);
+  } else if (indDirection === "SHORT" && Number(indSl) <= Number(indEntry)) {
+    indSlMathInverted = true;
+    indSl = (Number(indEntry) + Math.max(0.5, dailyAtrVal)).toFixed(dec);
+  }
+
   const indStopDistVal = Math.abs(Number(indEntry) - Number(indSl));
   const indStopAtrRatioVal = dailyAtrVal > 0 ? (indStopDistVal / dailyAtrVal) : 1;
-  const isDivergence = indStopAtrRatioVal > 1.5 || indDirection !== (isBull ? "LONG" : "SHORT");
-  const verdictText = isDivergence
+  const isDivergence = indSlMathInverted || indStopAtrRatioVal > 1.5 || indDirection !== (isBull ? "LONG" : "SHORT");
+  const verdictText = indSlMathInverted
+    ? `ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (Индикатор выдал некорректный SL ${indDirection === "LONG" ? "выше" : "ниже"} входа. Скорректирован безопасный SL ${indSl} на дистанцию 1 ATR)`
+    : isDivergence
     ? `ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (стоп индикатора ${indStopDistVal.toFixed(dec)} п. (${indStopAtrRatioVal.toFixed(1)} ATR) превышает лимит риска / сигнал расходится с консенсусом 5 ТФ ${consensusSummary})`
     : `Согласен с индикатором (параметры риска и цели в пределах нормы)`;
 
@@ -11474,6 +11648,19 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   const monthPwVal = gex?.monthPutWall || (Number(pw) - 50).toFixed(dec);
   const isCwSqueeze = Number(currentPrice) >= Number(cw) - 5;
   const isPwSqueeze = Number(currentPrice) <= Number(pw) + 5;
+
+  const isRangeModeDetected = Boolean(marketRegimeContext?.isRangeMode);
+  const rangeBounces = Number(marketRegimeContext?.totalBounces ?? 0);
+  const rangeBreakouts = Number(marketRegimeContext?.totalBreakouts ?? 0);
+
+  const antiChopTrendNote = isRangeModeDetected
+    ? `Режим: Боковик. Уровни держат цену. Рекомендуется торговля от границ (отбой). (${rangeBounces} отскоков, ${rangeBreakouts} пробоев в коридоре [${pw} — ${cw}]).`
+    : (isCwSqueeze || isPwSqueeze)
+    ? `Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду.`
+    : isPosGamma
+    ? `Режим: Боковик (+GEX). Уровни держат цену. Рекомендуется торговля от границ (отбой).`
+    : `Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду.`;
+
   const gexMigrationNote = isCwSqueeze
     ? `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх вслед за ценой! Шорт от пробитого уровня ${cw} опасен (Gamma Squeeze). Рекомендуется искать вход по тренду (LONG) к следующей цели ${monthCwVal}.`
     : isPwSqueeze
@@ -11490,6 +11677,7 @@ ${formattedNewsFacts}
 - Put Wall (Поддержка): Дневной ${pw} | Месячный: ${monthPwVal}
 - Zero-Flip: ${autoFlip} | Max Pain: ${maxPain}
 - Гамма-режим: ${isPosGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
+- Режим рынка (Anti-Chop & Trend): ${antiChopTrendNote}
 - Динамика уровней:
   ${gexMigrationNote}
 
@@ -11504,6 +11692,7 @@ ${formattedNewsFacts}
 
 4. 📋 Торговый план (Аудит риск-менеджера):
 - Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1})
+- Режим рынка: ${antiChopTrendNote}
 - Мой вердикт: ${verdictText}
 - Торговый план:
   * Основной сценарий: ${isBull ? "LONG" : "SHORT"}

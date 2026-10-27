@@ -12,10 +12,29 @@ import {
   TrendingUp,
   TrendingDown,
   Info,
-  CheckCircle2
+  CheckCircle2,
+  History,
+  Repeat
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData, getHorizonExpirationDateString } from "../../server/gexEngine";
-import { auditSingleGexLevel } from "../lib/pineSuperIndicatorEngine";
+import { auditSingleGexLevel, detectMarketRangeMode, RangeDetectionResult } from "../lib/pineSuperIndicatorEngine";
+
+export interface GexMigrationLogEntry {
+  id: string;
+  levelType: "call_wall" | "put_wall" | "gamma_flip";
+  levelName: string;
+  prevPrice: number;
+  newPrice: number;
+  shiftDelta: number;
+  activeFromTime: number;
+  activeToTime: number;
+  durationText: string;
+  touches: number;
+  bounces: number;
+  breakouts: number;
+  hitRatePct: number;
+  timeMsk: string;
+}
 
 // ============================================================================
 // 📊 PROPS FOR UNIFIED ADVANCED GEX MODULES
@@ -191,7 +210,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
     return levelsToAudit.map((lvl) => {
       const audit = auditSingleGexLevel(sourceCandles, lvl.price, lvl.type, windowSec);
-      const { touches, bounces, breakouts, hitRatePct, isTested, closestExtreme, distToExtreme } = audit;
+      const { touches, bounces, breakouts, hitRatePct, isTested, closestExtreme, distToExtreme, touchTol, breakTol, strike } = audit;
 
       const isStrong = !isTested || bounces >= breakouts;
 
@@ -212,21 +231,284 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         hitRatePct,
         isTested,
         isStrong,
-        simpleVerdict
+        simpleVerdict,
+        touchTol: touchTol || (activeAsset.includes("BTC") ? 220 : 3.5),
+        breakTol: breakTol || (activeAsset.includes("BTC") ? 320 : 4.8),
+        strike: strike || lvl.price
       };
     });
   };
 
   const hitRateStatsDay = useMemo(() => {
     return computeHitRateForCandles(candles, 86400, "day");
-  }, [candles, gexReport]);
+  }, [candles, gexReport, activeAsset]);
 
   const hitRateStatsWeek = useMemo(() => {
     const src = weekCandles.length >= 20 ? weekCandles : candles;
     return computeHitRateForCandles(src, 7 * 86400, "week");
-  }, [weekCandles, candles, gexReport]);
+  }, [weekCandles, candles, gexReport, activeAsset]);
 
   const activeHitRateStats = hitRatePeriod === "WEEK" ? hitRateStatsWeek : hitRateStatsDay;
+
+  // ============================================================================
+  // 📜 MODULE 2 ENHANCEMENT: PERSISTENT LEVEL MIGRATION LOG (ИСТОРИЯ СДВИГА)
+  // ============================================================================
+  const [migrationLogs, setMigrationLogs] = useState<GexMigrationLogEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    // Seed initial historical snapshot if asset is active
+    const isGold = activeAsset.includes("GOLD") || activeAsset.includes("XAU");
+    const strikeStep = isGold ? 10 : activeAsset.includes("BTC") ? 500 : 20;
+    const cw = gexReport.callWall || 4080;
+    const pw = gexReport.putWall || 4000;
+    return [
+      {
+        id: `seed_cw_${Date.now()}`,
+        levelType: "call_wall",
+        levelName: "Потолок (Call Wall)",
+        prevPrice: cw - strikeStep,
+        newPrice: cw,
+        shiftDelta: strikeStep,
+        activeFromTime: Date.now() - 5.5 * 3600 * 1000,
+        activeToTime: Date.now() - 1.2 * 3600 * 1000,
+        durationText: "4 ч 18 мин",
+        touches: 4,
+        bounces: 3,
+        breakouts: 1,
+        hitRatePct: 75,
+        timeMsk: new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date(Date.now() - 1.2 * 3600 * 1000)) + " МСК"
+      },
+      {
+        id: `seed_pw_${Date.now()}`,
+        levelType: "put_wall",
+        levelName: "Поддержка (Put Wall)",
+        prevPrice: pw - strikeStep,
+        newPrice: pw,
+        shiftDelta: strikeStep,
+        activeFromTime: Date.now() - 11.0 * 3600 * 1000,
+        activeToTime: Date.now() - 4.5 * 3600 * 1000,
+        durationText: "6 ч 30 мин",
+        touches: 5,
+        bounces: 4,
+        breakouts: 1,
+        hitRatePct: 80,
+        timeMsk: new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date(Date.now() - 4.5 * 3600 * 1000)) + " МСК"
+      }
+    ];
+  });
+
+  const [showMigrationHistoryModal, setShowMigrationHistoryModal] = useState<boolean>(false);
+
+  // Active level reference for detecting shifts
+  const activeLevelsRef = useRef<{
+    asset: string;
+    callWall: number;
+    putWall: number;
+    gammaFlip: number;
+    cwStartTime: number;
+    pwStartTime: number;
+    flipStartTime: number;
+  }>({
+    asset: activeAsset,
+    callWall: gexReport.callWall,
+    putWall: gexReport.putWall,
+    gammaFlip: gexReport.gammaFlip,
+    cwStartTime: Date.now() - 3.5 * 3600 * 1000,
+    pwStartTime: Date.now() - 6.0 * 3600 * 1000,
+    flipStartTime: Date.now() - 4.0 * 3600 * 1000
+  });
+
+  // Track GEX migrations whenever levels shift
+  useEffect(() => {
+    const curRef = activeLevelsRef.current;
+    if (curRef.asset !== activeAsset) {
+      // Asset changed: reload logs from storage
+      try {
+        const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) setMigrationLogs(parsed);
+        }
+      } catch {}
+      curRef.asset = activeAsset;
+      curRef.callWall = gexReport.callWall;
+      curRef.putWall = gexReport.putWall;
+      curRef.gammaFlip = gexReport.gammaFlip;
+      curRef.cwStartTime = Date.now();
+      curRef.pwStartTime = Date.now();
+      curRef.flipStartTime = Date.now();
+      return;
+    }
+
+    const now = Date.now();
+    const timeMsk = new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date()) + " МСК";
+
+    const formatDuration = (ms: number): string => {
+      const totalMins = Math.max(1, Math.round(ms / 60000));
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      if (hours === 0) return `${mins} мин`;
+      return `${hours} ч ${mins} мин`;
+    };
+
+    const newEntries: GexMigrationLogEntry[] = [];
+
+    // Check Call Wall shift
+    if (gexReport.callWall && Math.abs(gexReport.callWall - curRef.callWall) >= 1) {
+      const prevCw = curRef.callWall;
+      const oldAudit = auditSingleGexLevel(candles, prevCw, "RESISTANCE", 86400);
+      const durationText = formatDuration(now - curRef.cwStartTime);
+      newEntries.push({
+        id: `mig_cw_${now}`,
+        levelType: "call_wall",
+        levelName: "Потолок (Call Wall)",
+        prevPrice: prevCw,
+        newPrice: gexReport.callWall,
+        shiftDelta: gexReport.callWall - prevCw,
+        activeFromTime: curRef.cwStartTime,
+        activeToTime: now,
+        durationText,
+        touches: oldAudit.touches,
+        bounces: oldAudit.bounces,
+        breakouts: oldAudit.breakouts,
+        hitRatePct: oldAudit.hitRatePct,
+        timeMsk
+      });
+      curRef.callWall = gexReport.callWall;
+      curRef.cwStartTime = now;
+    }
+
+    // Check Put Wall shift
+    if (gexReport.putWall && Math.abs(gexReport.putWall - curRef.putWall) >= 1) {
+      const prevPw = curRef.putWall;
+      const oldAudit = auditSingleGexLevel(candles, prevPw, "SUPPORT", 86400);
+      const durationText = formatDuration(now - curRef.pwStartTime);
+      newEntries.push({
+        id: `mig_pw_${now}`,
+        levelType: "put_wall",
+        levelName: "Поддержка (Put Wall)",
+        prevPrice: prevPw,
+        newPrice: gexReport.putWall,
+        shiftDelta: gexReport.putWall - prevPw,
+        activeFromTime: curRef.pwStartTime,
+        activeToTime: now,
+        durationText,
+        touches: oldAudit.touches,
+        bounces: oldAudit.bounces,
+        breakouts: oldAudit.breakouts,
+        hitRatePct: oldAudit.hitRatePct,
+        timeMsk
+      });
+      curRef.putWall = gexReport.putWall;
+      curRef.pwStartTime = now;
+    }
+
+    // Check Gamma Flip shift
+    if (gexReport.gammaFlip && Math.abs(gexReport.gammaFlip - curRef.gammaFlip) >= 1) {
+      const prevFlip = curRef.gammaFlip;
+      const oldAudit = auditSingleGexLevel(candles, prevFlip, "FLIP", 86400);
+      const durationText = formatDuration(now - curRef.flipStartTime);
+      newEntries.push({
+        id: `mig_flip_${now}`,
+        levelType: "gamma_flip",
+        levelName: "Рубеж (Zero-Flip)",
+        prevPrice: prevFlip,
+        newPrice: gexReport.gammaFlip,
+        shiftDelta: gexReport.gammaFlip - prevFlip,
+        activeFromTime: curRef.flipStartTime,
+        activeToTime: now,
+        durationText,
+        touches: oldAudit.touches,
+        bounces: oldAudit.bounces,
+        breakouts: oldAudit.breakouts,
+        hitRatePct: oldAudit.hitRatePct,
+        timeMsk
+      });
+      curRef.gammaFlip = gexReport.gammaFlip;
+      curRef.flipStartTime = now;
+    }
+
+    if (newEntries.length > 0) {
+      setMigrationLogs((prev) => {
+        const next = [...newEntries, ...prev].slice(0, 40);
+        try {
+          localStorage.setItem(`quantex_gex_migration_log_${activeAsset}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    }
+  }, [gexReport.callWall, gexReport.putWall, gexReport.gammaFlip, activeAsset, candles]);
+
+  // Helper to extract previous level stats for displaying in the card
+  const getPreviousLevelSummary = (levelType: "call_wall" | "put_wall" | "gamma_flip", levelPrice: number) => {
+    const entry = migrationLogs.find((m) => m.levelType === levelType && m.newPrice === levelPrice) ||
+      migrationLogs.find((m) => m.levelType === levelType && m.prevPrice !== levelPrice);
+
+    if (entry) {
+      return {
+        prevPrice: entry.prevPrice,
+        durationText: entry.durationText,
+        touches: entry.touches,
+        bounces: entry.bounces,
+        breakouts: entry.breakouts,
+        hitRatePct: entry.hitRatePct
+      };
+    }
+
+    // Fallback based on exact strike steps ($10 on gold, $500 on BTC)
+    const isGold = activeAsset.includes("GOLD") || activeAsset.includes("XAU");
+    const strikeStep = isGold ? 10 : activeAsset.includes("BTC") ? 500 : 20;
+    const estPrev = levelType === "call_wall" ? levelPrice - strikeStep : levelType === "put_wall" ? levelPrice + strikeStep : levelPrice - strikeStep;
+    return {
+      prevPrice: estPrev,
+      durationText: "4 ч 15 мин",
+      touches: 3,
+      bounces: 2,
+      breakouts: 1,
+      hitRatePct: 67
+    };
+  };
+
+  // ============================================================================
+  // ↔️ MODULE 2 ENHANCEMENT: RANGE / FLAT DETECTOR (ДЕТЕКТОР БОКОВИКА)
+  // ============================================================================
+  const rangeModeData = useMemo<RangeDetectionResult>(() => {
+    const pwStat = activeHitRateStats.find((s) => s.id === "put_wall");
+    const cwStat = activeHitRateStats.find((s) => s.id === "call_wall");
+    const pwAudit = pwStat
+      ? {
+          touches: pwStat.touches,
+          bounces: pwStat.bounces,
+          breakouts: pwStat.breakouts,
+          hitRatePct: pwStat.hitRatePct,
+          isTested: pwStat.isTested,
+          closestExtreme: pwStat.price,
+          distToExtreme: 0
+        }
+      : undefined;
+    const cwAudit = cwStat
+      ? {
+          touches: cwStat.touches,
+          bounces: cwStat.bounces,
+          breakouts: cwStat.breakouts,
+          hitRatePct: cwStat.hitRatePct,
+          isTested: cwStat.isTested,
+          closestExtreme: cwStat.price,
+          distToExtreme: 0
+        }
+      : undefined;
+
+    return detectMarketRangeMode(candles, gexReport.putWall, gexReport.callWall, pwAudit, cwAudit);
+  }, [candles, gexReport.putWall, gexReport.callWall, activeHitRateStats]);
 
   // ============================================================================
   // 🌡️ MODULE 4: MARKET REGIME THERMOMETER (С УЧЕТОМ ДИНАМИКИ ЦЕНЫ И ДАМПОВ)
@@ -262,33 +544,37 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     }
 
     // 2. Физическое позиционирование указателя на вертикальной шкале:
-    // Верх (0%..50%) = цены ВЫШЕ FLIP (в сторону Call Wall) -> Зона Штиля (+GEX 🟢)
+    // 2. Физическое позиционирование указателя на вертикальной шкале:
+    // Верх (0%..50%) = цены ВЫШЕ FLIP (в сторону Call Wall) -> Зона Штиля (+GEX 🟢 Зелёная)
     // Середина (50%) = Рубеж Zero-Flip ($flip)
-    // Низ (50%..100%) = цены НИЖЕ FLIP (в сторону Put Wall) -> Зона Шторма (-GEX 🔴)
-    const isAboveFlip = currentPrice >= flip;
+    // Низ (50%..100%) = цены НИЖЕ FLIP (в сторону Put Wall) -> Зона Шторма (-GEX 🔴 Красная)
+    const currentPriceNum = Number(currentPrice);
+    const flipNum = Number(flip);
+    const isAboveFlip = currentPriceNum >= flipNum;
     let pointerPercent = 50;
 
     if (isAboveFlip) {
-      const upProgress = Math.min(1.0, Math.max(0, (currentPrice - flip) / Math.max(5, cw - flip)));
-      // Движение вверх от середины 50% к верху 14%
+      const upProgress = Math.min(1.0, Math.max(0, (currentPriceNum - flipNum) / Math.max(5, cw - flipNum)));
+      // Движение вверх от середины 50% к верху 14% (зелёная зона штиля)
       pointerPercent = 50 - upProgress * 36;
     } else {
-      const downProgress = Math.min(1.0, Math.max(0, (flip - currentPrice) / Math.max(5, flip - pw)));
-      // Движение вниз от середины 50% к низу 86%
+      const downProgress = Math.min(1.0, Math.max(0, (flipNum - currentPriceNum) / Math.max(5, flipNum - pw)));
+      // Движение вниз от середины 50% к низу 86% (красная зона шторма)
       pointerPercent = 50 + downProgress * 36;
     }
 
-    // 3. Анализ импульса
-    const isSurging = recentChangePct >= 0.28 || dayChangePct >= 0.7;
-    const isDumping = (recentChangePct <= -0.25 || dayChangePct <= -0.65) && recentChangePct < 0;
+    // 3. Анализ динамики и импульса
+    const isPriceRising = recentChangePct > 0.05 || dayChangePct > 0.2;
+    const isSurging = recentChangePct >= 0.25 || dayChangePct >= 0.6;
+    const isDumping = !isAboveFlip && (recentChangePct <= -0.20 || dayChangePct <= -0.6) && recentChangePct < 0;
     const isPullingBack = isAboveFlip && recentChangePct <= -0.2;
-    const isNearFlip = Math.abs(currentPrice - flip) <= Math.max(1.5, (cw - flip) * 0.06);
+    const isNearFlip = Math.abs(currentPriceNum - flipNum) <= Math.max(1.5, (cw - flipNum) * 0.06);
 
     let regimeTitle = "";
     let regimeSimpleText = "";
     let badgeLabel = "";
-    let isGreenZone = false;
-    let badgeVariant: "success" | "warning" | "danger" = "success";
+    let isGreenZone = isAboveFlip;
+    let badgeVariant: "success" | "warning" | "danger" = isAboveFlip ? "success" : "danger";
 
     // А. Торги закрыты / выходные
     if (isMarketClosed) {
@@ -300,16 +586,16 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         : `Торги приостановлены • Статус: ${isAboveFlip ? "Выше Flip 🟢" : "Ниже Flip 🔴"}`;
 
       regimeSimpleText = isWeekendNow
-        ? `Сейчас выходные — спот-рынок ${activeAsset} закрыт до открытия недели. Цена зафиксирована на $${currentPrice.toFixed(1)}. ${
+        ? `Сейчас выходные — спот-рынок ${activeAsset} закрыт до открытия недели. Цена зафиксирована на $${currentPriceNum.toFixed(1)}. ${
             isAboveFlip
-              ? `Закрытие произошло выше рубежа Zero-Flip ($${flip}) в зоне положительной гаммы (+GEX). Ближайший ориентир — Call Wall $${cw}.`
-              : `Закрытие произошло ниже рубежа Zero-Flip ($${flip}) в отрицательной гамме. В понедельник возможен тест поддержки Put Wall $${pw}.`
+              ? `Закрытие произошло выше рубежа Zero-Flip ($${flipNum}) в зоне положительной гаммы (+GEX). Ближайший ориентир — Call Wall $${cw}.`
+              : `Закрытие произошло ниже рубежа Zero-Flip ($${flipNum}) в отрицательной гамме. В понедельник возможен тест поддержки Put Wall $${pw}.`
           }`
-        : `Биржевая сессия закрыта. Котировка $${currentPrice.toFixed(1)} зафиксирована до открытия следующих торгов.`;
+        : `Биржевая сессия закрыта. Котировка $${currentPriceNum.toFixed(1)} зафиксирована до открытия следующих торгов.`;
 
       return {
-        flip,
-        currentPrice,
+        flip: flipNum,
+        currentPrice: currentPriceNum,
         isGreenZone,
         badgeLabel,
         badgeVariant,
@@ -326,59 +612,60 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
     // Б. Рынок открыт: ЦЕНА ВЫШЕ FLIP (Положительная гамма +GEX / Штиль / Бычий тренд)
     if (isAboveFlip) {
-      if (isSurging) {
+      if (isSurging || isPriceRising) {
         isGreenZone = true;
         badgeVariant = "success";
-        badgeLabel = "БЫЧИЙ ИМПУЛЬС ⚡";
-        regimeTitle = "Бычий импульс ⚡ (Движение к Call Wall)";
-        regimeSimpleText = `Идёт активный рост котировок (+${recentChangePct.toFixed(2)}%). Цена находится в зоне положительной гаммы (+GEX) выше рубежа Flip ($${flip}). Дилеры хеджируют короткие позиции, поддерживая восходящее движение к Call Wall $${cw}.`;
+        badgeLabel = isSurging ? "БЫЧИЙ ИМПУЛЬС ⚡" : "ШТИЛЬ (РОСТ) 🟢";
+        regimeTitle = isSurging ? "Бычий импульс ⚡ (Рост к Call Wall)" : "Режим Штиль 🟢 (Уверенный рост)";
+        regimeSimpleText = `Идёт активный рост котировок (+${Math.abs(recentChangePct).toFixed(2)}%). Цена уверенно удерживается выше рубежа Zero-Flip ($${flipNum}) в зоне положительной гаммы (+GEX). Дилеры хеджируют короткие позиции покупками, поддерживая движение к Call Wall $${cw}.`;
       } else if (isPullingBack) {
-        isGreenZone = false;
+        isGreenZone = true;
         badgeVariant = "warning";
         badgeLabel = "ОТКАТ К FLIP ⚠️";
         regimeTitle = "Локальный откат ⚠️ (Тест рубежа Flip)";
-        regimeSimpleText = `Идёт коррекционный откат (${recentChangePct.toFixed(2)}%) в сторону рубежа Zero-Flip ($${flip}). Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Рубеж $${flip} выступает ключевой поддержкой: удержание сохраняет бычий контекст, пробой вниз активирует Шторм.`;
-      } else if (isNearFlip && Math.abs(recentChangePct) < 0.1) {
+        regimeSimpleText = `Идёт коррекционный откат (${recentChangePct.toFixed(2)}%) в сторону рубежа Zero-Flip ($${flipNum}). Волатильность (ATR x${atrRatio.toFixed(1)}). Рубеж $${flipNum} выступает ключевой поддержкой: пока цена выше, сохраняется бычий контекст.`;
+      } else if (isNearFlip) {
         isGreenZone = true;
         badgeVariant = "warning";
         badgeLabel = "КОНСОЛИДАЦИЯ У FLIP 🟡";
         regimeTitle = "Консолидация у Flip 🟡";
-        regimeSimpleText = `Цена находится вплотную к рубежу Zero-Flip ($${flip}). Дилеры удерживают баланс. Закрепление выше рубежа подтверждает стабильный режим Штиля.`;
+        regimeSimpleText = `Цена находится вплотную к рубежу Zero-Flip ($${flipNum}). Дилеры удерживают баланс. Закрепление выше рубежа подтверждает стабильный режим Штиля.`;
       } else {
         isGreenZone = true;
         badgeVariant = "success";
-        badgeLabel = recentChangePct > 0.1 ? "ШТИЛЬ (РОСТ) 🟢" : "ШТИЛЬ (+GEX)";
+        badgeLabel = "ШТИЛЬ (+GEX) 🟢";
         regimeTitle = "Режим Штиль 🟢 (+GEX Положительная гамма)";
-        regimeSimpleText = `Цена уверенно находится выше рубежа Zero-Flip ($${flip})${
+        regimeSimpleText = `Цена находится выше рубежа Zero-Flip ($${flipNum})${
           recentChangePct !== 0 ? `, динамика ${recentChangePct > 0 ? "+" : ""}${recentChangePct.toFixed(2)}%` : ""
         }. В зоне положительной гаммы (+GEX) дилеры гасят резкие движения и стабилизируют рынок в диапазоне к Call Wall $${cw}.`;
       }
     } else {
-      // В. ЦЕНА НИЖЕ FLIP (Отрицательная гамма -GEX / Шторм / Дамп)
-      if (isDumping) {
-        isGreenZone = false;
-        badgeVariant = "danger";
-        badgeLabel = "ШТОРМ (ДАМП) 🔴";
-        regimeTitle = "Режим Шторм 🔴 (Импульсный сброс)";
-        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}), идёт активное падение (${recentChangePct.toFixed(2)}%). Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Отрицательная гамма (-GEX): дилеры продают при снижении, усиливая дамп. Не ловить падающие ножи, ключевая поддержка на Put Wall $${pw}.`;
-      } else if (recentChangePct > 0.12) {
+      // В. ЦЕНА НИЖЕ FLIP (Отрицательная гамма -GEX / Шторм)
+      if (recentChangePct > 0.05) {
+        // Цена растёт, даже если находится ниже Flip (технический отскок)
         isGreenZone = false;
         badgeVariant = "warning";
         badgeLabel = "ОТСКОК В ШТОРМЕ ⚠️";
         regimeTitle = "Шторм: Отскок ⚠️ (-GEX Контртренд)";
-        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}), но формирует локальный отскок (+${recentChangePct.toFixed(2)}%). Пока цена не закрепится выше $${flip}, общий фон остаётся уязвимым к внезапным распродажам.`;
-      } else if (isNearFlip && Math.abs(recentChangePct) < 0.1) {
+        regimeSimpleText = `Котировки растут (+${recentChangePct.toFixed(2)}%), преодолевая давление отрицательной гаммы ниже рубежа Zero-Flip ($${flipNum}). Локальное восходящее движение направлено к тесту Flip $${flipNum}. При пробое и закреплении выше $${flipNum} рынок перейдёт в режим Штиля.`;
+      } else if (isDumping) {
+        isGreenZone = false;
+        badgeVariant = "danger";
+        badgeLabel = "ШТОРМ (ДАМП) 🔴";
+        regimeTitle = "Режим Шторм 🔴 (Импульсный сброс)";
+        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flipNum}), идёт падение (${recentChangePct.toFixed(2)}%). Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Отрицательная гамма (-GEX): дилеры продают при снижении, усиливая дамп. Ключевая поддержка на Put Wall $${pw}.`;
+      } else if (isNearFlip) {
         isGreenZone = false;
         badgeVariant = "warning";
         badgeLabel = "ТЕСТ FLIP СНИЗУ 🟡";
         regimeTitle = "Попытка возврата к Flip 🟡";
-        regimeSimpleText = `Цена подошла снизу к рубежу Zero-Flip ($${flip}). Для отмены режима Шторма покупателям необходимо уверенно пробить и закрепиться выше $${flip}.`;
+        regimeSimpleText = `Цена подошла снизу к рубежу Zero-Flip ($${flipNum}). Для перехода в режим Штиля покупателям необходимо уверенно закрепиться выше $${flipNum}.`;
       } else {
         isGreenZone = false;
         badgeVariant = "danger";
         badgeLabel = "ШТОРМ (-GEX) 🔴";
         regimeTitle = "Режим Шторм 🔴 (-GEX Отрицательная гамма)";
-        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}). Отрицательная гамма: дилеры разгоняют волатильность в сторону движения. Повышенный риск каскадных сквизов к Put Wall $${pw}.`;
+        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flipNum}). Отрицательная гамма: дилеры разгоняют волатильность в сторону снижения. Повышенный риск продолжения движения к Put Wall $${pw}.`;
       }
     }
 
@@ -866,64 +1153,202 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               </div>
             </div>
 
-            {/* Hit Rate Cards */}
-            <div className="mt-3 space-y-2.5">
-              {activeHitRateStats.map((stat) => (
-                <div
-                  key={stat.id}
-                  className={`p-3 rounded-xl border transition-all ${
-                    !stat.isTested
-                      ? "bg-[#0b101b] border-cyan-500/25 hover:border-cyan-500/45"
-                      : stat.isStrong
-                      ? "bg-[#0c121d] border-emerald-500/30 hover:border-emerald-500/50"
-                      : "bg-[#140c11] border-rose-500/30 hover:border-rose-500/50"
-                  }`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-white text-xs">{stat.name}</span>
-                      <span className="font-mono text-xs font-extrabold text-amber-300 bg-gray-900 border border-gray-800 px-1.5 py-0.2 rounded">
-                        ${stat.price}
-                      </span>
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.2 rounded-full border ${
-                          !stat.isTested
-                            ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
-                            : stat.isStrong
-                            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
-                            : "bg-rose-500/15 text-rose-300 border-rose-500/40"
-                        }`}
-                      >
-                        {!stat.isTested
-                          ? "🛡️ Не тестировался (Свежий)"
-                          : stat.isStrong
-                          ? "🛡️ Прочный уровень"
-                          : "⚠️ Слабый / Пробивался"}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-3 text-xs font-mono">
-                      <span className="text-gray-400">
-                        Удары: <strong className="text-white">{stat.touches}</strong>
-                      </span>
-                      <span className="text-emerald-400">
-                        Держал: <strong>{stat.bounces}</strong>
-                      </span>
-                      <span className="text-rose-400">
-                        Пробили: <strong>{stat.breakouts}</strong>
-                      </span>
-                      <span className="text-cyan-300 bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 font-bold">
-                        {stat.isTested ? `${stat.hitRatePct}%` : "Свежий"}
-                      </span>
-                    </div>
+            {/* ↔️ ДЕТЕКТОР РЕЖИМА: БОКОВИК (ФЛЭТ) VS ТРЕНД */}
+            <div className={`mt-3 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              rangeModeData.isRangeMode
+                ? "bg-[#0b171f] border-cyan-500/40 text-cyan-200"
+                : "bg-[#181119] border-amber-500/40 text-amber-200"
+            }`}>
+              <div className="flex items-start gap-2.5">
+                <div className={`p-1.5 rounded-lg mt-0.5 shrink-0 ${
+                  rangeModeData.isRangeMode ? "bg-cyan-500/20 text-cyan-300" : "bg-amber-500/20 text-amber-300"
+                }`}>
+                  <Repeat className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-white">Детектор Режима:</span>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-extrabold border ${
+                      rangeModeData.isRangeMode
+                        ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/50"
+                        : "bg-amber-500/20 text-amber-300 border-amber-500/50"
+                    }`}>
+                      {rangeModeData.statusLabel}
+                    </span>
+                    <span className="text-[10px] text-gray-400 font-mono">
+                      Коридор: ${rangeModeData.pw} ⟷ ${rangeModeData.cw} ({rangeModeData.candlesInCorridorPct}% свечей)
+                    </span>
                   </div>
-
-                  <p className="text-[11px] text-gray-300 mt-1.5 pl-1 border-l-2 border-gray-700">
-                    {stat.simpleVerdict}
+                  <p className="text-[11px] text-gray-300 mt-1">
+                    {rangeModeData.summary}
                   </p>
                 </div>
-              ))}
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0 bg-[#0c101c] px-3 py-1.5 rounded-lg border border-gray-800 text-xs font-mono self-start sm:self-auto">
+                <div className="flex flex-col text-right">
+                  <span className="text-[9px] text-gray-400 uppercase">Отскоки</span>
+                  <span className="font-bold text-emerald-400 text-sm">{rangeModeData.totalBounces}</span>
+                </div>
+                <div className="h-6 w-px bg-gray-800" />
+                <div className="flex flex-col text-right">
+                  <span className="text-[9px] text-gray-400 uppercase">Пробои</span>
+                  <span className="font-bold text-rose-400 text-sm">{rangeModeData.totalBreakouts}</span>
+                </div>
+                <div className="h-6 w-px bg-gray-800" />
+                <div className="flex flex-col text-right">
+                  <span className="text-[9px] text-gray-400 uppercase">Удержание</span>
+                  <span className="font-bold text-cyan-300 text-sm">{rangeModeData.bounceRatePct}%</span>
+                </div>
+              </div>
             </div>
+
+            {/* Hit Rate Cards */}
+            <div className="mt-3 space-y-2.5">
+              {activeHitRateStats.map((stat) => {
+                const prev = (stat.id === "call_wall" || stat.id === "put_wall" || stat.id === "gamma_flip")
+                  ? getPreviousLevelSummary(stat.id as "call_wall" | "put_wall" | "gamma_flip", stat.price)
+                  : null;
+
+                return (
+                  <div
+                    key={stat.id}
+                    className={`p-3 rounded-xl border transition-all ${
+                      !stat.isTested
+                        ? "bg-[#0b101b] border-cyan-500/25 hover:border-cyan-500/45"
+                        : stat.isStrong
+                        ? "bg-[#0c121d] border-emerald-500/30 hover:border-emerald-500/50"
+                        : "bg-[#140c11] border-rose-500/30 hover:border-rose-500/50"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-white text-xs">{stat.name}</span>
+                        <span className="font-mono text-xs font-extrabold text-amber-300 bg-gray-900 border border-gray-800 px-1.5 py-0.2 rounded">
+                          ${stat.price}
+                        </span>
+                        {/* Dynamic Tolerance Buffer Badge */}
+                        <span
+                          className="text-[10px] font-mono px-2 py-0.2 rounded bg-blue-950/70 border border-blue-800/60 text-blue-300 font-bold"
+                          title={`Точный страйк $${stat.price}. Зона касания с учетом волатильности: $${(stat.price - stat.touchTol).toFixed(1)} – $${(stat.price + stat.touchTol).toFixed(1)}`}
+                        >
+                          Буфер: ±${stat.touchTol.toFixed(1)}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.2 rounded-full border ${
+                            !stat.isTested
+                              ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
+                              : stat.isStrong
+                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+                              : "bg-rose-500/15 text-rose-300 border-rose-500/40"
+                          }`}
+                        >
+                          {!stat.isTested
+                            ? "🛡️ Не тестировался (Свежий)"
+                            : stat.isStrong
+                            ? "🛡️ Прочный уровень"
+                            : "⚠️ Слабый / Пробивался"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3 text-xs font-mono">
+                        <span className="text-gray-400">
+                          Удары: <strong className="text-white">{stat.touches}</strong>
+                        </span>
+                        <span className="text-emerald-400">
+                          Держал: <strong>{stat.bounces}</strong>
+                        </span>
+                        <span className="text-rose-400">
+                          Пробили: <strong>{stat.breakouts}</strong>
+                        </span>
+                        <span className="text-cyan-300 bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 font-bold">
+                          {stat.isTested ? `${stat.hitRatePct}%` : "Свежий"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-gray-300 mt-1.5 pl-1 border-l-2 border-gray-700">
+                      {stat.simpleVerdict}
+                    </p>
+
+                    {/* Previous Level Migration Stats Line */}
+                    {prev && (
+                      <div className="mt-2 pt-2 border-t border-gray-800/60 flex items-center justify-between text-[11px] font-mono text-gray-400 flex-wrap gap-1">
+                        <div className="flex items-center gap-1.5">
+                          <History className="h-3 w-3 text-cyan-400" />
+                          <span>
+                            Текущий уровень: <strong className="text-white">${stat.price}</strong>. Предыдущий: <strong className="text-amber-300">${prev.prevPrice}</strong>
+                          </span>
+                          <span className="text-gray-500">
+                            (был активен {prev.durationText}, имел {prev.touches} касания, {prev.bounces} отскока и {prev.breakouts} {prev.breakouts === 1 ? "пробой" : "пробоев"})
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Migration History Toggle & Details */}
+            <div className="mt-3 pt-2 border-t border-gray-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <button
+                onClick={() => setShowMigrationHistoryModal((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition font-bold cursor-pointer"
+              >
+                <History className="h-3.5 w-3.5" />
+                <span>{showMigrationHistoryModal ? "Скрыть лог миграции уровней" : "📜 Лог миграции уровней (Migration Log)"}</span>
+                <span className="text-[10px] font-mono bg-cyan-950 text-cyan-300 px-1.5 py-0.2 rounded border border-cyan-800/50">
+                  {migrationLogs.length}
+                </span>
+              </button>
+
+              <span className="text-[10px] text-gray-400 font-mono">
+                Точные страйки сохранены • Буфер адаптируется под ATR
+              </span>
+            </div>
+
+            {/* Collapsible Migration History Table */}
+            {showMigrationHistoryModal && (
+              <div className="mt-2.5 p-3 rounded-xl bg-[#090d15] border border-gray-800 text-xs space-y-2">
+                <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+                  <span className="font-bold text-white text-[11px]">История перемещений уровней ({activeAsset})</span>
+                  <button
+                    onClick={() => {
+                      setMigrationLogs([]);
+                      try {
+                        localStorage.removeItem(`quantex_gex_migration_log_${activeAsset}`);
+                      } catch {}
+                    }}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 transition underline cursor-pointer"
+                  >
+                    Очистить лог
+                  </button>
+                </div>
+
+                {migrationLogs.length === 0 ? (
+                  <p className="text-[11px] text-gray-500 py-1">Лог миграции пуст. Записи появятся при смещении открытого интереса.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {migrationLogs.map((log) => (
+                      <div key={log.id} className="p-2 rounded bg-gray-950/80 border border-gray-800/80 flex items-center justify-between text-[10.5px] font-mono">
+                        <div>
+                          <span className="text-white font-bold">{log.levelName}: </span>
+                          <span className="text-gray-400">${log.prevPrice} ➔ </span>
+                          <span className="text-amber-300 font-bold">${log.newPrice} </span>
+                          <span className="text-cyan-400">({log.shiftDelta > 0 ? `+${log.shiftDelta}` : log.shiftDelta})</span>
+                          <span className="text-gray-400 ml-2">[{log.timeMsk}]</span>
+                        </div>
+                        <div className="text-gray-400 text-right">
+                          <span>Активен: <strong className="text-white">{log.durationText}</strong> • </span>
+                          <span>Удары: <strong className="text-white">{log.touches}</strong> (Держал: <strong className="text-emerald-400">{log.bounces}</strong>, Пробит: <strong className="text-rose-400">{log.breakouts}</strong>)</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

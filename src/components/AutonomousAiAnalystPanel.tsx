@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Bot,
   Send,
@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { UserAccountItem } from "./UnifiedStationSettings";
+import { detectMarketRangeMode, auditSingleGexLevel } from "../lib/pineSuperIndicatorEngine";
 
 export interface MacroCalendarEvent {
   id?: string;
@@ -739,6 +740,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   });
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const tickerStateRef = useRef<TickerAiState>(tickerState);
+
+  useEffect(() => {
+    tickerStateRef.current = tickerState;
+  }, [tickerState]);
+
   const previousGexLevelsRef = useRef<Record<string, { monthCallWall?: number; dayCallWall?: number; monthPutWall?: number; dayPutWall?: number }>>({});
 
   // Track dynamic GEX shifts (Open Interest migration) across asset timeframes
@@ -749,24 +757,67 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const curMonthPw = Number(gexReport?.putWall);
     const curDayPw = Number(dayGexReport?.putWall);
 
-    const existing = previousGexLevelsRef.current[activeAsset];
-    if (existing) {
-      // If a level genuinely shifted, save the old one as previous
-      if (
-        (curMonthCw && existing.monthCallWall && curMonthCw !== existing.monthCallWall) ||
-        (curDayCw && existing.dayCallWall && curDayCw !== existing.dayCallWall) ||
-        (curMonthPw && existing.monthPutWall && curMonthPw !== existing.monthPutWall) ||
-        (curDayPw && existing.dayPutWall && curDayPw !== existing.dayPutWall)
-      ) {
-        // Keep existing as previous
+    if (!curMonthCw && !curDayCw) return;
+
+    try {
+      const storageKey = `quantex_gex_history_${activeAsset}`;
+      const raw = localStorage.getItem(storageKey);
+      let history: Array<{
+        monthCallWall?: number;
+        dayCallWall?: number;
+        monthPutWall?: number;
+        dayPutWall?: number;
+        timestamp: number;
+      }> = raw ? JSON.parse(raw) : [];
+
+      // Find last entry that had different values
+      const lastDiff = history.slice().reverse().find(h => 
+        (curMonthCw && h.monthCallWall && h.monthCallWall !== curMonthCw) ||
+        (curDayCw && h.dayCallWall && h.dayCallWall !== curDayCw) ||
+        (curMonthPw && h.monthPutWall && h.monthPutWall !== curMonthPw) ||
+        (curDayPw && h.dayPutWall && h.dayPutWall !== curDayPw)
+      );
+
+      if (lastDiff) {
+        previousGexLevelsRef.current[activeAsset] = {
+          monthCallWall: lastDiff.monthCallWall,
+          dayCallWall: lastDiff.dayCallWall,
+          monthPutWall: lastDiff.monthPutWall,
+          dayPutWall: lastDiff.dayPutWall
+        };
       }
-    } else if (curMonthCw || curDayCw) {
-      previousGexLevelsRef.current[activeAsset] = {
-        monthCallWall: curMonthCw,
-        dayCallWall: curDayCw,
-        monthPutWall: curMonthPw,
-        dayPutWall: curDayPw
-      };
+
+      // Check if current differs from latest recorded snapshot
+      const latest = history[history.length - 1];
+      const isNew = !latest || (
+        latest.monthCallWall !== curMonthCw ||
+        latest.dayCallWall !== curDayCw ||
+        latest.monthPutWall !== curMonthPw ||
+        latest.dayPutWall !== curDayPw
+      );
+
+      if (isNew) {
+        if (latest) {
+          // Latest now becomes previous!
+          previousGexLevelsRef.current[activeAsset] = {
+            monthCallWall: latest.monthCallWall,
+            dayCallWall: latest.dayCallWall,
+            monthPutWall: latest.monthPutWall,
+            dayPutWall: latest.dayPutWall
+          };
+        }
+        history.push({
+          monthCallWall: curMonthCw,
+          dayCallWall: curDayCw,
+          monthPutWall: curMonthPw,
+          dayPutWall: curDayPw,
+          timestamp: Date.now()
+        });
+        if (history.length > 25) history = history.slice(-25);
+        localStorage.setItem(storageKey, JSON.stringify(history));
+      }
+    } catch (e) {
+      console.warn("Notice tracking GEX history:", e);
     }
   }, [activeAsset, dayGexReport?.callWall, dayGexReport?.putWall, gexReport?.callWall, gexReport?.putWall]);
 
@@ -938,13 +989,20 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   }, [activeUsername]);
 
   // Save changes to localStorage per user and asset, and sync new messages to master history
-  const saveTickerState = (updated: TickerAiState, newMessageToAppend?: AiChatMessage) => {
-    setTickerState(updated);
-    try {
-      localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updated));
-    } catch (e) {
-      console.warn("Notice saving ticker state:", e);
-    }
+  const saveTickerState = useCallback((
+    updatedOrFn: TickerAiState | ((prev: TickerAiState) => TickerAiState),
+    newMessageToAppend?: AiChatMessage
+  ) => {
+    setTickerState(prev => {
+      const updated = typeof updatedOrFn === "function" ? updatedOrFn(prev) : updatedOrFn;
+      tickerStateRef.current = updated;
+      try {
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updated));
+      } catch (e) {
+        console.warn("Notice saving ticker state:", e);
+      }
+      return updated;
+    });
 
     if (newMessageToAppend) {
       const enrichedMsg: AiChatMessage = {
@@ -974,7 +1032,57 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         })
       }).catch(() => {});
     }
-  };
+  }, [activeUsername, activeAsset]);
+
+  // Robust chat append helper that guarantees user queries are NEVER overwritten by async closures
+  const appendChatMessage = useCallback((
+    msg: AiChatMessage,
+    extraUpdates?: Partial<TickerAiState>
+  ) => {
+    const enrichedMsg: AiChatMessage = {
+      ...msg,
+      asset: msg.asset || activeAsset,
+      username: msg.username || activeUsername,
+      timestamp: msg.timestamp || Date.now()
+    };
+
+    setTickerState(prev => {
+      const exists = prev.messages.some(m => m.id === enrichedMsg.id);
+      const nextMessages = exists ? prev.messages : [...prev.messages, enrichedMsg];
+      const nextState: TickerAiState = {
+        ...prev,
+        ...extraUpdates,
+        messages: nextMessages
+      };
+      tickerStateRef.current = nextState;
+      try {
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(nextState));
+      } catch (e) {
+        console.warn("Notice saving ticker state:", e);
+      }
+      return nextState;
+    });
+
+    setAllUserMessages(prev => {
+      const exists = prev.some(m => m.id === enrichedMsg.id);
+      const nextList = exists ? prev : [...prev, enrichedMsg];
+      try {
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_master_history`, JSON.stringify(nextList));
+      } catch {}
+      return nextList;
+    });
+
+    // Background persist to server
+    fetch("/api/ai-analyst/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: activeUsername,
+        message: enrichedMsg,
+        ticker: activeAsset
+      })
+    }).catch(() => {});
+  }, [activeUsername, activeAsset]);
 
   // Handle Clear Chat (Scope: current asset or all history for this user)
   const handleClearChat = async (scope: "current_asset" | "all_history") => {
@@ -999,9 +1107,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         };
 
         const updatedTicker: TickerAiState = {
-          ...tickerState,
+          ...tickerStateRef.current,
           messages: [welcomeMsg]
         };
+        tickerStateRef.current = updatedTicker;
         setTickerState(updatedTicker);
         localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
 
@@ -1041,9 +1150,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         };
 
         const updatedTicker: TickerAiState = {
-          ...tickerState,
+          ...tickerStateRef.current,
           messages: [welcomeMsg]
         };
+        tickerStateRef.current = updatedTicker;
         setTickerState(updatedTicker);
         localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
 
@@ -1090,12 +1200,47 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     return tickerState.messages;
   }, [chatViewMode, allUserMessages, tickerState.messages, historySearchQuery]);
 
-  // Scroll chat to bottom when messages update
+  // Robust scroll helper to ensure chat scrolls directly to bottom
+  const scrollToChatBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    if (chatScrollContainerRef.current) {
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior
+      });
+    }
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior, block: "end" });
+    }
+  }, []);
+
+  // When switching to Chat tab, immediately scroll to the bottom to the latest answer
   useEffect(() => {
     if (panelTab === "chat") {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      scrollToChatBottom("auto");
+      const rAf = requestAnimationFrame(() => {
+        scrollToChatBottom("auto");
+      });
+      const t1 = setTimeout(() => scrollToChatBottom("auto"), 50);
+      const t2 = setTimeout(() => scrollToChatBottom("auto"), 150);
+      const t3 = setTimeout(() => scrollToChatBottom("smooth"), 300);
+      return () => {
+        cancelAnimationFrame(rAf);
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
     }
-  }, [tickerState.messages, panelTab]);
+  }, [panelTab, scrollToChatBottom]);
+
+  // When new messages arrive while in Chat tab, scroll smoothly to bottom
+  useEffect(() => {
+    if (panelTab === "chat") {
+      const timer = setTimeout(() => {
+        scrollToChatBottom("smooth");
+      }, 30);
+      return () => clearTimeout(timer);
+    }
+  }, [tickerState.messages.length, allUserMessages.length, panelTab, scrollToChatBottom]);
 
   // Current MSK time string
   const currentMskTime = useMemo(() => {
@@ -1135,27 +1280,27 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     // Indicator HUD signal & direction (e.g. "SHORT 74%" or "LONG 82%")
     const hudAction = String(indicatorOutput?.hud?.recActionStr || "");
     const hudVerdict = String(indicatorOutput?.hud?.dowShortVerdict || "");
-    const isHudBearish = hudAction.includes("SHORT") || hudVerdict.includes("SHORT") || fc?.direction === "SHORT";
-    const isHudBullish = hudAction.includes("LONG") || hudVerdict.includes("LONG") || fc?.direction === "LONG";
+    const isHudBearish = hudAction.includes("SHORT") || hudVerdict.includes("SHORT");
+    const isHudBullish = hudAction.includes("LONG") || hudVerdict.includes("LONG");
 
-    // 15M: Local timeframe setup (can show local bounce / OTE pullback even when macro is SHORT)
-    const m15IsBull = fc ? Boolean(fc.isBull) : basePrice > ema20;
+    // 15M: Local timeframe setup (indicator tactical signal or local bounce / OTE pullback)
+    const m15IsBull = fc?.isBull !== undefined ? Boolean(fc.isBull) : basePrice >= ema20;
     const m15Trend = m15IsBull ? "BULLISH" : "BEARISH";
 
     // 30M: Intraday equilibrium (0.50 EQ)
-    const m30IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema20;
+    const m30IsBull = basePrice >= ema20;
     const m30Trend = m30IsBull ? "BULLISH" : "BEARISH";
 
     // 1H: Swing flow & FVG
-    const h1IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema50;
+    const h1IsBull = basePrice >= ema50;
     const h1Trend = h1IsBull ? "BULLISH" : "BEARISH";
 
-    // 4H: Major trend & 200 EMA
-    const h4IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema200;
+    // 4H: Major trend & 200 EMA (Honest evaluation: if price is below 200 EMA, 4H is strictly BEARISH)
+    const h4IsBull = isHudBearish ? false : isHudBullish ? true : (basePrice >= ema200);
     const h4Trend = h4IsBull ? "BULLISH" : "BEARISH";
 
-    // 1D: Global macro cycle & GEX boundaries
-    const d1IsBull = isHudBearish ? false : isHudBullish ? true : basePrice > ema200;
+    // 1D: Global macro cycle & GEX boundaries (Honest: price below 200 EMA or under Flip = BEARISH)
+    const d1IsBull = isHudBearish ? false : (basePrice >= ema200 && (!gexReport?.gammaFlip || basePrice >= gexReport.gammaFlip));
     const d1Trend = d1IsBull ? "BULLISH" : "BEARISH";
 
     // 5M: Scalping
@@ -1376,6 +1521,35 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
       const reliableCurrentPrice = currentPrice || candles[candles.length - 1]?.close || 4006.0;
 
+      // Calculate Market Regime Context (Range / Flat vs Trend / Squeeze)
+      const pwVal = Number(dayGexReport?.putWall || gexReport?.putWall || 4100);
+      const cwVal = Number(dayGexReport?.callWall || gexReport?.callWall || 4200);
+      const pwAudit = auditSingleGexLevel(candles, pwVal, "SUPPORT", 86400);
+      const cwAudit = auditSingleGexLevel(candles, cwVal, "RESISTANCE", 86400);
+      const rangeDetection = detectMarketRangeMode(candles, pwVal, cwVal, pwAudit, cwAudit);
+
+      let localMigrationHistory: any[] = [];
+      try {
+        const savedMig = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
+        if (savedMig) {
+          const parsed = JSON.parse(savedMig);
+          if (Array.isArray(parsed)) localMigrationHistory = parsed.slice(0, 5);
+        }
+      } catch {}
+
+      const marketRegimeContext = {
+        isRangeMode: rangeDetection.isRangeMode,
+        statusLabel: rangeDetection.statusLabel,
+        totalBounces: rangeDetection.totalBounces,
+        totalBreakouts: rangeDetection.totalBreakouts,
+        bounceRatePct: rangeDetection.bounceRatePct,
+        corridorSpan: rangeDetection.corridorSpan,
+        candlesInCorridorPct: rangeDetection.candlesInCorridorPct,
+        atrRatio: rangeDetection.atrRatio,
+        summary: rangeDetection.summary,
+        recentMigrations: localMigrationHistory
+      };
+
       const payload = {
         ticker: activeAsset,
         timeframe: activeTf,
@@ -1434,6 +1608,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         events: isWeekendInMsk() ? WEEKEND_CALENDAR_EVENTS : (calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS),
         latestNews: freshNewsContext,
         rawIndicators: computeRawTechnicalIndicators(candles, reliableCurrentPrice, activeAsset),
+        marketRegimeContext,
         mode,
         eventContext,
         userQuery: customUserPrompt || "",
@@ -1494,18 +1669,14 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         statusText: payload.indicatorForecast?.currentStatusText || undefined
       };
 
-      const updatedTickerState: TickerAiState = {
-        ...tickerState,
-        dailyPlan: mode === "daily_plan" || mode === "morning_brief" ? generatedPlanText : tickerState.dailyPlan || generatedPlanText,
-        dailyPlanTimestamp: mode === "daily_plan" || mode === "morning_brief" ? `${mskNow} МСК` : tickerState.dailyPlanTimestamp || `${mskNow} МСК`,
+      appendChatMessage(newAssistantMsg, {
+        dailyPlan: mode === "daily_plan" || mode === "morning_brief" ? generatedPlanText : tickerStateRef.current.dailyPlan || generatedPlanText,
+        dailyPlanTimestamp: mode === "daily_plan" || mode === "morning_brief" ? `${mskNow} МСК` : tickerStateRef.current.dailyPlanTimestamp || `${mskNow} МСК`,
         dailyPlanProvider: providerName,
-        dailyPlanSummary: parsedSummary,
-        messages: [...tickerState.messages, newAssistantMsg]
-      };
+        dailyPlanSummary: parsedSummary
+      });
 
-      saveTickerState(updatedTickerState, newAssistantMsg);
-
-      // Auto switch to plan tab if user asked for a plan
+      // Auto switch to plan tab if user asked for a plan, or stay in chat if query
       if (mode === "daily_plan" || mode === "morning_brief" || mode === "noon_update") {
         setPanelTab("plan");
       } else if (mode === "custom_query") {
@@ -1525,7 +1696,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         username: activeUsername
       });
       const newAssistantMsg: AiChatMessage = {
-        id: `msg_err_${Date.now()}`,
+        id: `msg_err_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         role: "assistant",
         badge: "⚡ Квант-план (Резерв)",
         text: fallback,
@@ -1535,12 +1706,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         asset: activeAsset,
         username: activeUsername
       };
-      saveTickerState({
-        ...tickerState,
-        dailyPlan: tickerState.dailyPlan || fallback,
-        dailyPlanTimestamp: tickerState.dailyPlanTimestamp || `${mskNow} МСК`,
-        messages: [...tickerState.messages, newAssistantMsg]
-      }, newAssistantMsg);
+      appendChatMessage(newAssistantMsg, {
+        dailyPlan: tickerStateRef.current.dailyPlan || fallback,
+        dailyPlanTimestamp: tickerStateRef.current.dailyPlanTimestamp || `${mskNow} МСК`
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -1722,7 +1891,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }).format(new Date());
 
     const userMsg: AiChatMessage = {
-      id: `user_${Date.now()}`,
+      id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       role: "user",
       badge: `👤 ${activeUsername}`,
       text: textToSend.trim(),
@@ -1732,14 +1901,15 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       username: activeUsername
     };
 
-    saveTickerState({
-      ...tickerState,
-      messages: [...tickerState.messages, userMsg]
-    }, userMsg);
+    // Immediately save user message safely
+    appendChatMessage(userMsg);
 
     if (!overrideText) {
       setInputQuery("");
     }
+
+    // Switch to Chat tab to see message and ensure user stays in chat
+    setPanelTab("chat");
 
     requestAiAnalysis("custom_query", textToSend.trim());
   };
@@ -2449,10 +2619,25 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 {copiedPlan ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             )}
+
+            {panelTab === "chat" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setClearScope(chatViewMode === "all_history" ? "all_history" : "current_asset");
+                  setIsClearModalOpen(true);
+                }}
+                className="py-1.5 px-2.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 border border-rose-600/60 hover:border-rose-500 text-rose-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-rose-950/40 active:scale-95 shrink-0"
+                title="Удалить переписку и историю чата с ИИ"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                <span>Удалить чат</span>
+              </button>
+            )}
           </div>
 
           {/* 4. Tab Body Area */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 font-sans text-xs">
+          <div ref={chatScrollContainerRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 font-sans text-xs">
             {/* TAB 1: DAILY TRADING PLAN */}
             {panelTab === "plan" && (
               <div className="space-y-3">
@@ -2576,18 +2761,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                       </button>
                     </div>
 
-                    {/* Clear Chat Button */}
+                    {/* Delete Chat Button */}
                     <button
                       type="button"
                       onClick={() => {
                         setClearScope(chatViewMode === "all_history" ? "all_history" : "current_asset");
                         setIsClearModalOpen(true);
                       }}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 hover:text-rose-100 border border-rose-800/60 hover:border-rose-600 text-[10.5px] font-bold transition cursor-pointer shadow-xs active:scale-95 shrink-0"
-                      title="Очистить историю чата ИИ-аналитика"
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-700/60 hover:border-rose-500 text-[11px] font-bold transition cursor-pointer shadow-xs active:scale-95 shrink-0"
+                      title="Удалить переписку и историю чата с ИИ"
                     >
                       <Trash2 className="h-3 w-3 text-rose-400" />
-                      <span>Очистить чат</span>
+                      <span>Удалить чат</span>
                     </button>
                   </div>
 
@@ -3183,7 +3368,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                   <Trash2 className="h-4 w-4" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-xs text-white">Очистить историю чата</h4>
+                  <h4 className="font-bold text-xs text-white">Удалить чат с ИИ</h4>
                   <span className="text-[10px] text-gray-400 font-mono">
                     Пользователь: <span className="text-cyan-300 font-bold">{activeUsername}</span>
                   </span>
@@ -3274,7 +3459,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-rose-600/30"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Очистить</span>
+                <span>Удалить чат</span>
               </button>
             </div>
           </div>

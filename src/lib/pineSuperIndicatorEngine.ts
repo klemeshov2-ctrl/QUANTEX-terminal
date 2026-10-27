@@ -57,6 +57,9 @@ export interface LevelAuditResult {
   isTested: boolean;
   closestExtreme: number;
   distToExtreme: number;
+  touchTol?: number;
+  breakTol?: number;
+  strike?: number;
 }
 
 export interface GexReportCalculated {
@@ -118,9 +121,25 @@ export function auditSingleGexLevel(
     activeCandles.reduce((acc, c) => acc + Math.max(0.0001, c.high - c.low), 0) /
     Math.max(1, activeCandles.length);
 
-  // Touch band and breakout threshold scaled to asset price and candle ATR
-  const touchTol = Math.max(levelPrice * 0.00035, Math.min(levelPrice * 0.0010, avgRange * 0.35));
-  const breakTol = Math.max(levelPrice * 0.00045, Math.min(levelPrice * 0.0012, avgRange * 0.42));
+  // Dynamic touch tolerance buffer (Tolerance Buffer) based on asset and ATR / volatility
+  // User requirement: For gold (price ~1500-6000), buffer is $3-$5 depending on volatility.
+  // E.g. touch at 4068 or 4072 counts as touch of strike 4070.
+  let touchTol: number;
+  let breakTol: number;
+
+  if (levelPrice >= 1500 && levelPrice <= 6000) {
+    // Gold / Precious metals: dynamic buffer $2.5 - $5.0 (scaled with avgRange)
+    touchTol = Math.max(2.5, Math.min(5.0, avgRange * 0.45));
+    breakTol = touchTol * 1.35;
+  } else if (levelPrice > 10000) {
+    // BTC / High value crypto: dynamic buffer $120 - $380
+    touchTol = Math.max(120, Math.min(380, avgRange * 0.45));
+    breakTol = touchTol * 1.35;
+  } else {
+    // General assets (FX, lower priced crypto): 0.10% - 0.25% or 0.45 avgRange
+    touchTol = Math.max(levelPrice * 0.0009, Math.min(levelPrice * 0.0028, avgRange * 0.45));
+    breakTol = touchTol * 1.35;
+  }
 
   let touches = 0;
   let bounces = 0;
@@ -220,7 +239,98 @@ export function auditSingleGexLevel(
     hitRatePct,
     isTested,
     closestExtreme,
-    distToExtreme
+    distToExtreme,
+    touchTol,
+    breakTol,
+    strike: levelPrice
+  };
+}
+
+export interface RangeDetectionResult {
+  isRangeMode: boolean;
+  totalBounces: number;
+  totalBreakouts: number;
+  bounceRatePct: number;
+  corridorSpan: number;
+  pw: number;
+  cw: number;
+  candlesInCorridorPct: number;
+  atrRatio: number;
+  statusLabel: string;
+  summary: string;
+}
+
+export function detectMarketRangeMode(
+  candles: Array<{ high: number; low: number; close: number }>,
+  pw: number,
+  cw: number,
+  pwAudit?: LevelAuditResult,
+  cwAudit?: LevelAuditResult
+): RangeDetectionResult {
+  if (!candles || candles.length < 8 || !pw || !cw || cw <= pw) {
+    return {
+      isRangeMode: false,
+      totalBounces: 0,
+      totalBreakouts: 0,
+      bounceRatePct: 0,
+      corridorSpan: 0,
+      pw: pw || 0,
+      cw: cw || 0,
+      candlesInCorridorPct: 0,
+      atrRatio: 1.0,
+      statusLabel: "НЕДОСТАТОЧНО ДАННЫХ",
+      summary: "Недостаточно данных для анализа боковика"
+    };
+  }
+
+  const corridorSpan = cw - pw;
+  const recent = candles.slice(-40);
+  
+  // Calculate ATR ratio (recent 12 vs baseline 40)
+  const recentRanges = recent.slice(-12).map(c => Math.max(0.01, c.high - c.low));
+  const recentAvg = recentRanges.reduce((a, b) => a + b, 0) / Math.max(1, recentRanges.length);
+  const baselineRanges = recent.map(c => Math.max(0.01, c.high - c.low));
+  const baselineAvg = baselineRanges.reduce((a, b) => a + b, 0) / Math.max(1, baselineRanges.length);
+  const atrRatio = baselineAvg > 0 ? recentAvg / baselineAvg : 1.0;
+
+  // Count candles inside corridor [pw - buffer, cw + buffer]
+  const touchBuffer = Math.max(corridorSpan * 0.05, 3.0);
+  let insideCount = 0;
+  for (const c of recent) {
+    if (c.high <= cw + touchBuffer && c.low >= pw - touchBuffer) {
+      insideCount++;
+    }
+  }
+  const candlesInCorridorPct = Math.round((insideCount / recent.length) * 100);
+
+  const totalBounces = (pwAudit?.bounces || 0) + (cwAudit?.bounces || 0);
+  const totalBreakouts = (pwAudit?.breakouts || 0) + (cwAudit?.breakouts || 0);
+  const totalInteractions = totalBounces + totalBreakouts;
+  const bounceRatePct = totalInteractions > 0 ? Math.round((totalBounces / totalInteractions) * 100) : 100;
+
+  // Range criteria:
+  // 1. At least 65% of candles stayed inside [pw, cw] corridor
+  // 2. ATR ratio <= 1.25 (not an accelerating trend / squeeze)
+  // 3. Level boundaries have held price (bounces >= breakouts or breakouts <= 1)
+  const isRangeMode = candlesInCorridorPct >= 65 && atrRatio <= 1.25 && (totalBreakouts <= 1 || totalBounces >= totalBreakouts);
+
+  const statusLabel = isRangeMode ? "РЕЖИМ БОКОВИКА (ФЛЭТ)" : "ТРЕНДОВЫЙ РЕЖИМ";
+  const summary = isRangeMode
+    ? `Рынок движется в боковике между Put Wall $${pw} и Call Wall $${cw} (${candlesInCorridorPct}% свечей в диапазоне). Уровни держат цену: ${totalBounces} отскоков, ${totalBreakouts} пробоев (${bounceRatePct}% удержаний). Рекомендуется торговля от границ на отбой.`
+    : `Рынок в направленном движении. Выход за границы диапазона $${pw}–$${cw} или расширение ATR (x${atrRatio.toFixed(1)}).`;
+
+  return {
+    isRangeMode,
+    totalBounces,
+    totalBreakouts,
+    bounceRatePct,
+    corridorSpan,
+    pw,
+    cw,
+    candlesInCorridorPct,
+    atrRatio,
+    statusLabel,
+    summary
   };
 }
 
