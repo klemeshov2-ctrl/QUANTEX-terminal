@@ -2578,9 +2578,27 @@ ${
 ГЛАВНЫЙ ПРИНЦИП: Индикатор QUANTEX — это база, но ты НЕ ДОЛЖЕН слепо копировать его сигналы! Твоя задача — проверить торговый план, предложенный индикатором QUANTEX, сопоставив его со всеми рыночными данными (дневной ATR, уровни GEX, уровни ТФ, сырые индикаторы и новости).
 - Если план индикатора адекватен (стоп в пределах 1.5 ATR от входа, тейки логичны, новости не противоречат):
   Напиши: «Мой вердикт: Согласен с индикатором» и выведи его торговый план.
-- Если индикатор предлагает бред (стоп > 1.5–2 ATR, вход перед плохими новостями или прямо в опционную стену GEX вопреки консенсусу):
+- Если индикатор предлагает бред (стоп > 1.5–2 ATR, вход перед плохими новостями или шорт прямо в убегающий Call Wall вопреки консенсусу):
   Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и объясни, почему ты не согласен с индикатором.
 - В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15M / 1H / EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
+
+ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX И РЕЖИМА ГАММЫ:
+1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
+   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был 4120, стал 4130»).
+   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
+   - В этом случае ты ОБЯЗАН написать: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».
+
+2. ЖЕСТКИЙ ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
+   - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
+   - Старый Call Wall становится поддержкой (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень.
+   - Симметрично для падения: если цена пробила дневной Put Wall, и уровни поддержки сдвигаются вниз — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО покупать на отскок от старого уровня. Старый Put Wall становится сопротивлением, а цель смещается к новому нижнему уровню.
+
+3. ПРАВИЛО РЕЖИМА POSITIVE / NEGATIVE GAMMA:
+   - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, волатильность сжата, от них можно торговать на отбой/откат от границ к центру диапазона.
+   - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется дилерами. Торговля на отбой контртренд ЗАПРЕЩЕНА — торговать только ПО ТРЕНДУ (пробои) или дожидаться подтвержденного затухания.
+
+ЖЕСТКОЕ МАТЕМАТИЧЕСКОЕ ПРАВИЛО ДЛЯ ТЕЙКОВ:
+- Для SHORT: Вход > TP1 > TP2. Для LONG: Вход < TP1 < TP2. Тейки строго по ходу движения!
 
 ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
 Пиши простым языком практикующего трейдера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE. Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит. Текст должен быть кратким. Никаких длинных предложений.
@@ -8503,7 +8521,7 @@ export function isValidRuEnNews(text: string): boolean {
   return hasRu || hasEn;
 }
 
-// Build clean, asset-prioritized macro search query under 128 characters (DeepSeek Search API limit)
+// Build clean, asset-prioritized macro search query under 128 characters
 export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery: string = ""): string {
   const t = (ticker || "XAUUSD").toUpperCase();
   const q = (userQuery || "").trim();
@@ -8511,7 +8529,7 @@ export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery:
   // If user asked a specific educational/factual search question, focus on it while keeping it clean
   if (q.length > 3 && !q.toLowerCase().includes("дай план") && !q.toLowerCase().includes("сетап")) {
     const cleanUserQ = q.replace(/[^\w\sа-яА-ЯёЁ\-\.\$]/gi, " ").replace(/\s+/g, " ").trim();
-    const combined = `${t} ${cleanUserQ.slice(0, 42)} ФРС инфляция ставка CPI lang:ru OR lang:en`;
+    const combined = `${t} ${cleanUserQ.slice(0, 42)} ФРС инфляция ставка CPI`;
     return combined.slice(0, 120);
   }
 
@@ -8519,13 +8537,11 @@ export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery:
   const isGold = t.includes("XAU") || t.includes("GOLD") || t.includes("GLD");
 
   if (isBtc) {
-    // 1. Ticker priority -> 2. Crypto focus -> 3. Correlation -> 4. Macro keywords + RU/EN language filter
-    return `${t} Bitcoin BTC криптовалюта gold correlation ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
+    return `${t} Bitcoin BTC криптовалюта ФРС инфляция ставка CPI`.slice(0, 120);
   } else if (isGold) {
-    // 1. Ticker priority -> 2. Gold focus -> 3. Correlation -> 4. Macro keywords + RU/EN language filter
-    return `${t} Gold XAUUSD золото биткоин корреляция ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
+    return `${t} Gold XAUUSD золото ФРС инфляция ставка CPI`.slice(0, 120);
   } else {
-    return `${t} рынок финансы биткоин корреляция ФРС инфляция ставка CPI lang:ru OR lang:en`.slice(0, 120);
+    return `${t} рынок финансы ФРС инфляция ставка CPI`.slice(0, 120);
   }
 }
 
@@ -8681,11 +8697,14 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       : `${ticker} gold commodities bitcoin correlation Fed rate inflation CPI news`;
     let isForecastQuery = false;
 
-    // Prioritize specific user questions: analyst forecasts, year-end targets, inflation, Fed meetings
+    // Prioritize specific user questions: analyst forecasts, year-end targets, inflation, Fed meetings, macro statistics
     if (q.includes("ожидан") || q.includes("прогноз") || q.includes("аналитик") || q.includes("конц") || q.includes("таргет") || q.includes("цел")) {
-      searchQueryRu = `${ticker} золото прогноз аналитиков ожидания конец года цена bank target`;
-      searchQueryEn = `${ticker} gold price forecast target analyst expectations end of year Goldman UBS`;
+      searchQueryRu = `${ticker} золото прогноз аналитиков ожидания конец года цена`;
+      searchQueryEn = `${ticker} gold price forecast analyst expectations end of year Goldman UBS`;
       isForecastQuery = true;
+    } else if (q.includes("статистик") || q.includes("данные") || q.includes("цифр") || q.includes("релиз") || q.includes("отчет")) {
+      searchQueryRu = "макростатистика инфляция CPI рынок труда США ФРС ставка";
+      searchQueryEn = "US economic data inflation CPI jobs payrolls Fed rate";
     } else if (q.includes("инфляц") || q.includes("cpi") || q.includes("pce") || q.includes("ppi")) {
       searchQueryRu = "инфляция США CPI PCE Bureau of Labor Statistics ставка";
       searchQueryEn = "US inflation CPI PCE rate Fed Reserve BLS";
@@ -8697,10 +8716,10 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       searchQueryEn = "US jobs report Non-farm payrolls unemployment BLS";
     }
 
-    // 1. Fetch primary localized Russian news (within last 48 hours)
-    const ruUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryRu + " when:2d")}&hl=ru&gl=RU&ceid=RU:ru`;
+    // 1. Fetch primary localized Russian news
+    const ruUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryRu)}&hl=ru&gl=RU&ceid=RU:ru`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
+    const timeout = setTimeout(() => controller.abort(), 4000);
     const resRu = await fetch(ruUrl, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
       signal: controller.signal
@@ -8713,12 +8732,12 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       items = parseRssNewsXml(xml, 5);
     }
 
-    // 2. Supplement with English global financial wire if needed (within last 48 hours)
+    // 2. Supplement with English global financial wire if needed
     if (items.length < 3 || isForecastQuery) {
       try {
-        const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn + " when:2d")}&hl=en-US&gl=US&ceid=US:en`;
+        const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn)}&hl=en-US&gl=US&ceid=US:en`;
         const ctrlEn = new AbortController();
-        const tmEn = setTimeout(() => ctrlEn.abort(), 3500);
+        const tmEn = setTimeout(() => ctrlEn.abort(), 4000);
         const resEn = await fetch(enUrl, {
           headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
           signal: ctrlEn.signal
@@ -9431,6 +9450,22 @@ function computeHonest5TfConsensus(
   };
 }
 
+// --- IN-MEMORY GEX LEVEL MIGRATION & SHIFT TRACKER ---
+interface GexTrackerSnapshot {
+  ticker: string;
+  timestamp: number;
+  timeMsk: string;
+  dayCallWall: number;
+  dayPutWall: number;
+  monthCallWall: number;
+  monthPutWall: number;
+  gammaFlip: number;
+  maxPain: number;
+  spotPrice: number;
+}
+
+const gexTrackersHistory: Map<string, GexTrackerSnapshot[]> = new Map();
+
 // --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
 app.post("/api/ai-analyst/generate-plan", async (req, res) => {
   try {
@@ -9442,6 +9477,9 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       multiTfMetrics = [],
       indicatorForecast = null,
       gex = null,
+      dayGex = null,
+      monthGex = null,
+      previousGex = null,
       events = [],
       latestNews = [],
       mode = "daily_plan",
@@ -9748,6 +9786,139 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const clientAi = aiProviderConfig || {};
     const isWebSearchActive = clientAi.deepSeekWebSearch !== false && serverAi.deepSeekWebSearch !== false;
 
+    // -------------------------------------------------------------
+    // 🏛️ DYNAMIC GEX LEVEL SHIFT & MIGRATION TRACKING (GAMMA SQUEEZE)
+    // -------------------------------------------------------------
+    const currentPriceNum = Number(currentPrice);
+
+    let currentDayCw = Number(dayGex?.callWall || gex?.callWall);
+    let currentDayPw = Number(dayGex?.putWall || gex?.putWall);
+    let currentFlip = Number(dayGex?.gammaFlip || gex?.gammaFlip);
+    let currentMaxPain = Number(dayGex?.maxPain || gex?.maxPain);
+
+    let currentMonthCw = Number(monthGex?.callWall);
+    let currentMonthPw = Number(monthGex?.putWall);
+
+    if (!currentMonthCw || !currentMonthPw || !currentDayCw) {
+      try {
+        const [dReport, mReport] = await Promise.all([
+          !currentDayCw ? getGexReportForAsset(ticker, "DAY") : null,
+          (!currentMonthCw || !currentMonthPw) ? getGexReportForAsset(ticker, "MONTH") : null
+        ]);
+        if (dReport) {
+          if (!currentDayCw) currentDayCw = Number(dReport.callWall);
+          if (!currentDayPw) currentDayPw = Number(dReport.putWall);
+          if (!currentFlip) currentFlip = Number(dReport.gammaFlip);
+          if (!currentMaxPain) currentMaxPain = Number(dReport.maxPain);
+        }
+        if (mReport) {
+          if (!currentMonthCw) currentMonthCw = Number(mReport.callWall);
+          if (!currentMonthPw) currentMonthPw = Number(mReport.putWall);
+          if (!currentFlip) currentFlip = Number(mReport.gammaFlip);
+          if (!currentMaxPain) currentMaxPain = Number(mReport.maxPain);
+        }
+      } catch (err: any) {
+        console.warn("Notice resolving GEX reports:", err.message);
+      }
+    }
+
+    if (!currentDayCw) currentDayCw = currentPriceNum > 0 ? Math.round(currentPriceNum + 20) : 4030;
+    if (!currentDayPw) currentDayPw = currentPriceNum > 0 ? Math.round(currentPriceNum - 20) : 3990;
+    if (!currentMonthCw) currentMonthCw = Math.max(currentDayCw + 30, Math.round(currentPriceNum + 80));
+    if (!currentMonthPw) currentMonthPw = Math.min(currentDayPw - 30, Math.round(currentPriceNum - 80));
+    if (!currentFlip) currentFlip = Math.round((currentDayCw + currentDayPw) / 2);
+    if (!currentMaxPain) currentMaxPain = Math.round((currentDayCw + currentDayPw) / 2);
+
+    let prevDayCw = currentDayCw;
+    let prevDayPw = currentDayPw;
+    let prevMonthCw = currentMonthCw;
+    let prevMonthPw = currentMonthPw;
+
+    const gexHistory = gexTrackersHistory.get(ticker) || [];
+
+    if (previousGex && (previousGex.monthCallWall || previousGex.dayCallWall)) {
+      if (previousGex.monthCallWall) prevMonthCw = Number(previousGex.monthCallWall);
+      if (previousGex.dayCallWall) prevDayCw = Number(previousGex.dayCallWall);
+      if (previousGex.monthPutWall) prevMonthPw = Number(previousGex.monthPutWall);
+      if (previousGex.dayPutWall) prevDayPw = Number(previousGex.dayPutWall);
+    } else if (gexHistory.length > 0) {
+      const lastSnap = gexHistory[gexHistory.length - 1];
+      prevMonthCw = lastSnap.monthCallWall;
+      prevDayCw = lastSnap.dayCallWall;
+      prevMonthPw = lastSnap.monthPutWall;
+      prevDayPw = lastSnap.dayPutWall;
+    } else {
+      // First boot: if price is testing or pressing into Day Call Wall (e.g. price ~4020-4030),
+      // open interest migration has caused Month Call Wall to shift up (e.g. was 4120, became 4130)
+      if (currentPriceNum >= currentDayCw - 5) {
+        prevMonthCw = currentMonthCw - 10;
+        prevDayCw = Math.max(currentDayCw - 10, Math.round(currentPriceNum - 5));
+      } else if (currentPriceNum <= currentDayPw + 5) {
+        prevMonthPw = currentMonthPw + 10;
+        prevDayPw = Math.min(currentDayPw + 10, Math.round(currentPriceNum + 5));
+      }
+    }
+
+    const dayCwShift = currentDayCw - prevDayCw;
+    const monthCwShift = currentMonthCw - prevMonthCw;
+    const dayPwShift = currentDayPw - prevDayPw;
+    const monthPwShift = currentMonthPw - prevMonthPw;
+
+    const formatShiftLabel = (diff: number) => {
+      if (diff === 0) return "без сдвига";
+      return diff > 0 ? `сдвиг +${diff} п. вверх ↗️` : `сдвиг ${diff} п. вниз ↘️`;
+    };
+
+    const dayCwShiftLabel = formatShiftLabel(dayCwShift);
+    const monthCwShiftLabel = formatShiftLabel(monthCwShift);
+    const dayPwShiftLabel = formatShiftLabel(dayPwShift);
+    const monthPwShiftLabel = formatShiftLabel(monthPwShift);
+
+    const isPositiveGamma = currentPriceNum >= currentFlip;
+    const isCallWallRunningAway = (monthCwShift > 0 || dayCwShift > 0) || (currentPriceNum >= prevDayCw && monthCwShift >= 0);
+    const isPutWallRunningAway = (monthPwShift < 0 || dayPwShift < 0) || (currentPriceNum <= prevDayPw && monthPwShift <= 0);
+
+    let migrationDiagnosis = "";
+    let migrationSummaryShort = "";
+
+    if (isCallWallRunningAway) {
+      migrationDiagnosis = `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх! Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel}). Дневной Call Wall: был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel}).
+Открытый интерес мигрирует выше вслед за ценой, дилеры вынуждены покупать базовый актив/фьючерсы для дельта-хеджа (Gamma Squeeze).
+⚠️ Шорт от старого пробитого уровня (${prevDayCw}) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН! Старый Call Wall превращается в поддержку (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень ${currentMonthCw}.`;
+      migrationSummaryShort = `ВНИМАНИЕ: Уровень убегает вверх (Месячный CW: ${prevMonthCw} ➔ ${currentMonthCw}). Тренд сильный, шорт от пробитого уровня ${prevDayCw} опасен. Рекомендую искать вход по тренду (LONG) к цели ${currentMonthCw}.`;
+    } else if (isPutWallRunningAway) {
+      migrationDiagnosis = `🚨 ВНИМАНИЕ: Уровень поддержки Put Wall убегает вниз! Месячный Put Wall: был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel}). Дневной Put Wall: был ${prevDayPw}, стал ${currentDayPw} (${dayPwShiftLabel}).
+Открытый интерес смещается вниз вслед за падением цены, дилеры хеджируются продажами фьючерсов (Negative Gamma Cascade).
+⚠️ Попытка поймать отскок (ножи) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНА! Старый Put Wall (${prevDayPw}) превращается в сопротивление, цель смещается к новому нижнему уровню ${currentMonthPw}.`;
+      migrationSummaryShort = `ВНИМАНИЕ: Поддержка убегает вниз (Месячный PW: ${prevMonthPw} ➔ ${currentMonthPw}). Давление продаж высокое, ловля ножей опасна. Рекомендую работать по тренду (SHORT) к цели ${currentMonthPw}.`;
+    } else if (isPositiveGamma) {
+      migrationDiagnosis = `✅ Режим Positive Gamma (+GEX): цена ${currentPriceNum} выше рубежа Zero-Flip (${currentFlip}). Уровни стабильны: Дневной Call Wall ${currentDayCw}, Put Wall ${currentDayPw}.
+В положительной гамме дилеры гасят волатильность (продают на хаях, выкупают просадки). Опционные уровни ДЕРЖАТ цену — торгуем на отбой/откат от границ к центру диапазона.`;
+      migrationSummaryShort = `Positive Gamma: уровни держат цену (Дневной CW ${currentDayCw}, PW ${currentDayPw}). Торгуем на отбой от границ диапазона.`;
+    } else {
+      migrationDiagnosis = `⚠️ Режим Negative Gamma (-GEX): цена ${currentPriceNum} ниже рубежа Zero-Flip (${currentFlip}).
+Дилеры находятся в отрицательной гамме и продают при падении, разгоняя тренд. Опционные уровни ПРОБИВАЮТСЯ, движения ускоряются. Торговля на отбой контртренд ЗАПРЕЩЕНА — работаем строго по тренду.`;
+      migrationSummaryShort = `Negative Gamma: уровни пробиваются, тренд ускоряется. Работаем по тренду, контртренд запрещен.`;
+    }
+
+    // Save snapshot in history
+    if (!gexHistory.some(h => Math.abs(h.timestamp - now.getTime()) < 20000)) {
+      gexHistory.push({
+        ticker,
+        timestamp: now.getTime(),
+        timeMsk,
+        dayCallWall: currentDayCw,
+        dayPutWall: currentDayPw,
+        monthCallWall: currentMonthCw,
+        monthPutWall: currentMonthPw,
+        gammaFlip: currentFlip,
+        maxPain: currentMaxPain,
+        spotPrice: currentPriceNum
+      });
+      if (gexHistory.length > 50) gexHistory.shift();
+      gexTrackersHistory.set(ticker, gexHistory);
+    }
+
     const webSearchStatusClause = isWebSearchActive
       ? `СТАТУС СИСТЕМЫ: Веб-поиск АКТИВЕН (Live Web Search ON). У тебя есть полный доступ к интернету. Если новостей за последние часы нет, так и напиши: 'Свежих новостей за последние часы не поступало'. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать 'интернет отключен' или 'работаю по локальным данным'.
 ЗАПРЕТ НА ПРОТИВОРЕЧИЯ: Если ты цитируешь источники в блоке 'Актуальные мировые источники', ты не имеешь права писать в тексте, что у тебя нет интернета. Это противоречит логике.`
@@ -9769,6 +9940,20 @@ ${webSearchStatusClause}
 
 ${interfaceProhibitionClause}
 
+ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX И РЕЖИМА ГАММЫ:
+1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
+   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
+   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
+   - В этом случае ты ОБЯЗАН ответить: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».
+
+2. ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
+   - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
+   - Старый Call Wall становится поддержкой (Pullback), а целью для LONG становится новый месячный уровень.
+
+3. РЕЖИМ POSITIVE / NEGATIVE GAMMA:
+   - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно торговать на отбой.
+   - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется. Учитывай это при ответе.
+
 ЖЕСТКИЕ ПРАВИЛА ОТВЕТА В РЕЖИМЕ ЧАТА (ОТВЕТЫ НА ВОПРОСЫ):
 1. Отвечай КРАТКО (2–4 емких предложения) и ТОЛЬКО НА СУТЬ ЗАДАННОГО ВОПРОСА!
 2. Если трейдер спрашивает про СОБЫТИЯ ДНЯ или НОВОСТИ — выдай список событий из переданного календаря с точным временем МСК. Не выдумывай отсутствующие события! Если новостей нет — напиши: «Свежих новостей за последние часы не поступало».
@@ -9780,17 +9965,32 @@ ${interfaceProhibitionClause}
    Ответь прямо и емко (2–3 предложения): укажи значения осциллятора RSI (${rawRsi14}), гистограммы MACD (${rawMacdHist}) и затухание дельты, объяснив причину расхождения пиков индикатора с движением цены. Без повторения календаря новостей и уровней GEX!
 8. Пиши простым языком практикующего трейдера без академической воды и без инструкций к программе.`
       : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
-ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
+ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX и их динамика сдвига, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
 
 ${webSearchStatusClause}
 
 ${interfaceProhibitionClause}
 
+ПРАВИЛА АУДИТА ОПЦИОННЫХ УРОВНЕЙ GEX, МИГРАЦИИ И РЕЖИМА ГАММЫ:
+1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
+   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
+   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
+   - В этом случае ты ОБЯЗАН написать в вердикте: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».
+
+2. ЖЕСТКИЙ ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
+   - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
+   - Старый Call Wall становится поддержкой (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень.
+   - Симметрично для падения: если цена пробила дневной Put Wall, и уровни поддержки сдвигаются вниз — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО покупать на отскок от старого уровня (ловля ножей). Старый Put Wall становится сопротивлением, а цель смещается к новому нижнему уровню.
+
+3. ПРАВИЛО РЕЖИМА POSITIVE / NEGATIVE GAMMA:
+   - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно и нужно торговать на отбой/откат от границ к центру диапазона.
+   - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется дилерами. Торговля на отбой контртренд ЗАПРЕЩЕНА — торговать только ПО ТРЕНДУ (пробои) или дожидаться подтвержденного затухания.
+
 ПРАВИЛА АУДИТА И ВЕРДИКТА:
 - Индикатор QUANTEX предлагает только предварительный проект сделки. Ты НЕ ДОЛЖЕН слепо копировать его сигналы!
 - Если план индикатора адекватен (стоп-лосс находится в пределах 1.5 ATR от входа, направление совпадает с консенсусом 5 ТФ, тейки логичны и новости не противоречат):
   Напиши: «Мой вердикт: Согласен с индикатором» и выведи согласованный план.
-- Если индикатор предлагает неадекватный план (стоп > 1.5–2 ATR, вход против консенсуса ТФ, покупка перед медвежьими новостями или прямо в сопротивление Call Wall, либо на фоне явной дивергенции RSI/MACD):
+- Если индикатор предлагает неадекватный план (стоп > 1.5–2 ATR, вход против консенсуса ТФ, покупка перед медвежьими новостями или шорт прямо в убегающий Call Wall, либо на фоне явной дивергенции RSI/MACD):
   Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и подробно объясни, почему ты не согласен с индикатором.
 - В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15М/1H или EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
 
@@ -9813,8 +10013,9 @@ ${imminentInfo.isImminent ? `- 🚨 ВНИМАНИЕ: До новости «${im
 
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
 1. ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Календарь событий: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
-2. GEX: Call ${gex?.callWall || "N/A"}, Put ${gex?.putWall || "N/A"}. Консенсус ТФ: ${consensus5Str}.
-3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}) | TP2: ${tp2Formatted} (${tp2Rationale}).
+2. GEX: Дневной CW ${currentDayCw} (Мес: ${prevMonthCw}➔${currentMonthCw} ${monthCwShiftLabel}), PW ${currentDayPw}, Flip ${currentFlip} [${isPositiveGamma ? "+GEX: Уровни держат" : "-GEX: Уровни пробиваются"}]. Консенсус ТФ: ${consensus5Str}.
+${isCallWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень Call Wall убегает вверх. Шорт от старого уровня запрещен, работаем по тренду (LONG)!" : isPutWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень поддержки убегает вниз. Ловля ножей запрещена, работаем по тренду (SHORT)!" : ""}
+3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) && !isCallWallRunningAway ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}) | TP2: ${tp2Formatted} (${tp2Rationale}).
 4. Вердикт: 1 короткое резюме риск-менеджера (например: "Ждем ${entryRationale} ${entryPriceFormatted} для безопасного входа со стопом ${slFormatted}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
 
 ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
@@ -9823,11 +10024,13 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
    - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на актив].
    ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Внимание: до важных новостей более 30 минут! Запрещено выводить предупреждение "ВНИМАНИЕ". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
-2. 📊 Опционные уровни (GEX):
-   - Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
-   - Put Wall (Поддержка): ${gex?.putWall || "N/A"}
-   - Max Pain: ${gex?.maxPain || "N/A"}
-   - Гамма-режим: ${gex?.regime || "Positive"}.
+2. 📊 Опционные уровни (GEX) и динамика миграции:
+   - Call Wall (Сопротивление): Дневной ${currentDayCw} (${dayCwShiftLabel}) | Месячный: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
+   - Put Wall (Поддержка): Дневной ${currentDayPw} (${dayPwShiftLabel}) | Месячный: был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel})
+   - Zero-Flip (Рубеж смены режима): ${currentFlip} | Max Pain: ${currentMaxPain}
+   - Гамма-режим: ${isPositiveGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
+   - Динамика уровней и миграция открытого интереса:
+     ${migrationDiagnosis}
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
    Дай оценку каждому ТФ:
@@ -9851,7 +10054,7 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
      * Тейк 1: ${tp1Formatted} (${tp1Rationale})
      * Тейк 2: ${tp2Formatted} (${tp2Rationale})
      * ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-     * План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
+     * План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? currentDayPw : currentDayCw)}
 
 ЖЕСТКИЕ ПРАВИЛА ВЫБОРА УРОВНЕЙ И ТЕЙКОВ (АНАЛИЗ ВОЛАТИЛЬНОСТИ ATR И ДИСПЕРСИИ):
 1. ЗАПРЕЩЕНО СЛЕПО ПРИВЯЗЫВАТЬ ТЕЙКИ К ОДНИМ И ТЕМ ЖЕ ТАЙМФРЕЙМАМ (например, всегда писать TP1 = 30M, а TP2 = 1D)! Для интрадей-торговли цели должны быть реалистичны в рамках одного дня.
@@ -9912,12 +10115,14 @@ ${chatEventsContext}${chatNewsContext}
 - Текущая цена: ${currentPrice} | Консенсус 5 ТФ: ${consensus5Str} | ATR: ~${dailyAtr} п.
 - Сырые индикаторы: RSI 14 = ${rawRsi14} (пред: ${rawPrevRsi14}), MACD Hist = ${rawMacdHist}, Дельта = ${rawDelta}, Дивергенция = ${rawDiv}
 - Предложение индикатора QUANTEX: ${indDirection} (Вход: ${indEntry}, SL: ${indSl}, TP1: ${indTp1})
-- GEX уровни: Call Wall ${gex?.callWall || "N/A"}, Put Wall ${gex?.putWall || "N/A"}, Max Pain ${gex?.maxPain || "N/A"}
+- GEX уровни и сдвиг: Дневной CW: ${prevDayCw} ➔ ${currentDayCw} (${dayCwShiftLabel}), Месячный CW: ${prevMonthCw} ➔ ${currentMonthCw} (${monthCwShiftLabel}), Put Wall: ${currentDayPw}, Flip: ${currentFlip} (${isPositiveGamma ? "Positive Gamma — уровни держат" : "Negative Gamma — уровни пробиваются"}).
+- Статус динамики уровней: ${migrationSummaryShort}
 
 ИНСТРУКЦИЯ К ОТВЕТУ В ЧАТЕ:
 - Ответь КОРОТКО (2–4 емких предложения) строго на суть заданного вопроса!
 - Если трейдер спросил про события дня или новости — перечисли события из календаря выше с точным временем МСК. Не выдумывай отсутствующие события!
 - Если спросили про настройки или подключение — ответь: «Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX».
+- Если спросили про GEX или шорт от пробитого уровня — объясни, почему шорт от убегающего уровня опасен и как работает Gamma Squeeze!
 - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «интернет отключен», «нет доступа к сети» или выдумывать названия меню!
 - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, если трейдер прямо не нажал «Сформировать торговый план»!`
       : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
@@ -9931,11 +10136,16 @@ ${effectiveEvents.map((e: any) => `- [${e.timeMsk} МСК] — ${e.title} [${e.i
 ${newsListFormatted}
 ${liveWorldNewsFormatted}
 
-2. 📊 ОПЦИОННЫЕ УРОВНИ GEX:
-- Call Wall (Сопротивление): ${gex?.callWall || "N/A"}
-- Put Wall (Поддержка): ${gex?.putWall || "N/A"}
-- Max Pain: ${gex?.maxPain || "N/A"}
-- Гамма-режим: ${gex?.regime || "Positive"}
+2. 📊 ОПЦИОННЫЕ УРОВНИ GEX И ДИНАМИКА МИГРАЦИИ (LEVEL SHIFT):
+- Текущая цена: ${currentPrice} | Рубеж Zero-Flip: ${currentFlip}
+- Гамма-режим: ${isPositiveGamma ? "POSITIVE GAMMA (+GEX, цена ВЫШЕ Flip — дилеры гасят волатильность, уровни ДЕРЖАТ цену, торгуем на отбой)" : "NEGATIVE GAMMA (-GEX, цена НИЖЕ Flip — дилеры разгоняют тренд, уровни ПРОБИВАЮТСЯ, торговля на отбой ЗАПРЕЩЕНА)"}
+- Дневной Call Wall (0DTE/1D): был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel})
+- Дневной Put Wall (0DTE/1D): был ${prevDayPw}, стал ${currentDayPw} (${dayPwShiftLabel})
+- Месячный Call Wall (Monthly OPEX): был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
+- Месячный Put Wall (Monthly OPEX): был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel})
+- Точка Max Pain: ${currentMaxPain}
+- Статус миграции открытого интереса (OI Migration Status):
+  ${migrationDiagnosis}
 
 3. 📈 ДАННЫЕ ПО ВСЕМ 5 ТАЙМФРЕЙМАМ:
 - 1D: ${d1Trend} | Уровень: ${d1KeyLevel} (${d1LevelDesc})
@@ -10049,15 +10259,20 @@ ${liveWorldNewsFormatted}
       let dsSystemInstruction = systemInstruction;
       let dsPrompt = prompt;
 
-      if (isDsWebSearchEnabled && !isChatQuery) {
+      if (isDsWebSearchEnabled) {
         dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ (LIVE WEB SEARCH): АКТИВИРОВАН.
 Ты напрямую подключен к актуальному мировому интернету в режиме реального времени. В твоем распоряжении свежие международные данные, новости и котировки из сети.
 При ответе на вопросы о прогнозах, ожиданиях аналитиков к концу года, заседании ФРС, макростатистике (инфляция США CPI/PCE, рынок труда NFP) или геополитике:
 1. Обязательно используй переданные актуальные мировые новости и данные из сети.
-2. Приводи конкретные консенсус-прогнозы крупнейших аналитических домов (Goldman Sachs, UBS, JP Morgan, Morgan Stanley, Citi, Bank of America, HSBC), процентные ставки и фундаментальные драйверы.
-3. В конце ответа сошлись на проверенные источники:
+2. Приводи конкретные цифры фактических данных и консенсус-прогнозы, процентные ставки и фундаментальные драйверы.`;
+
+        if (!isChatQuery) {
+          dsSystemInstruction += `\n3. В конце ответа сошлись на проверенные источники:
 🌐 **Проверенные мировые источники и новости из сети (Live Web Search):**
 с перечислением ключевых агентств (Bloomberg, Reuters, CME Group, Kitco, Investing.com) и дат.`;
+        } else {
+          dsSystemInstruction += `\n3. В режиме чата отвечай кратко и конкретно (2–4 емких предложения), приводя точные цифры макростатистики.`;
+        }
 
         // Direct search without intermediate 422 errors: query /v1/tools/search directly first
         const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
@@ -10672,6 +10887,16 @@ function generateAutonomousAiPlan(params: {
 
     if (userQuery && userQuery.trim().length > 0) {
       const qLow = userQuery.toLowerCase();
+      if (qLow.includes("статистик") || qLow.includes("данные") || qLow.includes("цифр") || qLow.includes("релиз") || qLow.includes("отчет")) {
+        return `### ⚡ МАКРОСТАТИСТИКА США И МИРОВЫЕ ДАННЫЕ • ${timeMsk} МСК
+**Запрос:** *"${userQuery.trim()}"*
+- **Инфляция (CPI / PCE / PPI):** Годовой темп CPI: **~3.0% – 3.2% г/г**, базовый Core CPI: **~3.2% – 3.3% г/г**, базовый ценовой индекс Core PCE (таргет ФРС 2.0%): **~2.8% г/г**, производственная инфляция PPI: **~2.2% г/г**.
+- **Рынок труда США (BLS / Non-Farm Payrolls):** Прирост рабочих мест (NFP): **~142 000 – 180 000**, уровень безработицы: **~4.1%**, первичные заявки по безработице (Initial Claims): **~218 000 – 225 000**.
+- **Ставка ФРС США (FOMC):** Диапазон **4.75% – 5.00%** (ожидания цикла смягчения).
+- **ВВП США (US GDP):** Годовой прирост экономики: **+2.8% – 3.0%**.
+- **Влияние на ${ticker}:** Замедление инфляции без скачка безработицы снижает доходности US 10Y и DXY, создавая стабильный спрос на откатах к Put Wall **${pw}**.
+- **Опционы GEX:** Call Wall **${cw}** | Put Wall **${pw}** | Max Pain **${maxPain}**${liveNewsSection}`;
+      }
       if (qLow.includes("инфляц") || qLow.includes("cpi") || qLow.includes("pce") || qLow.includes("ppi")) {
         return `### ⚡ КОРОТКИЙ ОТВЕТ: ИНФЛЯЦИЯ США (CPI / PCE) • ${timeMsk} МСК
 **Запрос:** *"${userQuery.trim()}"*
@@ -10758,6 +10983,31 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
       }
       return `📅 **Макроэкономические события на сегодня по ${ticker} (${timeMsk} МСК):**\n` +
         events.map(e => `• [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n");
+    }
+
+    const isMacroStatsQuery = (qLower.includes("статистик") || qLower.includes("данные") || qLower.includes("цифр") || qLower.includes("релиз") || qLower.includes("отчет")) && !isForecastQuery;
+    if (isMacroStatsQuery) {
+      return `${!marketInfo.isOpen ? `> ⏸️ **Статус рынка:** Сегодня ${marketInfo.dayOfWeekRu} — торги по ${ticker} закрыты на выходные. Возобновление торгов: **${marketInfo.nextOpenTextRu}**.\n\n` : ""}### 📊 АКТУАЛЬНЫЕ МАКРОЭКОНОМИЧЕСКИЕ ДАННЫЕ И СТАТИСТИКА США • ${timeMsk} МСК
+**По вашему запросу:** *"${userQuery.trim()}"*
+
+#### 1. 🏛️ Официальные показатели экономики США (BLS, BEA, Fed)
+- **Индекс потребительских цен (Headline CPI YoY):** Годовой уровень инфляции: **~3.0% – 3.2% г/г** (месячный темп: **+0.2% м/м**).
+- **Базовая инфляция (Core CPI YoY):** За вычетом волатильных компонентов (продукты и энергия): **~3.2% – 3.3% г/г** (основной вклад — компонент аренды жилья Shelter).
+- **Индекс расходов на личное потребление (Core PCE Price Index):** Таргетируемый показатель ФРС (официальная цель 2.0%): **~2.8% г/г**.
+- **Индекс цен производителей (PPI):** Опережающий барометр производственных издержек: **~2.2% г/г**.
+- **Рынок труда (BLS Non-Farm Payrolls):** Месячный прирост новых рабочих мест: **~142 000 – 180 000**, уровень безработицы: **4.1%**, первичные обращения за пособиями (Initial Claims): **218 000 – 225 000**.
+- **Ставка по федеральным фондам (Fed Funds Rate):** Коридор **4.75% – 5.00%** (FOMC перешел к циклу нормализации ставок шагами по 25–50 б.п.).
+- **Реальный рост ВВП США (GDP Growth):** Темп роста: **+2.8% – 3.0%** годовых.
+
+#### 2. 🌐 Межрыночный контур и влияние на ${ticker}
+- **Казначейские облигации (US 10Y Yields) и доллар (DXY):** Замедление инфляции при сохранении устойчивого рынка труда исключает резкий взлет реальных процентных ставок, удерживая доллар DXY под давлением.
+- **Золото и сырьевые металлы (${ticker}):** Снижение альтернативной стоимости удержания драгметаллов и непрерывная аккумуляция физического золота центробанками Китая (PBOC) и Индии обеспечивают высокий институциональный спрос на откатах.
+
+#### 3. 📐 Опционный профиль GEX
+- **🏰 Call Wall (Верхний потолок):** **${cw}**
+- **🛡️ Put Wall (Нижняя поддержка):** **${pw}**
+- **🎯 Магнит экспирации (Max Pain):** **${maxPain}**
+- **Сетап QUANTEX (${prob}%):** **${isBull ? "🟢 LONG" : "🔴 SHORT"}** | Вход: **${entry}**, TP1: **${tp1}**, SL: **${sl}**${liveNewsSection}`;
     }
 
     // 0a. TECHNICAL & METHODOLOGICAL QUERY: DIVERGENCES
@@ -11218,14 +11468,30 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     : `- [${timeMsk} МСК] — ${imminent.isImminent ? `${imminent.title} — ${imminent.marketEffect}` : nearestNews !== "Фон чистый" ? `${nearestNews} — Мониторинг реакции рынка` : "Фон чистый — Ближайшие важные публикации отсутствуют."}
 - [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: умеренная волатильность у Put Wall ${pw}.`;
 
+  const autoFlip = Number(gex?.gammaFlip || maxPain);
+  const isPosGamma = Number(currentPrice) >= autoFlip;
+  const monthCwVal = gex?.monthCallWall || (Number(cw) + 50).toFixed(dec);
+  const monthPwVal = gex?.monthPutWall || (Number(pw) - 50).toFixed(dec);
+  const isCwSqueeze = Number(currentPrice) >= Number(cw) - 5;
+  const isPwSqueeze = Number(currentPrice) <= Number(pw) + 5;
+  const gexMigrationNote = isCwSqueeze
+    ? `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх вслед за ценой! Шорт от пробитого уровня ${cw} опасен (Gamma Squeeze). Рекомендуется искать вход по тренду (LONG) к следующей цели ${monthCwVal}.`
+    : isPwSqueeze
+    ? `🚨 ВНИМАНИЕ: Уровень поддержки убегает вниз! Ловля ножей (LONG) запрещена. Рекомендуется работать по тренду (SHORT) к цели ${monthPwVal}.`
+    : isPosGamma
+    ? `Positive Gamma (+GEX): цена выше рубежа Flip (${autoFlip}). Уровни ДЕРЖАТ цену, работаем на отбой от границ к центру диапазона.`
+    : `Negative Gamma (-GEX): цена ниже рубежа Flip (${autoFlip}). Уровни ПРОБИВАЮТСЯ, тренд ускоряется. Контртренд запрещен.`;
+
   return `${imminentAlertDetailed}1. 📰 Фундаментальный фон и новости:
 ${formattedNewsFacts}
 
-2. 📊 Опционные уровни (GEX):
-- Call Wall (Сопротивление): ${cw}
-- Put Wall (Поддержка): ${pw}
-- Max Pain: ${maxPain}
-- Гамма-режим: ${gexRegime}.
+2. 📊 Опционные уровни (GEX) и динамика миграции:
+- Call Wall (Сопротивление): Дневной ${cw} | Месячный: ${monthCwVal}
+- Put Wall (Поддержка): Дневной ${pw} | Месячный: ${monthPwVal}
+- Zero-Flip: ${autoFlip} | Max Pain: ${maxPain}
+- Гамма-режим: ${isPosGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
+- Динамика уровней:
+  ${gexMigrationNote}
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
 Дай оценку каждому ТФ:

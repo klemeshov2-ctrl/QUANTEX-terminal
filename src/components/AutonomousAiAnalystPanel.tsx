@@ -631,9 +631,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         const res = await fetch("/api/settings/unified");
         if (res.ok) {
           const data = await res.json();
-          if (data && data.ai) {
+          const serverAi = data?.settings?.ai || data?.ai;
+          if (serverAi) {
             setProviderSettings(prev => {
-              const serverAi = data.ai;
               const serverGeminiKey = cleanApiKeyHelper(serverAi.geminiApiKey);
               const serverDsKey = serverAi.deepSeekApiKey || "";
               const effectiveGeminiKey = cleanApiKeyHelper(prev.geminiApiKey) || serverGeminiKey;
@@ -739,6 +739,36 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   });
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const previousGexLevelsRef = useRef<Record<string, { monthCallWall?: number; dayCallWall?: number; monthPutWall?: number; dayPutWall?: number }>>({});
+
+  // Track dynamic GEX shifts (Open Interest migration) across asset timeframes
+  useEffect(() => {
+    if (!activeAsset) return;
+    const curMonthCw = Number(gexReport?.callWall);
+    const curDayCw = Number(dayGexReport?.callWall);
+    const curMonthPw = Number(gexReport?.putWall);
+    const curDayPw = Number(dayGexReport?.putWall);
+
+    const existing = previousGexLevelsRef.current[activeAsset];
+    if (existing) {
+      // If a level genuinely shifted, save the old one as previous
+      if (
+        (curMonthCw && existing.monthCallWall && curMonthCw !== existing.monthCallWall) ||
+        (curDayCw && existing.dayCallWall && curDayCw !== existing.dayCallWall) ||
+        (curMonthPw && existing.monthPutWall && curMonthPw !== existing.monthPutWall) ||
+        (curDayPw && existing.dayPutWall && curDayPw !== existing.dayPutWall)
+      ) {
+        // Keep existing as previous
+      }
+    } else if (curMonthCw || curDayCw) {
+      previousGexLevelsRef.current[activeAsset] = {
+        monthCallWall: curMonthCw,
+        dayCallWall: curDayCw,
+        monthPutWall: curMonthPw,
+        dayPutWall: curDayPw
+      };
+    }
+  }, [activeAsset, dayGexReport?.callWall, dayGexReport?.putWall, gexReport?.callWall, gexReport?.putWall]);
 
   // Save Provider Settings
   const handleSaveProviderSettings = () => {
@@ -1398,6 +1428,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           expectedMove95: dayGexReport?.expectedMove95 || gexReport?.expectedMove95 || { low: 4105, high: 4220 },
           pcrOi: dayGexReport?.pcrOi || gexReport?.pcrOi || 0.85
         },
+        dayGex: dayGexReport || null,
+        monthGex: gexReport || null,
+        previousGex: previousGexLevelsRef.current[activeAsset] || null,
         events: isWeekendInMsk() ? WEEKEND_CALENDAR_EVENTS : (calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS),
         latestNews: freshNewsContext,
         rawIndicators: computeRawTechnicalIndicators(candles, reliableCurrentPrice, activeAsset),
@@ -2122,6 +2155,104 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 {providerSettings.provider === "autonomous" && <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />}
               </button>
             </div>
+
+            {/* Inline API Key Quick Setup for DeepSeek */}
+            {providerSettings.provider === "deepseek" && (
+              <div className="p-2.5 rounded-lg bg-[#070b16] border border-purple-500/30 space-y-1.5">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-bold text-purple-300 flex items-center gap-1">
+                    <Key className="h-3 w-3 text-purple-400" />
+                    Ключ DeepSeek API (sk-...):
+                  </span>
+                  <span className={`text-[9px] font-mono font-bold ${providerSettings.deepSeekApiKey?.startsWith("sk-") ? "text-emerald-400" : "text-amber-400"}`}>
+                    {providerSettings.deepSeekApiKey?.startsWith("sk-") ? "🟢 Ключ введён" : "⚠️ Ключ не задан"}
+                  </span>
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    type="password"
+                    value={providerSettings.deepSeekApiKey || ""}
+                    placeholder="Вставьте sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+                    onChange={e => {
+                      const val = e.target.value.trim();
+                      const next = { ...providerSettings, deepSeekApiKey: val };
+                      setProviderSettings(next);
+                      try {
+                        localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
+                      } catch {}
+                      fetch("/api/settings/unified", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ai: { deepSeekApiKey: val, activeProvider: "deepseek" } })
+                      }).catch(() => {});
+                    }}
+                    className="flex-1 bg-[#101726] border border-purple-900/60 rounded px-2.5 py-1 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-purple-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleTestProviderApi("deepseek")}
+                    disabled={testApiState.isLoading || !providerSettings.deepSeekApiKey}
+                    className="px-2.5 py-1 bg-purple-600/30 hover:bg-purple-600/50 border border-purple-400/40 text-purple-200 rounded text-[10px] font-bold font-mono transition cursor-pointer disabled:opacity-40"
+                  >
+                    {testApiState.isLoading && testApiState.provider === "deepseek" ? "..." : "Тест"}
+                  </button>
+                </div>
+                {testApiState.provider === "deepseek" && testApiState.message && (
+                  <div className={`text-[9.5px] font-mono ${testApiState.success ? "text-emerald-300" : "text-red-400"}`}>
+                    {testApiState.success ? "✅ " : "❌ "}{testApiState.message}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Inline API Key Quick Setup for Gemini */}
+            {providerSettings.provider === "gemini" && (
+              <div className="p-2.5 rounded-lg bg-[#070b16] border border-cyan-500/30 space-y-1.5">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-bold text-cyan-300 flex items-center gap-1">
+                    <Key className="h-3 w-3 text-cyan-400" />
+                    Ключ Google Gemini API:
+                  </span>
+                  <span className={`text-[9px] font-mono font-bold ${providerSettings.geminiApiKey?.length > 10 ? "text-emerald-400" : "text-amber-400"}`}>
+                    {providerSettings.geminiApiKey?.length > 10 ? "🟢 Ключ введён" : "⚠️ Ключ не задан"}
+                  </span>
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    type="password"
+                    value={providerSettings.geminiApiKey || ""}
+                    placeholder="Вставьте ключ Gemini API..."
+                    onChange={e => {
+                      const val = e.target.value.trim();
+                      const next = { ...providerSettings, geminiApiKey: val };
+                      setProviderSettings(next);
+                      try {
+                        localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
+                      } catch {}
+                      fetch("/api/settings/unified", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ai: { geminiApiKey: val, activeProvider: "gemini" } })
+                      }).catch(() => {});
+                    }}
+                    className="flex-1 bg-[#101726] border border-cyan-900/60 rounded px-2.5 py-1 text-xs text-white placeholder-gray-500 font-mono focus:outline-none focus:border-cyan-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleTestProviderApi("gemini")}
+                    disabled={testApiState.isLoading || !providerSettings.geminiApiKey}
+                    className="px-2.5 py-1 bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-400/40 text-cyan-200 rounded text-[10px] font-bold font-mono transition cursor-pointer disabled:opacity-40"
+                  >
+                    {testApiState.isLoading && testApiState.provider === "gemini" ? "..." : "Тест"}
+                  </button>
+                </div>
+                {testApiState.provider === "gemini" && testApiState.message && (
+                  <div className={`text-[9.5px] font-mono ${testApiState.success ? "text-emerald-300" : "text-red-400"}`}>
+                    {testApiState.success ? "✅ " : "❌ "}{testApiState.message}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Live Web toggle indicator if deepseek or gemini */}
             {(providerSettings.provider === "deepseek" || providerSettings.provider === "gemini") && (
