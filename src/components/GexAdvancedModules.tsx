@@ -231,88 +231,89 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   // ============================================================================
   // 🌡️ MODULE 4: MARKET REGIME THERMOMETER (С УЧЕТОМ ДИНАМИКИ ЦЕНЫ И ДАМПОВ)
   // ============================================================================
+  // ============================================================================
+  // 🌡️ MODULE 4: MARKET REGIME THERMOMETER (ОБЪЕКТИВНЫЙ РАСЧЕТ РЕЖИМА И ГАММЫ)
+  // ============================================================================
   const thermometerData = useMemo(() => {
-    const flip = gexReport.gammaFlip || 4150;
+    const flip = gexReport.gammaFlip || 4020;
     const cw = Math.max(gexReport.callWall || flip + 40, flip + 10);
     const pw = Math.min(gexReport.putWall || flip - 40, flip - 10);
 
-    // 1. Analyze price momentum, drop severity, and ATR expansion
+    // 1. Динамика цены и волатильность
     let recentChangePct = 0;
     let dayChangePct = 0;
-    let isDumping = false;
-    let isSurging = false;
     let atrRatio = 1.0;
 
     if (candles && candles.length >= 8) {
       const recent = candles.slice(-12);
       const firstPrice = recent[0].open || recent[0].close;
-      const lastPrice = recent[recent.length - 1].close;
-      recentChangePct = firstPrice > 0 ? ((lastPrice - firstPrice) / firstPrice) * 100 : 0;
+      recentChangePct = firstPrice > 0 ? ((currentPrice - firstPrice) / firstPrice) * 100 : 0;
 
       const daySlice = candles.slice(-Math.min(candles.length, 96));
       const dayOpen = daySlice[0].open || daySlice[0].close;
-      dayChangePct = dayOpen > 0 ? ((lastPrice - dayOpen) / dayOpen) * 100 : 0;
+      dayChangePct = dayOpen > 0 ? ((currentPrice - dayOpen) / dayOpen) * 100 : 0;
 
-      // ATR expansion ratio (recent bars vs baseline bars)
+      // Оценка расширения волатильности ATR
       const recentRanges = recent.map((c) => Math.max(0.01, c.high - c.low));
       const recentAvgRange = recentRanges.reduce((a, b) => a + b, 0) / recentRanges.length;
       const allRanges = candles.slice(-40).map((c) => Math.max(0.01, c.high - c.low));
       const baselineAvgRange = allRanges.reduce((a, b) => a + b, 0) / Math.max(1, allRanges.length);
       atrRatio = baselineAvgRange > 0 ? recentAvgRange / baselineAvgRange : 1.0;
-
-      // Dynamic dump trigger:
-      // Even if price is formally above flip, if price dropped > 0.25% in recent bars or > 0.6% in 24h,
-      // or if price has fallen close to flip from above while falling, this is physically a STORM / SELL-OFF!
-      const distToFlipPct = ((currentPrice - flip) / Math.max(1, flip)) * 100;
-      isDumping =
-        recentChangePct <= -0.28 ||
-        dayChangePct <= -0.65 ||
-        (distToFlipPct < 0.25 && recentChangePct < -0.15) ||
-        (recentChangePct < -0.2 && atrRatio > 1.3);
-
-      isSurging = recentChangePct >= 0.35 || dayChangePct >= 0.75;
     }
 
-    // 2. Regime determination
-    const isBelowFlip = currentPrice < flip;
+    // 2. Физическое позиционирование указателя на вертикальной шкале:
+    // Верх (0%..50%) = цены ВЫШЕ FLIP (в сторону Call Wall) -> Зона Штиля (+GEX 🟢)
+    // Середина (50%) = Рубеж Zero-Flip ($flip)
+    // Низ (50%..100%) = цены НИЖЕ FLIP (в сторону Put Wall) -> Зона Шторма (-GEX 🔴)
+    const isAboveFlip = currentPrice >= flip;
+    let pointerPercent = 50;
+
+    if (isAboveFlip) {
+      const upProgress = Math.min(1.0, Math.max(0, (currentPrice - flip) / Math.max(5, cw - flip)));
+      // Движение вверх от середины 50% к верху 14%
+      pointerPercent = 50 - upProgress * 36;
+    } else {
+      const downProgress = Math.min(1.0, Math.max(0, (flip - currentPrice) / Math.max(5, flip - pw)));
+      // Движение вниз от середины 50% к низу 86%
+      pointerPercent = 50 + downProgress * 36;
+    }
+
+    // 3. Анализ импульса
+    const isSurging = recentChangePct >= 0.28 || dayChangePct >= 0.7;
+    const isDumping = (recentChangePct <= -0.25 || dayChangePct <= -0.65) && recentChangePct < 0;
+    const isPullingBack = isAboveFlip && recentChangePct <= -0.2;
+    const isNearFlip = Math.abs(currentPrice - flip) <= Math.max(1.5, (cw - flip) * 0.06);
+
     let regimeTitle = "";
     let regimeSimpleText = "";
     let badgeLabel = "";
     let isGreenZone = false;
-    let pointerPercent = 50;
+    let badgeVariant: "success" | "warning" | "danger" = "success";
 
-    // A. Market Closed / Weekend state handling
+    // А. Торги закрыты / выходные
     if (isMarketClosed) {
-      isGreenZone = !isBelowFlip;
+      isGreenZone = isAboveFlip;
+      badgeVariant = "warning";
       badgeLabel = isWeekendNow ? "ВЫХОДНОЙ (ЗАКРЫТ)" : "ТОРГИ ЗАКРЫТЫ";
-
-      let severity = 0.5;
-      if (isBelowFlip) {
-        severity = Math.min(1, Math.max(0.2, (flip - currentPrice) / Math.max(5, flip - pw)));
-        pointerPercent = 44 - severity * 22;
-      } else {
-        const calmProgress = Math.min(1, Math.max(0, (currentPrice - flip) / Math.max(5, cw - flip)));
-        pointerPercent = 56 + calmProgress * 22;
-      }
-
       regimeTitle = isWeekendNow
-        ? `Рынок закрыт на выходные • Фиксация: ${isBelowFlip ? "Ниже Flip 🔴" : "Выше Flip 🟢"}`
-        : `Торги приостановлены • Статус: ${isBelowFlip ? "Ниже Flip 🔴" : "Выше Flip 🟢"}`;
+        ? `Рынок закрыт на выходные • Фиксация: ${isAboveFlip ? "Выше Flip 🟢" : "Ниже Flip 🔴"}`
+        : `Торги приостановлены • Статус: ${isAboveFlip ? "Выше Flip 🟢" : "Ниже Flip 🔴"}`;
 
       regimeSimpleText = isWeekendNow
-        ? `Сейчас выходные — спот-рынок ${activeAsset} закрыт до понедельника. Цена зафиксирована по закрытию пятницы ($${currentPrice.toFixed(1)}). ${
-            isBelowFlip
-              ? `Закрытие произошло ниже рубежа Zero-Flip ($${flip}). Позиции дилеров находятся в отрицательной гамме, поэтому на открытии недели в понедельник возможен импульсный тест поддержки Put Wall $${pw}. Активного падения прямо сейчас нет, торги откроются в понедельник.`
-              : `Закрытие произошло выше рубежа Zero-Flip ($${flip}). Рынок остался в зоне гашения колебаний. Ближайший магнит — Max Pain $${gexReport.maxPain}.`
+        ? `Сейчас выходные — спот-рынок ${activeAsset} закрыт до открытия недели. Цена зафиксирована на $${currentPrice.toFixed(1)}. ${
+            isAboveFlip
+              ? `Закрытие произошло выше рубежа Zero-Flip ($${flip}) в зоне положительной гаммы (+GEX). Ближайший ориентир — Call Wall $${cw}.`
+              : `Закрытие произошло ниже рубежа Zero-Flip ($${flip}) в отрицательной гамме. В понедельник возможен тест поддержки Put Wall $${pw}.`
           }`
-        : `Биржевая сессия сейчас закрыта. Котировка $${currentPrice.toFixed(1)} зафиксирована до открытия следующих торгов.`;
+        : `Биржевая сессия закрыта. Котировка $${currentPrice.toFixed(1)} зафиксирована до открытия следующих торгов.`;
 
       return {
         flip,
         currentPrice,
         isGreenZone,
         badgeLabel,
-        pointerPercent: Math.max(14, Math.min(86, pointerPercent)),
+        badgeVariant,
+        pointerPercent: Math.max(12, Math.min(88, pointerPercent)),
         regimeTitle,
         regimeSimpleText,
         recentChangePct,
@@ -323,47 +324,62 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       };
     }
 
-    if (isBelowFlip || isDumping) {
-      // STORM ZONE 🔴 (Top half of thermometer: 12% to 44%)
-      isGreenZone = false;
-      badgeLabel = isDumping ? "ШТОРМ (ДАМП)" : "ШТОРМ";
-
-      let stormSeverity = 0.5;
-      if (isBelowFlip) {
-        stormSeverity = Math.min(1, Math.max(0.2, (flip - currentPrice) / Math.max(5, flip - pw)));
-      } else if (isDumping) {
-        stormSeverity = Math.min(1, Math.max(0.3, Math.abs(recentChangePct) / 0.7));
+    // Б. Рынок открыт: ЦЕНА ВЫШЕ FLIP (Положительная гамма +GEX / Штиль / Бычий тренд)
+    if (isAboveFlip) {
+      if (isSurging) {
+        isGreenZone = true;
+        badgeVariant = "success";
+        badgeLabel = "БЫЧИЙ ИМПУЛЬС ⚡";
+        regimeTitle = "Бычий импульс ⚡ (Движение к Call Wall)";
+        regimeSimpleText = `Идёт активный рост котировок (+${recentChangePct.toFixed(2)}%). Цена находится в зоне положительной гаммы (+GEX) выше рубежа Flip ($${flip}). Дилеры хеджируют короткие позиции, поддерживая восходящее движение к Call Wall $${cw}.`;
+      } else if (isPullingBack) {
+        isGreenZone = false;
+        badgeVariant = "warning";
+        badgeLabel = "ОТКАТ К FLIP ⚠️";
+        regimeTitle = "Локальный откат ⚠️ (Тест рубежа Flip)";
+        regimeSimpleText = `Идёт коррекционный откат (${recentChangePct.toFixed(2)}%) в сторону рубежа Zero-Flip ($${flip}). Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Рубеж $${flip} выступает ключевой поддержкой: удержание сохраняет бычий контекст, пробой вниз активирует Шторм.`;
+      } else if (isNearFlip && Math.abs(recentChangePct) < 0.1) {
+        isGreenZone = true;
+        badgeVariant = "warning";
+        badgeLabel = "КОНСОЛИДАЦИЯ У FLIP 🟡";
+        regimeTitle = "Консолидация у Flip 🟡";
+        regimeSimpleText = `Цена находится вплотную к рубежу Zero-Flip ($${flip}). Дилеры удерживают баланс. Закрепление выше рубежа подтверждает стабильный режим Штиля.`;
+      } else {
+        isGreenZone = true;
+        badgeVariant = "success";
+        badgeLabel = recentChangePct > 0.1 ? "ШТИЛЬ (РОСТ) 🟢" : "ШТИЛЬ (+GEX)";
+        regimeTitle = "Режим Штиль 🟢 (+GEX Положительная гамма)";
+        regimeSimpleText = `Цена уверенно находится выше рубежа Zero-Flip ($${flip})${
+          recentChangePct !== 0 ? `, динамика ${recentChangePct > 0 ? "+" : ""}${recentChangePct.toFixed(2)}%` : ""
+        }. В зоне положительной гаммы (+GEX) дилеры гасят резкие движения и стабилизируют рынок в диапазоне к Call Wall $${cw}.`;
       }
-      // Top half: 14% to 44%
-      pointerPercent = 44 - stormSeverity * 28;
-
-      const dropStr = recentChangePct !== 0 ? `${recentChangePct > 0 ? "+" : ""}${recentChangePct.toFixed(2)}%` : "";
-      regimeTitle = isDumping ? "Режим Шторм 🔴 (Импульсный сброс)" : "Режим Шторм 🔴 (-GEX Отрицательная гамма)";
-      regimeSimpleText = isDumping
-        ? `Идёт сильное падение цены ${dropStr}. Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Дилеры хеджируются продажами, ускоряя дамп. Не ловить падающие ножи, искать шорт-цели или дождаться стабилизации у Put Wall $${pw}.`
-        : `Цена находится ниже рубежа Zero-Flip ($${flip}). Отрицательная гамма: дилеры разгоняют тренд в сторону движения. Повышенный риск каскадных сквизов.`;
-    } else if (Math.abs(currentPrice - flip) <= Math.max(3, (cw - flip) * 0.12) || atrRatio > 1.4) {
-      // TURBULENCE ZONE 🟠 (45% to 54%)
-      isGreenZone = false;
-      badgeLabel = "ТУРБУЛЕНТНОСТЬ";
-      pointerPercent = 48;
-      regimeTitle = "Режим Турбулентность 🟠 (Подход к Flip)";
-      regimeSimpleText = `Цена вблизи рубежа Zero-Flip ($${flip}). Баланс сил неустойчив. Дилеры теряют контроль над диапазоном, возможен резкий прорыв в Шторм при пробое $${flip}.`;
-    } else if (isSurging) {
-      // SURGE / BULLISH MOMENTUM ⚡ (60% to 70%)
-      isGreenZone = true;
-      badgeLabel = "БЫЧИЙ ИМПУЛЬС";
-      pointerPercent = 64;
-      regimeTitle = "Бычий импульс ⚡ (Движение к Call Wall)";
-      regimeSimpleText = `Мощное восходящее движение к Call Wall ($${cw}). Дилеры закрывают короткие позиции по гамме, формируя восходящий сквиз.`;
     } else {
-      // CALM ZONE 🟢 (Lower half: 58% to 88%)
-      isGreenZone = true;
-      badgeLabel = "ШТИЛЬ";
-      const calmProgress = Math.min(1, Math.max(0, (currentPrice - flip) / Math.max(5, cw - flip)));
-      pointerPercent = 58 + calmProgress * 28;
-      regimeTitle = "Режим Штиль 🟢 (+GEX Положительная гамма)";
-      regimeSimpleText = "Рынок стабилен выше Zero-Flip. Волатильность умеренная, дилеры гасят колебания в коридоре. Торгуем от границ диапазона к центру.";
+      // В. ЦЕНА НИЖЕ FLIP (Отрицательная гамма -GEX / Шторм / Дамп)
+      if (isDumping) {
+        isGreenZone = false;
+        badgeVariant = "danger";
+        badgeLabel = "ШТОРМ (ДАМП) 🔴";
+        regimeTitle = "Режим Шторм 🔴 (Импульсный сброс)";
+        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}), идёт активное падение (${recentChangePct.toFixed(2)}%). Волатильность расширена (ATR x${atrRatio.toFixed(1)}). Отрицательная гамма (-GEX): дилеры продают при снижении, усиливая дамп. Не ловить падающие ножи, ключевая поддержка на Put Wall $${pw}.`;
+      } else if (recentChangePct > 0.12) {
+        isGreenZone = false;
+        badgeVariant = "warning";
+        badgeLabel = "ОТСКОК В ШТОРМЕ ⚠️";
+        regimeTitle = "Шторм: Отскок ⚠️ (-GEX Контртренд)";
+        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}), но формирует локальный отскок (+${recentChangePct.toFixed(2)}%). Пока цена не закрепится выше $${flip}, общий фон остаётся уязвимым к внезапным распродажам.`;
+      } else if (isNearFlip && Math.abs(recentChangePct) < 0.1) {
+        isGreenZone = false;
+        badgeVariant = "warning";
+        badgeLabel = "ТЕСТ FLIP СНИЗУ 🟡";
+        regimeTitle = "Попытка возврата к Flip 🟡";
+        regimeSimpleText = `Цена подошла снизу к рубежу Zero-Flip ($${flip}). Для отмены режима Шторма покупателям необходимо уверенно пробить и закрепиться выше $${flip}.`;
+      } else {
+        isGreenZone = false;
+        badgeVariant = "danger";
+        badgeLabel = "ШТОРМ (-GEX) 🔴";
+        regimeTitle = "Режим Шторм 🔴 (-GEX Отрицательная гамма)";
+        regimeSimpleText = `Цена находится ниже рубежа Zero-Flip ($${flip}). Отрицательная гамма: дилеры разгоняют волатильность в сторону движения. Повышенный риск каскадных сквизов к Put Wall $${pw}.`;
+      }
     }
 
     return {
@@ -371,6 +387,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       currentPrice,
       isGreenZone,
       badgeLabel,
+      badgeVariant,
       pointerPercent: Math.max(12, Math.min(88, pointerPercent)),
       regimeTitle,
       regimeSimpleText,
@@ -679,6 +696,8 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                     className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
                       thermometerData.isMarketClosed
                         ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                        : thermometerData.badgeVariant === "warning"
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
                         : thermometerData.isGreenZone
                         ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                         : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
@@ -696,13 +715,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
           <div className="py-4 flex items-center justify-center gap-5 sm:gap-7">
             {/* CSS-термометр шкала */}
             <div className="relative w-14 h-64 sm:h-72 rounded-full border-2 border-gray-700 bg-gray-950 p-1 flex flex-col justify-between shadow-inner">
-              {/* Верхняя часть — красная (Режим Шторм / -GEX) */}
+              {/* Верхняя часть — зеленая (Режим Штиль / +GEX: цены выше Flip) */}
               <div
-                className="w-full h-1/2 rounded-t-full bg-gradient-to-b from-rose-600 via-rose-700 to-rose-900/90 relative flex items-center justify-center"
-                title="Зона Шторма: отрицательная гамма или сильный сброс цены. Дилеры разгоняют тренд!"
+                className="w-full h-1/2 rounded-t-full bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-950/90 relative flex items-center justify-center"
+                title="Зона Штиля (+GEX): цена выше Zero-Flip. Положительная гамма дилеров сглаживает колебания и поддерживает рынок."
               >
-                <span className="text-[9px] font-bold text-rose-200 uppercase tracking-widest -rotate-90 select-none drop-shadow-sm">
-                  Шторм 🔴
+                <span className="text-[9px] font-bold text-emerald-200 uppercase tracking-widest -rotate-90 select-none drop-shadow-sm">
+                  Штиль 🟢
                 </span>
               </div>
 
@@ -716,13 +735,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                 </div>
               </div>
 
-              {/* Нижняя часть — зеленая (Режим Штиль / +GEX) */}
+              {/* Нижняя часть — красная (Режим Шторм / -GEX: цены ниже Flip) */}
               <div
-                className="w-full h-1/2 rounded-b-full bg-gradient-to-b from-emerald-900/90 via-emerald-700 to-emerald-600 relative flex items-center justify-center"
-                title="Зона Штиля: положительная гамма. Дилеры гасят движения!"
+                className="w-full h-1/2 rounded-b-full bg-gradient-to-b from-rose-950/90 via-rose-700 to-rose-600 relative flex items-center justify-center"
+                title="Зона Шторма (-GEX): цена ниже Zero-Flip. Отрицательная гамма: дилеры продают при падении, ускоряя сброс!"
               >
-                <span className="text-[9px] font-bold text-emerald-200 uppercase tracking-widest -rotate-90 select-none drop-shadow-sm">
-                  Штиль 🟢
+                <span className="text-[9px] font-bold text-rose-200 uppercase tracking-widest -rotate-90 select-none drop-shadow-sm">
+                  Шторм 🔴
                 </span>
               </div>
 
@@ -776,7 +795,11 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
               <div
                 className={`p-3 rounded-xl border text-[11px] leading-snug font-medium ${
-                  thermometerData.isGreenZone
+                  thermometerData.isMarketClosed
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                    : thermometerData.badgeVariant === "warning"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                    : thermometerData.isGreenZone
                     ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
                     : "bg-rose-500/10 border-rose-500/30 text-rose-300"
                 }`}
