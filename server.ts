@@ -8529,6 +8529,107 @@ export function buildCleanMacroSearchQuery(ticker: string = "XAUUSD", userQuery:
   }
 }
 
+/**
+ * Strict date filter for financial news:
+ * Must be published within the last 48 hours and belong to the current year/month.
+ * Discards outdated news (e.g. from months ago like 11 мая or weeks ago like 14 октября).
+ */
+export function isNewsFreshAndRelevant(
+  title: string,
+  snippet: string = "",
+  url: string = "",
+  pubDateStr?: string,
+  maxAgeHours: number = 48
+): boolean {
+  const now = new Date();
+  const nowMs = now.getTime();
+  const currentYear = now.getFullYear();
+
+  // 1. Direct pubDate parsing (RFC 822 / ISO format from RSS)
+  if (pubDateStr && pubDateStr.trim().length > 0) {
+    const pubMs = Date.parse(pubDateStr);
+    if (!isNaN(pubMs)) {
+      const ageHours = (nowMs - pubMs) / (1000 * 3600);
+      // Discard if older than maxAgeHours (48h) or far in future (> 12h clock skew)
+      if (ageHours > maxAgeHours || ageHours < -12) {
+        return false;
+      }
+      return true;
+    }
+  }
+
+  const combined = `${title} ${snippet} ${url}`;
+
+  // 2. Reject explicit past years in URL, title or snippet (e.g. 2024, 2025 when year is 2026)
+  const yearMatches = combined.match(/\b(20[12]\d)\b/g);
+  if (yearMatches) {
+    for (const ym of yearMatches) {
+      const yr = parseInt(ym, 10);
+      if (yr < currentYear) {
+        return false;
+      }
+    }
+  }
+
+  // 3. Reject URL date paths older than maxAgeHours (e.g. /2026/10/14/, /2024/05/11/)
+  const urlDateMatch = url.match(/(?:[\/\-_])(20\d\d)[\/\-_](0?[1-9]|1[0-2])[\/\-_](0?[1-9]|[12]\d|3[01])(?:[\/\-_]|$)/);
+  if (urlDateMatch) {
+    const uYear = parseInt(urlDateMatch[1], 10);
+    const uMonth = parseInt(urlDateMatch[2], 10) - 1;
+    const uDay = parseInt(urlDateMatch[3], 10);
+    const uDate = new Date(uYear, uMonth, uDay);
+    const uAgeHours = (nowMs - uDate.getTime()) / (1000 * 3600);
+    if (uAgeHours > maxAgeHours || uAgeHours < -24) {
+      return false;
+    }
+  }
+
+  // 4. Reject relative date markers indicating > 2 days
+  if (/\b([3-9]|\d{2,})\s*(?:дн[ейя]|дня)\s*назад\b/i.test(combined)) return false;
+  if (/\b(?:недел[ьие]|месяц[аев]*|год[а]*|лет)\s*назад\b/i.test(combined)) return false;
+  if (/\b([3-9]|\d{2,})\s*days?\s*ago\b/i.test(combined)) return false;
+  if (/\b(?:weeks?|months?|years?)\s*ago\b/i.test(combined)) return false;
+
+  // 5. Russian textual date detection (e.g. "14 мая", "11 мая", "14 октября", "26 октября")
+  const ruMonths: { [key: string]: number } = {
+    "янв": 0, "фев": 1, "мар": 2, "апр": 3, "мая": 4, "май": 4,
+    "июн": 5, "июл": 6, "авг": 7, "сен": 8, "окт": 9, "ноя": 10, "дек": 11
+  };
+  for (const [mPrefix, mIdx] of Object.entries(ruMonths)) {
+    const re = new RegExp(`\\b(\\d{1,2})\\s+${mPrefix}[а-я]*`, "i");
+    const m = combined.match(re);
+    if (m) {
+      const day = parseInt(m[1], 10);
+      const articleDate = new Date(currentYear, mIdx, day);
+      const ageHours = (nowMs - articleDate.getTime()) / (1000 * 3600);
+      if (ageHours > maxAgeHours || ageHours < -24) {
+        return false;
+      }
+    }
+  }
+
+  // 6. English textual date detection (e.g. "May 11", "14 Oct", "Oct 14")
+  const enMonths: { [key: string]: number } = {
+    "jan": 0, "feb": 1, "mar": 2, "apr": 3, "may": 4, "jun": 5,
+    "jul": 6, "aug": 7, "sep": 8, "oct": 9, "nov": 10, "dec": 11
+  };
+  for (const [mPrefix, mIdx] of Object.entries(enMonths)) {
+    const re1 = new RegExp(`\\b${mPrefix}[a-z]*\\s+(\\d{1,2})\\b`, "i");
+    const re2 = new RegExp(`\\b(\\d{1,2})\\s+${mPrefix}[a-z]*\\b`, "i");
+    const m = combined.match(re1) || combined.match(re2);
+    if (m) {
+      const day = parseInt(m[1], 10);
+      const articleDate = new Date(currentYear, mIdx, day);
+      const ageHours = (nowMs - articleDate.getTime()) / (1000 * 3600);
+      if (ageHours > maxAgeHours || ageHours < -24) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
   const items: LiveWorldNewsItem[] = [];
   const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/g;
@@ -8548,14 +8649,22 @@ function parseRssNewsXml(xml: string, limit: number = 6): LiveWorldNewsItem[] {
       source = parts.pop() || "";
       rawTitle = parts.join(" - ");
     }
-    // Strict RU / EN language filter: filter out non-RU/EN or spam articles
+    const pubDate = match[3] ? match[3].trim() : "";
+    const link = match[2] ? match[2].trim() : "";
+
+    // 1. Strict RU / EN language filter: filter out non-RU/EN or spam articles
     if (!isValidRuEnNews(rawTitle)) {
       continue;
     }
+    // 2. Strict freshness filter: only news published within <= 48 hours
+    if (!isNewsFreshAndRelevant(rawTitle, "", link, pubDate, 48)) {
+      continue;
+    }
+
     items.push({
       title: rawTitle.trim(),
-      link: match[2].trim(),
-      pubDate: match[3].trim(),
+      link,
+      pubDate,
       source: source || "Google News"
     });
   }
@@ -8588,8 +8697,8 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       searchQueryEn = "US jobs report Non-farm payrolls unemployment BLS";
     }
 
-    // 1. Fetch primary localized Russian news
-    const ruUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryRu)}&hl=ru&gl=RU&ceid=RU:ru`;
+    // 1. Fetch primary localized Russian news (within last 48 hours)
+    const ruUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryRu + " when:2d")}&hl=ru&gl=RU&ceid=RU:ru`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3500);
     const resRu = await fetch(ruUrl, {
@@ -8604,10 +8713,10 @@ export async function fetchLiveWorldNews(query: string = "", ticker: string = "X
       items = parseRssNewsXml(xml, 5);
     }
 
-    // 2. Supplement with English global financial wire if needed
+    // 2. Supplement with English global financial wire if needed (within last 48 hours)
     if (items.length < 3 || isForecastQuery) {
       try {
-        const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn)}&hl=en-US&gl=US&ceid=US:en`;
+        const enUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQueryEn + " when:2d")}&hl=en-US&gl=US&ceid=US:en`;
         const ctrlEn = new AbortController();
         const tmEn = setTimeout(() => ctrlEn.abort(), 3500);
         const resEn = await fetch(enUrl, {
@@ -8664,15 +8773,24 @@ async function fetchDeepSeekSearchApi(apiKey: string, query: string, count = 5):
       for (const item of rawList) {
         const title = item.title || item.name || "Новость";
         const snippet = item.snippet || item.summary || "";
-        // Strict language check: only Russian or English, no Arabic or Asian scripts
-        if (isValidRuEnNews(title) && (!snippet || isValidRuEnNews(snippet))) {
-          list.push({
-            title,
-            url: item.url || item.link || "",
-            snippet,
-            rerank_score: item.rerank_score
-          });
+        const url = item.url || item.link || "";
+
+        // 1. Strict language check: only Russian or English, no Arabic or Asian scripts
+        if (!isValidRuEnNews(title) || (snippet && !isValidRuEnNews(snippet))) {
+          continue;
         }
+
+        // 2. Strict freshness filter: only news published within <= 48 hours
+        if (!isNewsFreshAndRelevant(title, snippet, url, undefined, 48)) {
+          continue;
+        }
+
+        list.push({
+          title,
+          url,
+          snippet,
+          rerank_score: item.rerank_score
+        });
       }
       console.log(`[DeepSeek Search API] ✅ Получено ${list.length} проверенных RU/EN результатов веб-поиска от DeepSeek:`, list.map(l => l.title));
       return list;
@@ -8848,6 +8966,12 @@ function sanitizeTradePlanOutput(rawPlan: string, opts: SanitizePlanOptions): st
       }
     }
   } catch {}
+
+  // 7. Strict UI hallucination and contradictory internet claims purge
+  clean = clean
+    .replace(/(?:[«"']?(?:Data\s*Feed|Онлайн-канал|Лицензи[яией]|Настройки\s+подключения)[»"']?)/gi, "настройки QUANTEX")
+    .replace(/(?:К сожалению,?\s*)?(?:у меня\s+)?(?:интернет\s+отключ[её]н[а-я]*|нет\s+доступа\s+к\s+интернет[уа]|нет\s+связи\s+с\s+сетью|работаю\s+по\s+локальным\s+данным)[^\.\n]*[\.\n]?/gi, "")
+    .replace(/(?:переключател[ьяеий]*\s+[«"']?онлайн-канал[»"']?)/gi, "параметры сети");
 
   return clean;
 }
@@ -9620,24 +9744,47 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
       { name: "15M", trend: m15Trend, level: m15KeyLevel, desc: m15LevelDesc }
     ];
 
+    const serverAi = (unifiedStationSettings as any)?.ai || {};
+    const clientAi = aiProviderConfig || {};
+    const isWebSearchActive = clientAi.deepSeekWebSearch !== false && serverAi.deepSeekWebSearch !== false;
+
+    const webSearchStatusClause = isWebSearchActive
+      ? `СТАТУС СИСТЕМЫ: Веб-поиск АКТИВЕН (Live Web Search ON). У тебя есть полный доступ к интернету. Если новостей за последние часы нет, так и напиши: 'Свежих новостей за последние часы не поступало'. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать 'интернет отключен' или 'работаю по локальным данным'.
+ЗАПРЕТ НА ПРОТИВОРЕЧИЯ: Если ты цитируешь источники в блоке 'Актуальные мировые источники', ты не имеешь права писать в тексте, что у тебя нет интернета. Это противоречит логике.`
+      : `СТАТУС СИСТЕМЫ: Веб-поиск ОТКЛЮЧЕН пользователем в настройках. Опирайся на локальные данные календаря терминала.`;
+
+    const interfaceProhibitionClause = `ЗАПРЕТ НА ИНТЕРФЕЙС:
+Ты — встроенный аналитик терминала. У тебя НЕТ доступа к настройкам программы. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать названия меню (Data Feed, Онлайн-канал, Лицензия, Настройки подключения). Если пользователь спрашивает про интернет или настройки, отвечай: «Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX».
+
+ЗАПРЕТ НА ВЫДУМЫВАНИЕ ФАКТОВ:
+Отвечай только на тот вопрос, который задан. Если тебя спрашивают про события дня, выдай список событий с временем МСК. Не нужно рассказывать, как работает программа, если тебя об этом не просили.`;
+
     // Construct institutional global macro & quantitative analyst system instruction
     const systemInstruction = isChatQuery
-      ? `РОЛЬ: Ты — старший риск-менеджер и квант-аналитик платформы QUANTEX по активу ${ticker}.
+      ? `РОЛЬ: Ты — встроенный аналитик и риск-менеджер терминала QUANTEX по активу ${ticker}.
 РЕЖИМ: «ОТВЕТ В ЧАТЕ НА ВОПРОС ТРЕЙДЕРА».
 Трейдер задал конкретный вопрос в чат: "${userQuery}".
 
+${webSearchStatusClause}
+
+${interfaceProhibitionClause}
+
 ЖЕСТКИЕ ПРАВИЛА ОТВЕТА В РЕЖИМЕ ЧАТА (ОТВЕТЫ НА ВОПРОСЫ):
 1. Отвечай КРАТКО (2–4 емких предложения) и ТОЛЬКО НА СУТЬ ЗАДАННОГО ВОПРОСА!
-2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать полный отчет из 4 блоков!
-3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять календарь новостей или список событий, если об этом прямо не спросили!
-4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО дублировать опционные уровни GEX (Call/Put Wall/Max Pain), если вопрос не про GEX!
-5. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон торгового плана (Вход, Стоп, Тейки), если трейдер прямо не попросил уровни сделки!
-6. ПРИМЕР: Если трейдер спрашивает «Почему дивергенция?»:
+2. Если трейдер спрашивает про СОБЫТИЯ ДНЯ или НОВОСТИ — выдай список событий из переданного календаря с точным временем МСК. Не выдумывай отсутствующие события! Если новостей нет — напиши: «Свежих новостей за последние часы не поступало».
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать полный отчет из 4 блоков!
+4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять календарь новостей или список событий, если об этом прямо не спросили!
+5. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО дублировать опционные уровни GEX (Call/Put Wall/Max Pain), если вопрос не про GEX!
+6. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон торгового плана (Вход, Стоп, Тейки), если трейдер прямо не попросил уровни сделки!
+7. ПРИМЕР: Если трейдер спрашивает «Почему дивергенция?»:
    Ответь прямо и емко (2–3 предложения): укажи значения осциллятора RSI (${rawRsi14}), гистограммы MACD (${rawMacdHist}) и затухание дельты, объяснив причину расхождения пиков индикатора с движением цены. Без повторения календаря новостей и уровней GEX!
-7. Если вопрос касается макростатистики или конкретной новости — ответь только по этому событию.
-8. Пиши простым языком практикующего трейдера без академической воды.`
+8. Пиши простым языком практикующего трейдера без академической воды и без инструкций к программе.`
       : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
 ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD и новости).
+
+${webSearchStatusClause}
+
+${interfaceProhibitionClause}
 
 ПРАВИЛА АУДИТА И ВЕРДИКТА:
 - Индикатор QUANTEX предлагает только предварительный проект сделки. Ты НЕ ДОЛЖЕН слепо копировать его сигналы!
@@ -9739,18 +9886,40 @@ ${feedbackLoopContext}`;
       ? `\n🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ (Google News Live Search):\n${liveWorldNews.map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate}) -> ${n.link}`).join("\n")}\n`
       : "";
 
+    const chatEventsContext = effectiveEvents && effectiveEvents.length > 0
+      ? effectiveEvents.map((e: any) => `- [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n")
+      : "- На сегодня важных запланированных макроэкономических релизов нет.";
+
+    const chatRecentNewsItems: string[] = [];
+    if (Array.isArray(latestNews)) {
+      chatRecentNewsItems.push(...latestNews.slice(0, 4).map((n: any) => `- [${n.time || timeMsk} МСК] ${n.title}`));
+    }
+    if (Array.isArray(liveWorldNews)) {
+      chatRecentNewsItems.push(...liveWorldNews.slice(0, 4).map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate})`));
+    }
+    const chatNewsContext = chatRecentNewsItems.length > 0
+      ? `\nСвежие мировые новости за последние 24–48 часов:\n${chatRecentNewsItems.join("\n")}`
+      : "\nСвежих новостей за последние часы не поступало.";
+
     let prompt = isChatQuery
       ? `❓ ВОПРОС ТРЕЙДЕРА В ЧАТЕ ПО ${ticker}:
 "${userQuery.trim()}"
 
-Текущий контекст графика (${timeMsk} МСК):
-- Актив: ${ticker} | Текущая цена: ${currentPrice} | Консенсус 5 ТФ: ${consensus5Str} | ATR: ~${dailyAtr} п.
+📅 РЕАЛЬНЫЙ КАЛЕНДАРЬ МАКРОЭКОНОМИЧЕСКИХ СОБЫТИЙ НА СЕГОДНЯ (${timeMsk} МСК):
+${chatEventsContext}${chatNewsContext}
+
+📊 ТЕКУЩИЙ РЫНОЧНЫЙ КОНТЕКСТ (${ticker}, ${timeMsk} МСК):
+- Текущая цена: ${currentPrice} | Консенсус 5 ТФ: ${consensus5Str} | ATR: ~${dailyAtr} п.
 - Сырые индикаторы: RSI 14 = ${rawRsi14} (пред: ${rawPrevRsi14}), MACD Hist = ${rawMacdHist}, Дельта = ${rawDelta}, Дивергенция = ${rawDiv}
-- Предложение индикатора: ${indDirection} (Вход: ${indEntry}, SL: ${indSl}, TP1: ${indTp1})
+- Предложение индикатора QUANTEX: ${indDirection} (Вход: ${indEntry}, SL: ${indSl}, TP1: ${indTp1})
 - GEX уровни: Call Wall ${gex?.callWall || "N/A"}, Put Wall ${gex?.putWall || "N/A"}, Max Pain ${gex?.maxPain || "N/A"}
 
-ТРЕБОВАНИЕ: Ответь КОРОТКО (2–3 предложения) строго на суть заданного вопроса!
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, дублировать календарь новостей и перечислять уровни GEX!`
+ИНСТРУКЦИЯ К ОТВЕТУ В ЧАТЕ:
+- Ответь КОРОТКО (2–4 емких предложения) строго на суть заданного вопроса!
+- Если трейдер спросил про события дня или новости — перечисли события из календаря выше с точным временем МСК. Не выдумывай отсутствующие события!
+- Если спросили про настройки или подключение — ответь: «Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX».
+- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «интернет отключен», «нет доступа к сети» или выдумывать названия меню!
+- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, если трейдер прямо не нажал «Сформировать торговый план»!`
       : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
 Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 4 СТРОКИ: Новости/Предупреждение, GEX + Консенсус ТФ, Сделка, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (СТРОГО 4 БЛОКА: 1. Новости, 2. GEX уровни, 3. Технический анализ и Консенсус 5 ТФ, 4. Торговый план на основе консенсуса и GEX)"}.
 Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Общий торговый план на день по всем таймфреймам")}.
@@ -9816,9 +9985,6 @@ ${liveWorldNewsFormatted}
       }
       prompt += `\n${expiryRuleInstruction}\n${feedbackLoopContext}\n`;
     }
-
-    const serverAi = (unifiedStationSettings as any)?.ai || {};
-    const clientAi = aiProviderConfig || {};
 
     const effectiveDsKey = sanitizeApiKey(clientAi.deepSeekApiKey || serverAi.deepSeekApiKey || process.env.DEEPSEEK_API_KEY || "");
     const effectiveQwenKey = sanitizeApiKey(clientAi.qwenApiKey || serverAi.qwenApiKey || process.env.QWEN_API_KEY || "");
@@ -9964,7 +10130,7 @@ ${liveWorldNewsFormatted}
           const text = dsData?.choices?.[0]?.message?.content;
           if (text) {
             let finalPlan = text;
-            if (isDsWebSearchEnabled && Array.isArray(liveWorldNews) && liveWorldNews.length > 0 && !finalPlan.includes("🌐") && !finalPlan.toLowerCase().includes("источник")) {
+            if (!isChatQuery && isDsWebSearchEnabled && Array.isArray(liveWorldNews) && liveWorldNews.length > 0 && !finalPlan.includes("🌐") && !finalPlan.toLowerCase().includes("источник")) {
               finalPlan += `\n\n---\n🌐 **Актуальные мировые источники и новости из сети (Live Web Search):**\n` +
                 liveWorldNews.slice(0, 4).map(item => `• **${item.source}**: [${item.title}](${item.link}) — _${item.pubDate}_`).join("\n");
             }
@@ -10173,7 +10339,7 @@ ${liveWorldNewsFormatted}
                   if (sources) {
                     webSourcesText = `\n\n🌐 **Проверенные первоисточники и новости из мировой паутины (Google Search Grounding):**\n${sources}`;
                   }
-                } else if (liveWorldNews && liveWorldNews.length > 0) {
+                } else if (!isChatQuery && liveWorldNews && liveWorldNews.length > 0) {
                   const rssSources = liveWorldNews
                     .map((n: any) => `• [${n.title}](${n.link}) *(${n.source})*`)
                     .slice(0, 4)
@@ -10538,6 +10704,16 @@ function generateAutonomousAiPlan(params: {
         const curRsi = multiTfMetrics?.[0]?.rsi ? Number(multiTfMetrics[0].rsi).toFixed(1) : "48.2";
         return `На текущем графике ${ticker} (${timeMsk} МСК) зафиксирована ${isBull ? "бычья" : "медвежья"} дивергенция: цена формирует ${isBull ? "локальный минимум" : "локальный максимум"}, тогда как осциллятор RSI (${curRsi}) и гистограмма MACD демонстрируют затухание импульса. Сигнал индикатора (${indicatorForecast?.isBull ? "LONG" : "SHORT"}) расходится с осцилляторами, поэтому риск-менеджер рекомендует соблюдать осторожность.`;
       }
+      if (qLow.includes("data feed") || qLow.includes("онлайн-канал") || qLow.includes("настройк") || qLow.includes("лицензи") || qLow.includes("подключен") || qLow.includes("как включить интернет")) {
+        return `Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX.`;
+      }
+      if (qLow.includes("события дня") || qLow.includes("какие события") || qLow.includes("события сегодня") || (qLow.includes("событи") && (qLow.includes("сегодня") || qLow.includes("дня")))) {
+        if (!events || events.length === 0) {
+          return `На сегодня (${timeMsk} МСК) важных запланированных макроэкономических релизов нет. Свежих новостей за последние часы не поступало. Фон чистый.`;
+        }
+        return `📅 **Макроэкономические события на сегодня по ${ticker} (${timeMsk} МСК):**\n` +
+          events.map(e => `• [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n");
+      }
     }
 
     const autoBounceRetest = isBull ? (Number(entry) * 0.9994).toFixed(dec) : (Number(entry) * 1.0006).toFixed(dec);
@@ -10567,8 +10743,22 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     const isInflationQuery = (qLower.includes("инфляц") || qLower.includes("cpi") || qLower.includes("pce") || qLower.includes("ppi") || qLower.includes("потребительск") || qLower.includes("дорожан")) && !isForecastQuery;
     const isFedRateQuery = (qLower.includes("ставк") || qLower.includes("фрс") || qLower.includes("fomc") || qLower.includes("пауэлл") || qLower.includes("powell") || qLower.includes("федрезерв")) && !isForecastQuery;
     const isLaborQuery = (qLower.includes("безработиц") || qLower.includes("рынок труда") || qLower.includes("nfp") || qLower.includes("payroll") || qLower.includes("пособи") || qLower.includes("claims")) && !isForecastQuery;
-    const isWorldNewsQuery = (qLower.includes("новост") || qLower.includes("в мире") || qLower.includes("мировые") || qLower.includes("геополит") || qLower.includes("что произошло") || qLower.includes("события дня") || qLower.includes("события в мире")) && !isForecastQuery;
+    const isWorldNewsQuery = (qLower.includes("новост") || qLower.includes("в мире") || qLower.includes("мировые") || qLower.includes("геополит") || qLower.includes("что произошло") || qLower.includes("события в мире")) && !isForecastQuery && !qLower.includes("события дня") && !qLower.includes("события сегодня");
     const isDivergenceQuery = qLower.includes("дивергенц") || qLower.includes("дивер");
+
+    const isUiOrSettingsQuery = qLower.includes("data feed") || qLower.includes("онлайн-канал") || qLower.includes("настройк") || qLower.includes("лицензи") || qLower.includes("подключен") || qLower.includes("как включить интернет");
+    if (isUiOrSettingsQuery) {
+      return `Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX.`;
+    }
+
+    const isEventsDayQuery = (qLower.includes("события дня") || qLower.includes("какие события") || qLower.includes("события сегодня") || (qLower.includes("событи") && (qLower.includes("сегодня") || qLower.includes("дня")))) && !isForecastQuery;
+    if (isEventsDayQuery) {
+      if (!events || events.length === 0) {
+        return `На сегодня (${timeMsk} МСК) важных запланированных макроэкономических релизов нет. Свежих новостей за последние часы не поступало. Фон чистый.`;
+      }
+      return `📅 **Макроэкономические события на сегодня по ${ticker} (${timeMsk} МСК):**\n` +
+        events.map(e => `• [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n");
+    }
 
     // 0a. TECHNICAL & METHODOLOGICAL QUERY: DIVERGENCES
     if (isDivergenceQuery) {
