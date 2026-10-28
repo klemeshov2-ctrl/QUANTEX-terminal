@@ -294,6 +294,88 @@ function calculateStochastic(candles: { high: number; low: number; close: number
   return { kData, dData };
 }
 
+// Format numbers according to Binance Russian locale: thousands separated by space, decimal by comma (e.g. 4 044,80)
+function formatBinanceNumber(val: number | undefined | null, decimals = 2): string {
+  if (val === undefined || val === null || isNaN(val)) return "-";
+  const fixed = Number(val).toFixed(decimals);
+  const [intPart, decPart] = fixed.split(".");
+  const formattedInt = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return decPart !== undefined ? `${formattedInt},${decPart}` : formattedInt;
+}
+
+// Binance STOCHRSI (Stochastic RSI: RSI 14, Stoch 14, %K 3, %D 3)
+function calculateStochRsiSeries(
+  candles: { close: number; time: any }[],
+  rsiPeriod = 14,
+  stochPeriod = 14,
+  kPeriod = 3,
+  dPeriod = 3
+): {
+  kData: { time: any; value: number }[];
+  dData: { time: any; value: number }[];
+} {
+  if (!candles || candles.length === 0) return { kData: [], dData: [] };
+  const rsiSeries = calculateRSI(candles, rsiPeriod);
+  if (rsiSeries.length === 0) return { kData: [], dData: [] };
+
+  const rawStoch: number[] = [];
+  for (let i = 0; i < rsiSeries.length; i++) {
+    if (i < stochPeriod - 1) {
+      rawStoch.push(50);
+      continue;
+    }
+    let minRsi = Infinity;
+    let maxRsi = -Infinity;
+    for (let j = i - stochPeriod + 1; j <= i; j++) {
+      const v = rsiSeries[j].value;
+      if (v < minRsi) minRsi = v;
+      if (v > maxRsi) maxRsi = v;
+    }
+    const range = maxRsi - minRsi;
+    const rawVal = range === 0 ? 50 : ((rsiSeries[i].value - minRsi) / range) * 100;
+    rawStoch.push(Math.max(0, Math.min(100, rawVal)));
+  }
+
+  // Smooth rawStoch with SMA(kPeriod) for %K (STOCHRSI)
+  const kValues: number[] = [];
+  for (let i = 0; i < rawStoch.length; i++) {
+    if (i < kPeriod - 1) {
+      kValues.push(rawStoch[i]);
+      continue;
+    }
+    let sum = 0;
+    for (let j = i - kPeriod + 1; j <= i; j++) {
+      sum += rawStoch[j];
+    }
+    kValues.push(sum / kPeriod);
+  }
+
+  // Smooth kValues with SMA(dPeriod) for %D (MASTOCHRSI)
+  const dValues: number[] = [];
+  for (let i = 0; i < kValues.length; i++) {
+    if (i < dPeriod - 1) {
+      dValues.push(kValues[i]);
+      continue;
+    }
+    let sum = 0;
+    for (let j = i - dPeriod + 1; j <= i; j++) {
+      sum += kValues[j];
+    }
+    dValues.push(sum / dPeriod);
+  }
+
+  const kData = candles.map((c, i) => ({
+    time: c.time,
+    value: Math.round((kValues[i] ?? 50) * 100) / 100
+  }));
+  const dData = candles.map((c, i) => ({
+    time: c.time,
+    value: Math.round((dValues[i] ?? 50) * 100) / 100
+  }));
+
+  return { kData, dData };
+}
+
 function calculateATR(candles: { high: number; low: number; close: number; open?: number }[], period = 14): number[] {
   const atrs: number[] = [];
   if (candles.length === 0) return atrs;
@@ -418,6 +500,11 @@ interface ChartOverlaysProps {
   isHudMinimized?: boolean;
   onToggleHudMinimize?: () => void;
   indicatorOutput?: SuperIndicatorOutput | null;
+  showEma9?: boolean;
+  showEma21?: boolean;
+  showEma50?: boolean;
+  showEma100?: boolean;
+  showEma200?: boolean;
 }
 
 const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
@@ -432,7 +519,12 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   showTables,
   isHudMinimized,
   onToggleHudMinimize,
-  indicatorOutput
+  indicatorOutput,
+  showEma9 = true,
+  showEma21 = true,
+  showEma50 = true,
+  showEma100 = true,
+  showEma200 = true
 }) => {
   const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
   const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
@@ -499,6 +591,31 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   const latestCandle = candles && candles.length > 0 ? candles[candles.length - 1] : null;
   const displayCandle = hoveredCandle || latestCandle;
   const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
+
+  const emaDataMap = useMemo(() => {
+    if (!candles || candles.length === 0) return null;
+    const e9 = calculateEMA(candles, 9);
+    const e21 = calculateEMA(candles, 21);
+    const e50 = calculateEMA(candles, 50);
+    const e100 = calculateEMA(candles, 100);
+    const e200 = calculateEMA(candles, 200);
+    return { e9, e21, e50, e100, e200 };
+  }, [candles]);
+
+  const currentEmaValues = useMemo(() => {
+    if (!displayCandle || !candles || candles.length === 0 || !emaDataMap) {
+      return { ema9: 0, ema21: 0, ema50: 0, ema100: 0, ema200: 0 };
+    }
+    const idx = candles.findIndex(c => c.time === displayCandle.time);
+    const targetIdx = idx !== -1 ? idx : candles.length - 1;
+    return {
+      ema9: emaDataMap.e9[targetIdx] ?? 0,
+      ema21: emaDataMap.e21[targetIdx] ?? 0,
+      ema50: emaDataMap.e50[targetIdx] ?? 0,
+      ema100: emaDataMap.e100[targetIdx] ?? 0,
+      ema200: emaDataMap.e200[targetIdx] ?? 0
+    };
+  }, [displayCandle, candles, emaDataMap]);
 
   let ohlcBlock = null;
   if (displayCandle) {
@@ -595,6 +712,37 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
             </span>
           </div>
         </div>
+
+        {/* Row 3: Binance 5-EMA Legend Overlay */}
+        {(showEma9 || showEma21 || showEma50 || showEma100 || showEma200) && (
+          <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-[8px] xs:text-[8.5px] sm:text-[10px] font-mono tracking-tight bg-[#080c16]/95 px-1.5 sm:px-2 py-0.5 rounded-md border border-slate-800/90 shadow-md max-w-[calc(100vw-12px)] sm:max-w-fit select-none overflow-x-auto scrollbar-none">
+            {showEma9 && (
+              <span className="font-semibold" style={{ color: "#f0b90b" }}>
+                EMA(9): <span className="font-mono">{formatBinanceNumber(currentEmaValues.ema9, dec)}</span>
+              </span>
+            )}
+            {showEma21 && (
+              <span className="font-semibold" style={{ color: "#ec4899" }}>
+                EMA(21): <span className="font-mono">{formatBinanceNumber(currentEmaValues.ema21, dec)}</span>
+              </span>
+            )}
+            {showEma50 && (
+              <span className="font-semibold" style={{ color: "#3b82f6" }}>
+                EMA(50): <span className="font-mono">{formatBinanceNumber(currentEmaValues.ema50, dec)}</span>
+              </span>
+            )}
+            {showEma100 && (
+              <span className="font-semibold" style={{ color: "#22c55e" }}>
+                EMA(100): <span className="font-mono">{formatBinanceNumber(currentEmaValues.ema100, dec)}</span>
+              </span>
+            )}
+            {showEma200 && (
+              <span className="font-semibold" style={{ color: "#be185d" }}>
+                EMA(200): <span className="font-mono">{formatBinanceNumber(currentEmaValues.ema200, dec)}</span>
+              </span>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -811,23 +959,29 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
   }, [stationUser, activeTab]);
 
-  // Moving averages (EMA 50, EMA 100, EMA 200) - default OFF as requested
+  // Moving averages (EMA 9, 21, 50, 100, 200 - Binance standard, enabled by default)
+  const [showEma9, setShowEma9] = useState<boolean>(() =>
+    getInitialPref("showEma9", "quantex_show_ema9", true)
+  );
+  const [showEma21, setShowEma21] = useState<boolean>(() =>
+    getInitialPref("showEma21", "quantex_show_ema21", true)
+  );
   const [showEma50, setShowEma50] = useState<boolean>(() =>
-    getInitialPref("showEma50", "quantex_show_ema50", false)
+    getInitialPref("showEma50", "quantex_show_ema50", true)
   );
   const [showEma100, setShowEma100] = useState<boolean>(() =>
-    getInitialPref("showEma100", "quantex_show_ema100", false)
+    getInitialPref("showEma100", "quantex_show_ema100", true)
   );
   const [showEma200, setShowEma200] = useState<boolean>(() =>
-    getInitialPref("showEma200", "quantex_show_ema200", false)
+    getInitialPref("showEma200", "quantex_show_ema200", true)
   );
 
-  // Sub-pane indicators (RSI 6 & 14, Stochastic) - default OFF as requested
+  // Sub-pane indicators (RSI 6 & 14, STOCHRSI - Binance standard, enabled by default)
   const [showRsiPane, setShowRsiPane] = useState<boolean>(() =>
-    getInitialPref("showRsiPane", "quantex_show_rsi_pane", false)
+    getInitialPref("showRsiPane", "quantex_show_rsi_pane", true)
   );
   const [showStochPane, setShowStochPane] = useState<boolean>(() =>
-    getInitialPref("showStochPane", "quantex_show_stoch_pane", false)
+    getInitialPref("showStochPane", "quantex_show_stoch_pane", true)
   );
 
   // Sub-pane adjustable heights in pixels (MACD, RSI, Stochastic)
@@ -1630,6 +1784,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     if (p.stationTheme !== undefined && STATION_THEMES.some(t => t.id === p.stationTheme)) {
       setStationTheme(p.stationTheme);
     }
+    if (p.showEma9 !== undefined) setShowEma9(Boolean(p.showEma9));
+    if (p.showEma21 !== undefined) setShowEma21(Boolean(p.showEma21));
     if (p.showEma50 !== undefined) setShowEma50(Boolean(p.showEma50));
     if (p.showEma100 !== undefined) setShowEma100(Boolean(p.showEma100));
     if (p.showEma200 !== undefined) setShowEma200(Boolean(p.showEma200));
@@ -1744,6 +1900,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       activeTf,
       chartStyle,
       stationTheme,
+      showEma9,
+      showEma21,
       showEma50,
       showEma100,
       showEma200,
@@ -1844,7 +2002,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   }, [
     activeUsername,
     activeAsset, activeTf, chartStyle, stationTheme,
-    showEma50, showEma100, showEma200, showRsiPane, showStochPane,
+    showEma9, showEma21, showEma50, showEma100, showEma200, showRsiPane, showStochPane,
     macdPaneHeight, rsiPaneHeight, stochPaneHeight,
     hudScale, hudFontSize, chartLabelScale, soundAlertsEnabled,
     chartLabelFontSize, showChartBadgeBorders, isHudMinimized,
@@ -2069,7 +2227,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const volumeSeriesRef = useRef<any>(null);
   const trendLineSeriesRef = useRef<any>(null);
 
-  // EMA series on main chart
+  // EMA series on main chart (Binance 5 EMAs: 9, 21, 50, 100, 200)
+  const ema9SeriesRef = useRef<any>(null);
+  const ema21SeriesRef = useRef<any>(null);
   const ema50SeriesRef = useRef<any>(null);
   const ema100SeriesRef = useRef<any>(null);
   const ema200SeriesRef = useRef<any>(null);
@@ -2802,26 +2962,40 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       visible: false
     });
 
-    // EMA 50, EMA 100, EMA 200 Series (Distinct colors, default off)
+    // Binance 5 EMA Series (9 Yellow, 21 Pink, 50 Blue, 100 Green, 200 Crimson)
+    const ema9Series = chart.addSeries(LineSeries, {
+      color: "#f0b90b",
+      lineWidth: 1,
+      title: "EMA 9",
+      visible: showEma9
+    });
+    const ema21Series = chart.addSeries(LineSeries, {
+      color: "#ec4899",
+      lineWidth: 1,
+      title: "EMA 21",
+      visible: showEma21
+    });
     const ema50Series = chart.addSeries(LineSeries, {
-      color: "#38bdf8",
+      color: "#3b82f6",
       lineWidth: 1,
       title: "EMA 50",
       visible: showEma50
     });
     const ema100Series = chart.addSeries(LineSeries, {
-      color: "#f59e0b",
+      color: "#22c55e",
       lineWidth: 1,
       title: "EMA 100",
       visible: showEma100
     });
     const ema200Series = chart.addSeries(LineSeries, {
-      color: "#ec4899",
-      lineWidth: 1,
+      color: "#be185d",
+      lineWidth: 2,
       title: "EMA 200",
       visible: showEma200
     });
 
+    ema9SeriesRef.current = ema9Series;
+    ema21SeriesRef.current = ema21Series;
     ema50SeriesRef.current = ema50Series;
     ema100SeriesRef.current = ema100Series;
     ema200SeriesRef.current = ema200Series;
@@ -3040,6 +3214,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         seriesInstanceRef.current = null;
         volumeSeriesRef.current = null;
         trendLineSeriesRef.current = null;
+        ema9SeriesRef.current = null;
+        ema21SeriesRef.current = null;
         ema50SeriesRef.current = null;
         ema100SeriesRef.current = null;
         ema200SeriesRef.current = null;
@@ -3385,21 +3561,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     const rsi6Series = rsiChart.addSeries(LineSeries, {
-      color: "#38bdf8",
+      color: "#f0b90b",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false
     });
     const rsi14Series = rsiChart.addSeries(LineSeries, {
-      color: "#f59e0b",
+      color: "#ec4899",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false
     });
 
     try {
-      rsi6Series.createPriceLine({ price: 70, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
-      rsi6Series.createPriceLine({ price: 30, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      rsi6Series.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "90,0" });
+      rsi6Series.createPriceLine({ price: 50, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "50,0" });
+      rsi6Series.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.15)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "10,0" });
     } catch {}
 
     rsiChartInstanceRef.current = rsiChart;
@@ -3526,21 +3703,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     const kSeries = stochChart.addSeries(LineSeries, {
-      color: "#06b6d4",
+      color: "#f0b90b",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false
     });
     const dSeries = stochChart.addSeries(LineSeries, {
-      color: "#f43f5e",
+      color: "#a855f7",
       lineWidth: 1,
       priceLineVisible: false,
       lastValueVisible: false
     });
 
     try {
-      kSeries.createPriceLine({ price: 80, color: "rgba(239, 68, 68, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
-      kSeries.createPriceLine({ price: 20, color: "rgba(16, 185, 129, 0.4)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      kSeries.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "90,0" });
+      kSeries.createPriceLine({ price: 40, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "40,0" });
+      kSeries.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.15)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "10,0" });
     } catch {}
 
     stochChartInstanceRef.current = stochChart;
@@ -3677,11 +3855,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // Dynamic EMA Series Visibility Toggle
   useEffect(() => {
     try {
+      ema9SeriesRef.current?.applyOptions({ visible: showEma9 });
+      ema21SeriesRef.current?.applyOptions({ visible: showEma21 });
       ema50SeriesRef.current?.applyOptions({ visible: showEma50 });
       ema100SeriesRef.current?.applyOptions({ visible: showEma100 });
       ema200SeriesRef.current?.applyOptions({ visible: showEma200 });
     } catch {}
-  }, [showEma50, showEma100, showEma200]);
+  }, [showEma9, showEma21, showEma50, showEma100, showEma200]);
 
   // 3. Handle Chart Style change smoothly without destroying main chart on mount
   useEffect(() => {
@@ -3975,10 +4155,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       } catch {}
     }
 
-    // 2c. Set Stochastic data if pane is active
+    // 2c. Set Stochastic (STOCHRSI) data if pane is active
     if (showStochPane && stochChartInstanceRef.current && stochKSeriesRef.current && stochDSeriesRef.current && cleanCandles.length >= 14) {
       try {
-        const { kData, dData } = calculateStochastic(cleanCandles, 14, 3);
+        const { kData, dData } = calculateStochRsiSeries(cleanCandles, 14, 14, 3, 3);
         if (isFullReload) {
           stochKSeriesRef.current.setData(kData);
           stochDSeriesRef.current.setData(dData);
@@ -3999,9 +4179,33 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       } catch {}
     }
 
-    // 2d. Set EMA 50, EMA 100, EMA 200 data
+    // 2d. Set Binance 5 EMAs (9, 21, 50, 100, 200) data
     if (cleanCandles.length > 0) {
       const minTime = cleanCandles[startUpdIdx]?.time ?? 0;
+      if (ema9SeriesRef.current) {
+        try {
+          const e9 = calculateEmaSeries(cleanCandles, 9);
+          if (isFullReload) {
+            ema9SeriesRef.current.setData(e9);
+          } else {
+            for (const pt of e9) {
+              if (pt.time >= minTime) ema9SeriesRef.current.update(pt);
+            }
+          }
+        } catch {}
+      }
+      if (ema21SeriesRef.current) {
+        try {
+          const e21 = calculateEmaSeries(cleanCandles, 21);
+          if (isFullReload) {
+            ema21SeriesRef.current.setData(e21);
+          } else {
+            for (const pt of e21) {
+              if (pt.time >= minTime) ema21SeriesRef.current.update(pt);
+            }
+          }
+        } catch {}
+      }
       if (ema50SeriesRef.current) {
         try {
           const e50 = calculateEmaSeries(cleanCandles, 50);
@@ -5263,53 +5467,98 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
         {/* Scrollable Categories */}
         <div className="p-2.5 space-y-3 overflow-y-auto flex-1 min-h-0 text-xs">
-          {/* Section 1: Trend EMA */}
+          {/* Section 1: Trend EMA (Binance 5-EMA Standard) */}
           <div className="space-y-1.5">
-            <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
-              <TrendingUp className="h-3 w-3 text-cyan-400" />
-              <span>Скользящие средние (EMA)</span>
-            </span>
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                <TrendingUp className="h-3 w-3 text-cyan-400" />
+                <span>Скользящие средние (EMA Binance)</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const allOn = showEma9 && showEma21 && showEma50 && showEma100 && showEma200;
+                  const nextVal = !allOn;
+                  setShowEma9(nextVal);
+                  setShowEma21(nextVal);
+                  setShowEma50(nextVal);
+                  setShowEma100(nextVal);
+                  setShowEma200(nextVal);
+                }}
+                className="text-[9.5px] font-mono text-cyan-400 hover:text-cyan-300 cursor-pointer underline"
+              >
+                {showEma9 && showEma21 && showEma50 && showEma100 && showEma200 ? "Выкл все" : "Вкл все 5 EMA"}
+              </button>
+            </div>
+            <div className="grid grid-cols-5 gap-1">
+              <button
+                type="button"
+                onClick={() => setShowEma9(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showEma9 ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#f0b90b]" />
+                  <span className="font-bold text-[10px]">EMA 9</span>
+                </div>
+                <span className="text-[8.5px] font-mono mt-0.5">{showEma9 ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowEma21(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
+                  showEma21 ? "bg-pink-500/20 border-pink-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <div className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#ec4899]" />
+                  <span className="font-bold text-[10px]">EMA 21</span>
+                </div>
+                <span className="text-[8.5px] font-mono mt-0.5">{showEma21 ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setShowEma50(prev => !prev)}
                 className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
-                  showEma50 ? "bg-cyan-500/20 border-cyan-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                  showEma50 ? "bg-blue-500/20 border-blue-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
                 }`}
               >
                 <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-[#38bdf8]" />
-                  <span className="font-bold text-[11px]">EMA 50</span>
+                  <span className="w-2 h-2 rounded-full bg-[#3b82f6]" />
+                  <span className="font-bold text-[10px]">EMA 50</span>
                 </div>
-                <span className="text-[9px] font-mono mt-0.5">{showEma50 ? "ВКЛ" : "ВЫКЛ"}</span>
+                <span className="text-[8.5px] font-mono mt-0.5">{showEma50 ? "ВКЛ" : "ВЫКЛ"}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setShowEma100(prev => !prev)}
                 className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
-                  showEma100 ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                  showEma100 ? "bg-emerald-500/20 border-emerald-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
                 }`}
               >
                 <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-[#f59e0b]" />
-                  <span className="font-bold text-[11px]">EMA 100</span>
+                  <span className="w-2 h-2 rounded-full bg-[#22c55e]" />
+                  <span className="font-bold text-[10px]">EMA 100</span>
                 </div>
-                <span className="text-[9px] font-mono mt-0.5">{showEma100 ? "ВКЛ" : "ВЫКЛ"}</span>
+                <span className="text-[8.5px] font-mono mt-0.5">{showEma100 ? "ВКЛ" : "ВЫКЛ"}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setShowEma200(prev => !prev)}
                 className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
-                  showEma200 ? "bg-pink-500/20 border-pink-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                  showEma200 ? "bg-rose-500/20 border-rose-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
                 }`}
               >
                 <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-[#ec4899]" />
-                  <span className="font-bold text-[11px]">EMA 200</span>
+                  <span className="w-2 h-2 rounded-full bg-[#be185d]" />
+                  <span className="font-bold text-[10px]">EMA 200</span>
                 </div>
-                <span className="text-[9px] font-mono mt-0.5">{showEma200 ? "ВКЛ" : "ВЫКЛ"}</span>
+                <span className="text-[8.5px] font-mono mt-0.5">{showEma200 ? "ВКЛ" : "ВЫКЛ"}</span>
               </button>
             </div>
           </div>
@@ -5318,7 +5567,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           <div className="space-y-1.5">
             <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
               <Activity className="h-3 w-3 text-indigo-400" />
-              <span>Осцилляторы (Подвальные)</span>
+              <span>Осцилляторы (Подвальные Binance)</span>
             </span>
             <div className="grid grid-cols-3 gap-1.5">
               <button
@@ -5347,10 +5596,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 type="button"
                 onClick={() => setShowStochPane(prev => !prev)}
                 className={`p-1.5 rounded-lg border flex flex-col items-center justify-center transition cursor-pointer text-center ${
-                  showStochPane ? "bg-rose-500/20 border-rose-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                  showStochPane ? "bg-purple-500/20 border-purple-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
                 }`}
               >
-                <span className="font-bold text-[11px]">Стохастик</span>
+                <span className="font-bold text-[11px]">STOCHRSI</span>
                 <span className="text-[9px] font-mono text-gray-400">{showStochPane ? "ВКЛ" : "ВЫКЛ"}</span>
               </button>
             </div>
@@ -6314,6 +6563,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   isHudMinimized={isHudMinimized}
                   onToggleHudMinimize={() => setIsHudMinimized(false)}
                   indicatorOutput={indicatorOutput}
+                  showEma9={showEma9}
+                  showEma21={showEma21}
+                  showEma50={showEma50}
+                  showEma100={showEma100}
+                  showEma200={showEma200}
                 />
               </div>
 
@@ -6404,9 +6658,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   {/* Binance-style compact top header with real-time values */}
                   <div className="absolute top-1 left-2.5 right-2 z-10 flex items-center justify-between select-none pointer-events-none">
                     <div className="flex items-center gap-1.5 sm:gap-2.5 text-[8.5px] sm:text-[10px] font-mono tracking-tight overflow-x-auto scrollbar-none whitespace-nowrap bg-black/40 backdrop-blur-xs px-1.5 py-0.5 rounded border border-white/5">
-                      <span className="font-semibold text-gray-300">RSI</span>
-                      <span className="text-[#38bdf8] font-medium">RSI(6): <span className="font-mono">{liveIndicatorValues.rsi?.rsi6 ?? "0.00"}</span></span>
-                      <span className="text-[#f59e0b] font-medium">RSI(14): <span className="font-mono">{liveIndicatorValues.rsi?.rsi14 ?? "0.00"}</span></span>
+                      <span style={{ color: "#f0b90b" }} className="font-semibold">RSI(6): <span className="font-mono">{formatBinanceNumber(liveIndicatorValues.rsi?.rsi6, 2)}</span></span>
+                      <span style={{ color: "#ec4899" }} className="font-semibold">RSI(14): <span className="font-mono">{formatBinanceNumber(liveIndicatorValues.rsi?.rsi14, 2)}</span></span>
                     </div>
 
                     <div className="flex items-center gap-1 pointer-events-auto shrink-0 ml-1">
@@ -6469,9 +6722,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   {/* Binance-style compact top header with real-time values */}
                   <div className="absolute top-1 left-2.5 right-2 z-10 flex items-center justify-between select-none pointer-events-none">
                     <div className="flex items-center gap-1.5 sm:gap-2.5 text-[8.5px] sm:text-[10px] font-mono tracking-tight overflow-x-auto scrollbar-none whitespace-nowrap bg-black/40 backdrop-blur-xs px-1.5 py-0.5 rounded border border-white/5">
-                      <span className="font-semibold text-gray-300">STOCH(14,3,3)</span>
-                      <span className="text-[#06b6d4] font-medium">%K: <span className="font-mono">{liveIndicatorValues.stoch?.k ?? "0.00"}</span></span>
-                      <span className="text-[#f43f5e] font-medium">%D: <span className="font-mono">{liveIndicatorValues.stoch?.d ?? "0.00"}</span></span>
+                      <span style={{ color: "#f0b90b" }} className="font-semibold">STOCHRSI: <span className="font-mono">{formatBinanceNumber(liveIndicatorValues.stoch?.k, 2)}</span></span>
+                      <span style={{ color: "#a855f7" }} className="font-semibold">MASTOCHRSI: <span className="font-mono">{formatBinanceNumber(liveIndicatorValues.stoch?.d, 2)}</span></span>
                     </div>
 
                     <div className="flex items-center gap-1 pointer-events-auto shrink-0 ml-1">

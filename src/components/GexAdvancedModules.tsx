@@ -162,96 +162,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   }, [activeAsset]);
 
   // ============================================================================
-  // 🔬 MODULE 2 LOGIC: HIT RATE STATS (УДАРЫ ПО УРОВНЯМ ЗА 24 ЧАСА И ЗА НЕДЕЛЮ)
-  // ============================================================================
-  const computeHitRateForCandles = (sourceCandles: any[], windowSec: number, periodLabel: "day" | "week") => {
-    if (!sourceCandles || sourceCandles.length === 0) {
-      return [];
-    }
-
-    const levelsToAudit: Array<{
-      id: string;
-      name: string;
-      price: number;
-      type: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET";
-      role: string;
-    }> = [
-      {
-        id: "call_wall",
-        name: "Потолок (Call Wall)",
-        price: gexReport.callWall,
-        type: "RESISTANCE",
-        role: "Стена покупателей опционов"
-      },
-      {
-        id: "put_wall",
-        name: "Поддержка (Put Wall)",
-        price: gexReport.putWall,
-        type: "SUPPORT",
-        role: "Пол продавцов опционов"
-      },
-      {
-        id: "gamma_flip",
-        name: "Рубеж (Zero-Flip)",
-        price: gexReport.gammaFlip,
-        type: "FLIP",
-        role: "Граница смены режима"
-      },
-      {
-        id: "max_pain",
-        name: "Магнит (Max Pain)",
-        price: gexReport.maxPain,
-        type: "MAGNET",
-        role: "Точка притяжения экспирации"
-      }
-    ];
-
-    const periodName = periodLabel === "week" ? "за неделю (7 дней)" : "за 24 часа";
-
-    return levelsToAudit.map((lvl) => {
-      const audit = auditSingleGexLevel(sourceCandles, lvl.price, lvl.type, windowSec);
-      const { touches, bounces, breakouts, hitRatePct, isTested, closestExtreme, distToExtreme, touchTol, breakTol, strike } = audit;
-
-      const isStrong = !isTested || bounces >= breakouts;
-
-      let simpleVerdict = "";
-      if (!isTested) {
-        simpleVerdict = `Цена не доходила до уровня $${lvl.price} ${periodName} (ближайший экстремум на графике $${closestExtreme.toFixed(1)}, запас $${distToExtreme.toFixed(1)}). Ликвидность стены не тронута.`;
-      } else if (isStrong) {
-        simpleVerdict = `Уровень $${lvl.price} прочный ${periodName}. Касаний: ${touches}, удержал цену: ${bounces}, пробоев: ${breakouts} (${hitRatePct}% удержаний). Высокая вероятность отработки.`;
-      } else {
-        simpleVerdict = `Уровень $${lvl.price} пробивался ${periodName}. Касаний: ${touches}, удержал: ${bounces}, пробили: ${breakouts} (${hitRatePct}% удержаний). Ликвидность частично снята, повышенный риск пробоя.`;
-      }
-
-      return {
-        ...lvl,
-        touches,
-        bounces,
-        breakouts,
-        hitRatePct,
-        isTested,
-        isStrong,
-        simpleVerdict,
-        touchTol: touchTol || (activeAsset.includes("BTC") ? 220 : 3.5),
-        breakTol: breakTol || (activeAsset.includes("BTC") ? 320 : 4.8),
-        strike: strike || lvl.price
-      };
-    });
-  };
-
-  const hitRateStatsDay = useMemo(() => {
-    return computeHitRateForCandles(candles, 86400, "day");
-  }, [candles, gexReport, activeAsset]);
-
-  const hitRateStatsWeek = useMemo(() => {
-    const src = weekCandles.length >= 20 ? weekCandles : candles;
-    return computeHitRateForCandles(src, 7 * 86400, "week");
-  }, [weekCandles, candles, gexReport, activeAsset]);
-
-  const activeHitRateStats = hitRatePeriod === "WEEK" ? hitRateStatsWeek : hitRateStatsDay;
-
-  // ============================================================================
-  // 📜 MODULE 2 ENHANCEMENT: PERSISTENT LEVEL MIGRATION LOG (ИСТОРИЯ СДВИГА)
+  // 📜 MODULE 2 PERSISTENT GEX LEVEL MIGRATION LOG (SERVER FILE + LOCALSTORAGE)
   // ============================================================================
   const [migrationLogs, setMigrationLogs] = useState<GexMigrationLogEntry[]>(() => {
     try {
@@ -261,7 +172,6 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch {}
-    // Seed initial historical snapshot if asset is active
     const isGold = activeAsset.includes("GOLD") || activeAsset.includes("XAU");
     const strikeStep = isGold ? 10 : activeAsset.includes("BTC") ? 500 : 20;
     const cw = gexReport.callWall || 4080;
@@ -304,7 +214,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
   const [showMigrationHistoryModal, setShowMigrationHistoryModal] = useState<boolean>(false);
 
-  // Active level reference for detecting shifts
+  // Active level reference for detecting shifts and tracking active duration
   const activeLevelsRef = useRef<{
     asset: string;
     callWall: number;
@@ -323,18 +233,52 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     flipStartTime: Date.now() - 4.0 * 3600 * 1000
   });
 
-  // Track GEX migrations whenever levels shift
+  // 1. Fetch persistent migration logs from server on mount / asset change
+  useEffect(() => {
+    let isMounted = true;
+    const loadServerLogs = async () => {
+      try {
+        const res = await fetch(`/api/gex/migration-log?asset=${encodeURIComponent(activeAsset)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted && data.success && Array.isArray(data.logs)) {
+            if (data.logs.length > 0) {
+              setMigrationLogs(data.logs);
+              try {
+                localStorage.setItem(`quantex_gex_migration_log_${activeAsset}`, JSON.stringify(data.logs));
+              } catch {}
+            } else {
+              // Server has no logs for this asset yet: seed existing local entries to server
+              try {
+                const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed) && parsed.length > 0) {
+                    fetch("/api/gex/migration-log", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ asset: activeAsset, entries: parsed })
+                    }).catch(() => {});
+                  }
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Notice loading migration logs from server:", err);
+      }
+    };
+    loadServerLogs();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeAsset]);
+
+  // 2. Track GEX migrations whenever levels shift and sync with server
   useEffect(() => {
     const curRef = activeLevelsRef.current;
     if (curRef.asset !== activeAsset) {
-      // Asset changed: reload logs from storage
-      try {
-        const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) setMigrationLogs(parsed);
-        }
-      } catch {}
       curRef.asset = activeAsset;
       curRef.callWall = gexReport.callWall;
       curRef.putWall = gexReport.putWall;
@@ -439,14 +383,173 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
     if (newEntries.length > 0) {
       setMigrationLogs((prev) => {
-        const next = [...newEntries, ...prev].slice(0, 40);
+        const next = [...newEntries, ...prev].slice(0, 50);
         try {
           localStorage.setItem(`quantex_gex_migration_log_${activeAsset}`, JSON.stringify(next));
         } catch {}
         return next;
       });
+
+      // Send to server persistent storage (data/gex-migration-log.json)
+      fetch("/api/gex/migration-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          asset: activeAsset,
+          entries: newEntries
+        })
+      }).catch((err) => console.warn("Failed to persist migration log to server:", err));
     }
   }, [gexReport.callWall, gexReport.putWall, gexReport.gammaFlip, activeAsset, candles]);
+
+  // ============================================================================
+  // 🔬 MODULE 2 LOGIC: INTERVAL-BASED HIT RATE STATS (ПО ЛОГУ МИГРАЦИИ)
+  // ============================================================================
+  // Calculates touches, bounces, and breakouts ONLY for the exact intervals
+  // during which each level was actually active in reality!
+  const computeHitRateForCandles = (
+    sourceCandles: any[],
+    windowSec: number,
+    periodLabel: "day" | "week"
+  ) => {
+    if (!sourceCandles || sourceCandles.length === 0) {
+      return [];
+    }
+
+    const latestCandleTime = sourceCandles[sourceCandles.length - 1].time;
+    const windowStartSec = windowSec > 0 ? latestCandleTime - windowSec : 0;
+
+    const levelsToAudit: Array<{
+      id: "call_wall" | "put_wall" | "gamma_flip" | "max_pain";
+      name: string;
+      price: number;
+      type: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET";
+      role: string;
+      activeSinceMs: number;
+    }> = [
+      {
+        id: "call_wall",
+        name: "Потолок (Call Wall)",
+        price: gexReport.callWall,
+        type: "RESISTANCE",
+        role: "Стена покупателей опционов",
+        activeSinceMs: activeLevelsRef.current.cwStartTime
+      },
+      {
+        id: "put_wall",
+        name: "Поддержка (Put Wall)",
+        price: gexReport.putWall,
+        type: "SUPPORT",
+        role: "Пол продавцов опционов",
+        activeSinceMs: activeLevelsRef.current.pwStartTime
+      },
+      {
+        id: "gamma_flip",
+        name: "Рубеж (Zero-Flip)",
+        price: gexReport.gammaFlip,
+        type: "FLIP",
+        role: "Граница смены режима",
+        activeSinceMs: activeLevelsRef.current.flipStartTime
+      },
+      {
+        id: "max_pain",
+        name: "Магнит (Max Pain)",
+        price: gexReport.maxPain,
+        type: "MAGNET",
+        role: "Точка притяжения экспирации",
+        activeSinceMs: activeLevelsRef.current.cwStartTime
+      }
+    ];
+
+    const periodName = periodLabel === "week" ? "за неделю (7 дней)" : "за 24 часа";
+
+    return levelsToAudit.map((lvl) => {
+      // 1. Audit CURRENT active level ONLY for the period it has been active
+      const currentFromSec = Math.max(windowStartSec, Math.floor(lvl.activeSinceMs / 1000));
+      const currentCandles = sourceCandles.filter((c) => c.time >= currentFromSec);
+      const activeCandlesForCurrent = currentCandles.length >= 3 ? currentCandles : sourceCandles.slice(-12);
+      const currentAudit = auditSingleGexLevel(activeCandlesForCurrent, lvl.price, lvl.type, 0);
+
+      // 2. Audit PREVIOUS levels from migrationLogs ONLY for their respective active intervals
+      const pastMigrations = migrationLogs.filter((m) => {
+        if (m.levelType !== lvl.id) return false;
+        const toSecTime = Math.floor(m.activeToTime / 1000);
+        return toSecTime >= windowStartSec;
+      });
+
+      let histTouches = 0;
+      let histBounces = 0;
+      let histBreakouts = 0;
+
+      for (const log of pastMigrations) {
+        const fromSec = Math.max(windowStartSec, Math.floor(log.activeFromTime / 1000));
+        const toSec = Math.floor(log.activeToTime / 1000);
+        const segmentCandles = sourceCandles.filter((c) => c.time >= fromSec && c.time <= toSec);
+
+        let segTouches = log.touches || 0;
+        let segBounces = log.bounces || 0;
+        let segBreakouts = log.breakouts || 0;
+
+        // If historical candles exist for that window, re-audit dynamically
+        if (segmentCandles.length >= 3) {
+          const segAudit = auditSingleGexLevel(segmentCandles, log.prevPrice, lvl.type, 0);
+          segTouches = segAudit.touches;
+          segBounces = segAudit.bounces;
+          segBreakouts = segAudit.breakouts;
+        }
+
+        histTouches += segTouches;
+        histBounces += segBounces;
+        histBreakouts += segBreakouts;
+      }
+
+      // 3. Composite Hit Rate across current active level and past migrated levels
+      const totalTouches = currentAudit.touches + histTouches;
+      const totalBounces = currentAudit.bounces + histBounces;
+      const totalBreakouts = currentAudit.breakouts + histBreakouts;
+      const isTested = totalTouches > 0;
+      const hitRatePct = totalTouches > 0 ? Math.round((totalBounces / totalTouches) * 100) : 100;
+      const isStrong = !isTested || totalBounces >= totalBreakouts;
+
+      let simpleVerdict = "";
+      if (!isTested) {
+        simpleVerdict = `Цена не доходила до уровней ${periodName} (ближайший экстремум $${currentAudit.closestExtreme.toFixed(1)}, запас $${currentAudit.distToExtreme.toFixed(1)}). Ликвидность не тронута.`;
+      } else if (isStrong) {
+        if (pastMigrations.length > 0) {
+          simpleVerdict = `Уровни прочные ${periodName} (с учетом миграции страйков). Всего касаний: ${totalTouches}, удержали: ${totalBounces}, пробоев: ${totalBreakouts} (${hitRatePct}% удержаний). Текущий уровень $${lvl.price} удержал: ${currentAudit.bounces}/${currentAudit.touches}.`;
+        } else {
+          simpleVerdict = `Уровень $${lvl.price} прочный ${periodName}. Касаний: ${totalTouches}, удержал цену: ${totalBounces}, пробоев: ${totalBreakouts} (${hitRatePct}% удержаний).`;
+        }
+      } else {
+        simpleVerdict = `Уровни пробивались ${periodName}. Всего касаний: ${totalTouches}, удержали: ${totalBounces}, пробили: ${totalBreakouts} (${hitRatePct}% удержаний). Ликвидность частично снята.`;
+      }
+
+      return {
+        ...lvl,
+        touches: totalTouches,
+        bounces: totalBounces,
+        breakouts: totalBreakouts,
+        hitRatePct,
+        isTested,
+        isStrong,
+        simpleVerdict,
+        touchTol: currentAudit.touchTol || (activeAsset.includes("BTC") ? 220 : 3.5),
+        breakTol: currentAudit.breakTol || (activeAsset.includes("BTC") ? 320 : 4.8),
+        strike: lvl.price
+      };
+    });
+  };
+
+  const hitRateStatsDay = useMemo(() => {
+    return computeHitRateForCandles(candles, 86400, "day");
+  }, [candles, gexReport, activeAsset, migrationLogs]);
+
+  const hitRateStatsWeek = useMemo(() => {
+    const src = weekCandles.length >= 20 ? weekCandles : candles;
+    return computeHitRateForCandles(src, 7 * 86400, "week");
+  }, [weekCandles, candles, gexReport, activeAsset, migrationLogs]);
+
+  const activeHitRateStats = hitRatePeriod === "WEEK" ? hitRateStatsWeek : hitRateStatsDay;
 
   // Helper to extract previous level stats for displaying in the card
   const getPreviousLevelSummary = (levelType: "call_wall" | "put_wall" | "gamma_flip", levelPrice: number) => {
@@ -963,8 +1066,64 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     };
   }, []);
 
+  const isRealOptions = Boolean(
+    gexReport.source &&
+    (gexReport.source.includes("Yahoo Finance Real Options") ||
+     gexReport.source.includes("Real Option"))
+  );
+  const isSyntheticModel = Boolean(
+    gexReport.source && gexReport.source.includes("Синтетическая модель")
+  );
+
   return (
     <div className="space-y-6 pt-2">
+      {/* 🟢/⚠️ DATA SOURCE STATUS BANNER (REAL YAHOO OPTIONS VS SYNTHETIC FALLBACK) */}
+      {isRealOptions ? (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-4 py-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/35 text-emerald-300 text-xs shadow-lg shadow-emerald-950/20">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-extrabold text-white text-xs tracking-wide">🟢 Live Options</span>
+              <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-200 rounded border border-emerald-500/40 font-bold">
+                Реальный поток опционов
+              </span>
+              <span className="text-[11px] text-emerald-200/90 hidden md:inline">
+                Открытый интерес (OI) и гамма дилеров рассчитаны по биржевой опционной цепи Yahoo Finance.
+              </span>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono text-emerald-400/80 truncate max-w-md">
+            {gexReport.source}
+          </span>
+        </div>
+      ) : isSyntheticModel ? (
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs shadow-xl shadow-amber-950/20">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-extrabold text-amber-300 text-xs tracking-wide">⚠️ Синтетическая модель</span>
+                <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-300 rounded border border-amber-500/50 font-bold">
+                  Реальный API недоступен
+                </span>
+                <span className="text-[10px] font-mono text-amber-400/70">
+                  Кэш 15 мин • Резервный режим
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-300/85 mt-1 leading-relaxed">
+                Биржевой опционный фид Yahoo Finance сейчас недоступен или рынок закрыт. Уровни (Call/Put Wall) рассчитаны по адаптивной гауссовой математической модели и исторической волатильности GVZ. При сильном тренде уровни могут требовать поправки.
+              </p>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono text-amber-400/70 shrink-0 self-start sm:self-auto bg-amber-950/50 px-2 py-1 rounded border border-amber-500/30">
+            {gexReport.expirationDate || "Резерв"}
+          </span>
+        </div>
+      ) : null}
+
       {/* ====================================================================== */}
       {/* 4. ТЕРМОМЕТР РЕЖИМА РЫНКА (МОДУЛЬ 4) & УДАРЫ ПО УРОВНЯМ (МОДУЛЬ 2)      */}
       {/* ====================================================================== */}

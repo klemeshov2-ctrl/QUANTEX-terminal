@@ -3567,6 +3567,83 @@ app.get("/api/gex/report", async (req, res) => {
   }
 });
 
+// 1.2 Persistent GEX Level Migration Log (data/gex-migration-log.json)
+const GEX_MIGRATION_LOG_FILE = path.join(process.cwd(), "data", "gex-migration-log.json");
+
+app.get("/api/gex/migration-log", (req, res) => {
+  try {
+    const asset = req.query.asset as string | undefined;
+    if (!fs.existsSync(GEX_MIGRATION_LOG_FILE)) {
+      return res.json({ success: true, logs: [] });
+    }
+    const raw = fs.readFileSync(GEX_MIGRATION_LOG_FILE, "utf-8");
+    let logs = JSON.parse(raw);
+    if (!Array.isArray(logs)) logs = [];
+    if (asset) {
+      const assetUpper = asset.toUpperCase();
+      logs = logs.filter((l: any) => {
+        if (!l.asset) return true;
+        const lUpper = l.asset.toUpperCase();
+        if (lUpper === assetUpper) return true;
+        if ((assetUpper.includes("XAU") || assetUpper.includes("GOLD")) && (lUpper.includes("XAU") || lUpper.includes("GOLD"))) return true;
+        return false;
+      });
+    }
+    return res.json({ success: true, logs });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message, logs: [] });
+  }
+});
+
+app.post("/api/gex/migration-log", (req, res) => {
+  try {
+    const dataDir = path.join(process.cwd(), "data");
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    let existingLogs: any[] = [];
+    if (fs.existsSync(GEX_MIGRATION_LOG_FILE)) {
+      try {
+        const raw = fs.readFileSync(GEX_MIGRATION_LOG_FILE, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) existingLogs = parsed;
+      } catch {}
+    }
+
+    const { asset, entries, entry } = req.body;
+    const incoming: any[] = Array.isArray(entries) ? entries : entry ? [entry] : [];
+    if (incoming.length === 0) {
+      return res.status(400).json({ success: false, error: "Нет записей миграции для сохранения" });
+    }
+
+    const assetTag = asset || "XAUUSD";
+    const incomingWithAsset = incoming.map((e: any) => ({
+      ...e,
+      asset: e.asset || assetTag
+    }));
+
+    // Merge without duplicates by id
+    const existingMap = new Map<string, any>();
+    for (const log of existingLogs) {
+      if (log.id) existingMap.set(log.id, log);
+    }
+    for (const log of incomingWithAsset) {
+      if (log.id) existingMap.set(log.id, log);
+    }
+
+    // Keep up to 300 latest logs sorted by activeToTime descending
+    const merged = Array.from(existingMap.values())
+      .sort((a, b) => (b.activeToTime || 0) - (a.activeToTime || 0))
+      .slice(0, 300);
+
+    fs.writeFileSync(GEX_MIGRATION_LOG_FILE, JSON.stringify(merged, null, 2), "utf-8");
+    return res.json({ success: true, count: merged.length, message: "Лог миграции GEX успешно сохранен на сервере" });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 1.5 Full QUANTEX Premium v8 Pine Script v6 Code Reader & Writer
 app.get("/api/indicator/st-premium-code", (req, res) => {
   try {
