@@ -7253,6 +7253,40 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             {/* GEX Metrics Grid */}
             {gexReport ? (
               <div className="space-y-6">
+                {/* 🟢/⚠️ Live Options / Synthetic Badge Banner */}
+                {gexReport.source && (gexReport.source.includes("CBOE") || gexReport.source.includes("Yahoo Finance Real Options") || gexReport.source.includes("Real Option")) ? (
+                  <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/35 text-emerald-300 text-xs shadow-md">
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                      </span>
+                      <span className="font-extrabold text-white text-xs sm:text-sm tracking-wide">
+                        🟢 Live Options (Реальные данные)
+                      </span>
+                      <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-200 rounded border border-emerald-500/40 font-bold hidden sm:inline">
+                        {gexReport.source.includes("CBOE") ? "CBOE Institutional Feed" : "Yahoo Finance"}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-400/80 truncate max-w-xs hidden md:inline">
+                      {gexReport.source}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs shadow-md">
+                    <div className="flex items-center gap-2">
+                      <span className="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide">
+                        ⚠️ Синтетическая модель (Резервный режим)
+                      </span>
+                      <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-300 rounded border border-amber-500/50 font-bold hidden sm:inline">
+                        Реальный API недоступен
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-amber-400/80">
+                      Спот: ${(gexReport.spotPrice || 4043).toFixed(1)}
+                    </span>
+                  </div>
+                )}
                 
                 {/* 4 Key Institutional Diagnostic Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">

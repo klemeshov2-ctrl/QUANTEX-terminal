@@ -597,17 +597,37 @@ async function fetchCboeGoldOptionChain(
   tYears: number;
 } | null> {
   try {
-    const cboeRes = await fetch("https://cdn.cboe.com/api/global/delayed_quotes/options/GLD.json", {
-      headers: {
-        "User-Agent": REAL_BROWSER_HEADERS["User-Agent"],
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9"
-      },
-      signal: AbortSignal.timeout(6000)
-    });
+    let cboeRes: Response | null = null;
+    const retryDelays = [1000, 2000, 4000];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        cboeRes = await fetch("https://cdn.cboe.com/api/global/delayed_quotes/options/GLD.json", {
+          headers: {
+            "User-Agent": REAL_BROWSER_HEADERS["User-Agent"],
+            Accept: "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9"
+          },
+          signal: AbortSignal.timeout(6000)
+        });
 
-    if (!cboeRes.ok) {
-      console.warn(`[PM2 GEX Engine] CBOE API returned status ${cboeRes.status}`);
+        if (cboeRes.status === 429 || cboeRes.status === 503) {
+          console.warn(`[PM2 GEX Engine] CBOE API returned HTTP ${cboeRes.status} on attempt ${attempt}/3`);
+          if (attempt < 3) {
+            await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+            continue;
+          }
+        }
+        break;
+      } catch (err: any) {
+        console.warn(`[PM2 GEX Engine] CBOE fetch error on attempt ${attempt}/3:`, err.message);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+        }
+      }
+    }
+
+    if (!cboeRes || !cboeRes.ok) {
+      console.warn(`[PM2 GEX Engine] CBOE API returned status ${cboeRes?.status || "network failure"} after 3 attempts`);
       return null;
     }
 
@@ -891,21 +911,22 @@ async function fetchYahooOptionChain(
   const baseUrl = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}${crumbParam}`;
 
   let metaRes: Response | null = null;
+  const retryDelays = [1000, 2000, 4000];
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       metaRes = await fetch(baseUrl, { headers, signal: AbortSignal.timeout(5000) });
-      if (metaRes.status === 429 || metaRes.status === 403) {
+      if (metaRes.status === 429 || metaRes.status === 503 || metaRes.status === 403) {
         const body = await metaRes.text().catch(() => "");
         console.error(
-          `[PM2 GEX Engine] Yahoo Finance blocked request for ${symbol} (HTTP ${metaRes.status}) on attempt ${attempt}/3. Body: ${body.slice(0, 160)}`
+          `[PM2 GEX Engine] Yahoo Finance returned HTTP ${metaRes.status} for ${symbol} on attempt ${attempt}/3. Body: ${body.slice(0, 160)}`
         );
-        if (attempt < 3) await new Promise(r => setTimeout(r, 2200));
+        if (attempt < 3) await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
         continue;
       }
       break;
     } catch (e: any) {
       console.error(`[PM2 GEX Engine] Yahoo fetch error for ${symbol} on attempt ${attempt}/3:`, e.message);
-      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+      if (attempt < 3) await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
     }
   }
 
@@ -940,9 +961,25 @@ async function fetchYahooOptionChain(
     ? `?date=${targetDate}&crumb=${encodeURIComponent(session.crumb)}`
     : `?date=${targetDate}`;
   const chainUrl = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}${dateParam}`;
-  const chainRes = await fetch(chainUrl, { headers, signal: AbortSignal.timeout(6000) });
-  if (!chainRes.ok) {
-    console.error(`[PM2 GEX Engine] Yahoo chain options request failed: HTTP ${chainRes.status}`);
+
+  let chainRes: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      chainRes = await fetch(chainUrl, { headers, signal: AbortSignal.timeout(6000) });
+      if (chainRes.status === 429 || chainRes.status === 503 || chainRes.status === 403) {
+        console.error(`[PM2 GEX Engine] Yahoo chain options returned HTTP ${chainRes.status} on attempt ${attempt}/3`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+        continue;
+      }
+      break;
+    } catch (e: any) {
+      console.error(`[PM2 GEX Engine] Yahoo chain fetch error for ${symbol} on attempt ${attempt}/3:`, e.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+    }
+  }
+
+  if (!chainRes || !chainRes.ok) {
+    console.error(`[PM2 GEX Engine] Yahoo chain options request failed after 3 attempts`);
     return null;
   }
 

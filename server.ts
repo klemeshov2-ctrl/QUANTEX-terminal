@@ -3587,14 +3587,17 @@ app.get("/api/gex/report", async (req, res) => {
 // 1.2 Persistent GEX Level Migration Log (data/gex-migration-log.json)
 const GEX_MIGRATION_LOG_FILE = path.join(process.cwd(), "data", "gex-migration-log.json");
 
-app.get("/api/gex/migration-log", (req, res) => {
+app.get("/api/gex/migration-log", async (req, res) => {
   try {
     const asset = req.query.asset as string | undefined;
-    if (!fs.existsSync(GEX_MIGRATION_LOG_FILE)) {
-      return res.json({ success: true, logs: [] });
+    let logs: any[] = [];
+    try {
+      const raw = await fs.promises.readFile(GEX_MIGRATION_LOG_FILE, "utf-8");
+      logs = JSON.parse(raw);
+    } catch {
+      logs = [];
     }
-    const raw = fs.readFileSync(GEX_MIGRATION_LOG_FILE, "utf-8");
-    let logs = JSON.parse(raw);
+
     if (!Array.isArray(logs)) logs = [];
     if (asset) {
       const assetUpper = asset.toUpperCase();
@@ -3612,21 +3615,17 @@ app.get("/api/gex/migration-log", (req, res) => {
   }
 });
 
-app.post("/api/gex/migration-log", (req, res) => {
+app.post("/api/gex/migration-log", async (req, res) => {
   try {
     const dataDir = path.join(process.cwd(), "data");
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+    await fs.promises.mkdir(dataDir, { recursive: true });
 
     let existingLogs: any[] = [];
-    if (fs.existsSync(GEX_MIGRATION_LOG_FILE)) {
-      try {
-        const raw = fs.readFileSync(GEX_MIGRATION_LOG_FILE, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) existingLogs = parsed;
-      } catch {}
-    }
+    try {
+      const raw = await fs.promises.readFile(GEX_MIGRATION_LOG_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) existingLogs = parsed;
+    } catch {}
 
     const { asset, entries, entry } = req.body;
     const incoming: any[] = Array.isArray(entries) ? entries : entry ? [entry] : [];
@@ -3654,7 +3653,7 @@ app.post("/api/gex/migration-log", (req, res) => {
       .sort((a, b) => (b.activeToTime || 0) - (a.activeToTime || 0))
       .slice(0, 300);
 
-    fs.writeFileSync(GEX_MIGRATION_LOG_FILE, JSON.stringify(merged, null, 2), "utf-8");
+    await fs.promises.writeFile(GEX_MIGRATION_LOG_FILE, JSON.stringify(merged, null, 2), "utf-8");
     return res.json({ success: true, count: merged.length, message: "Лог миграции GEX успешно сохранен на сервере" });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -6309,9 +6308,9 @@ function loadUnifiedSettings() {
   }
 }
 
-function persistUnifiedSettings() {
+async function persistUnifiedSettings() {
   try {
-    fs.writeFileSync(UNIFIED_SETTINGS_FILE, JSON.stringify(unifiedStationSettings, null, 2), "utf-8");
+    await fs.promises.writeFile(UNIFIED_SETTINGS_FILE, JSON.stringify(unifiedStationSettings, null, 2), "utf-8");
   } catch (err: any) {
     addServerLog("ERROR", `Ошибка записи station-settings.json: ${err.message}`);
   }
