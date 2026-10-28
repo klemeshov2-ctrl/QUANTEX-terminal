@@ -736,6 +736,9 @@ async function fetchCboeGoldOptionChain(
       }
 
       const oi = Number(o.open_interest) || 0;
+      // Filter out low open-interest noise (OI < 10)
+      if (oi < 10) continue;
+
       const vol = Number(o.volume) || 0;
       const iv = Number(o.iv) > 0.01 ? Number(o.iv) : 0.185;
 
@@ -756,18 +759,20 @@ async function fetchCboeGoldOptionChain(
     const strikes: GexStrikeData[] = [];
 
     for (const [strike, d] of strikeMap.entries()) {
-      if (d.callOi === 0 && d.putOi === 0) continue;
+      // Filter strikes where total OI is below 10 to eliminate noise
+      if (d.callOi + d.putOi < 10) continue;
 
       const avgCallIv = d.callCount > 0 ? d.callIvSum / d.callCount : defaultIv;
       const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
       const avgIv = (avgCallIv + avgPutIv) / 2;
 
-      // Real GEX = Gamma * OI * 100 * Spot^2 * 0.01 / 1_000_000
+      // Real GEX Formula: Gamma * Open Interest * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+      const contractMultiplier = 100; // CME / COMEX Gold Futures Standard: 100 troy oz
       const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
       const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
 
-      const callGex = (callGamma * d.callOi * 100 * spotPrice * spotPrice * 0.01) / 1_000_000;
-      const putGex = -(putGamma * d.putOi * 100 * spotPrice * spotPrice * 0.01) / 1_000_000;
+      const callGex = (callGamma * d.callOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+      const putGex = -(putGamma * d.putOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
       const netGex = callGex + putGex;
 
       strikes.push({
@@ -1063,7 +1068,9 @@ async function fetchYahooGoldRealOptions(
       };
       strikeMap.set(strike, entry);
     }
-    entry.callOi += c.openInterest || 0;
+    const callOi = c.openInterest || 0;
+    if (callOi < 10) continue;
+    entry.callOi += callOi;
     entry.callVol += c.volume || 0;
     if (c.impliedVolatility && c.impliedVolatility > 0.001) {
       entry.callIvSum += c.impliedVolatility;
@@ -1093,7 +1100,9 @@ async function fetchYahooGoldRealOptions(
       };
       strikeMap.set(strike, entry);
     }
-    entry.putOi += p.openInterest || 0;
+    const putOi = p.openInterest || 0;
+    if (putOi < 10) continue;
+    entry.putOi += putOi;
     entry.putVol += p.volume || 0;
     if (p.impliedVolatility && p.impliedVolatility > 0.001) {
       entry.putIvSum += p.impliedVolatility;
@@ -1105,17 +1114,20 @@ async function fetchYahooGoldRealOptions(
   const strikes: GexStrikeData[] = [];
 
   for (const [strike, d] of strikeMap.entries()) {
-    if (d.callOi === 0 && d.putOi === 0) continue;
+    // Filter out strikes with total open interest below 10
+    if (d.callOi + d.putOi < 10) continue;
 
     const avgCallIv = d.callCount > 0 ? d.callIvSum / d.callCount : defaultIv;
     const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
     const avgIv = (avgCallIv + avgPutIv) / 2;
 
+    // Real GEX Formula: Gamma * Open Interest * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+    const contractMultiplier = 100; // CME / COMEX Gold Standard: 100 troy oz
     const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
     const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
 
-    const callGex = (callGamma * d.callOi * 100 * spotPrice * spotPrice * 0.01) / 1_000_000;
-    const putGex = -(putGamma * d.putOi * 100 * spotPrice * spotPrice * 0.01) / 1_000_000;
+    const callGex = (callGamma * d.callOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+    const putGex = -(putGamma * d.putOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
     const netGex = callGex + putGex;
 
     strikes.push({

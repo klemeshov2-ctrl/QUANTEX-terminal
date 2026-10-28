@@ -327,7 +327,7 @@ export interface LivePineCandle {
 }
 
 export async function fetchCalibratedPineCandles(targetSpotPrice: number): Promise<LivePineCandle[]> {
-  // 1. Primary: Native real-time OANDA:XAUUSD 15m stream directly from TradingView
+  // 1. Primary Priority: Native real-time OANDA:XAUUSD 15m stream directly from TradingView WebSocket
   try {
     const tvBars = await ensureTvLiveStream("OANDA:XAUUSD", "15m", 80);
     if (tvBars && tvBars.length >= 20) {
@@ -340,13 +340,15 @@ export async function fetchCalibratedPineCandles(targetSpotPrice: number): Promi
         volume: b.volume
       }));
     }
-  } catch {}
+  } catch (err: any) {
+    console.warn("[Pine Indicator] TV stream OANDA:XAUUSD notice:", err.message);
+  }
 
-  // 2. Fallback: Calibrated to OANDA:XAUUSD Spot without mixing PAXGUSDT
+  // 2. Fallback: Raw authentic GC=F bars WITHOUT basisShift distortion (wicks and proportions preserved)
   try {
     const yUrl = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=15m&range=5d";
     const yRes = await fetch(yUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
       signal: AbortSignal.timeout(4000)
     });
     if (yRes.ok) {
@@ -377,17 +379,8 @@ export async function fetchCalibratedPineCandles(targetSpotPrice: number): Promi
       }
       const rawBars = Array.from(bucketMap.values()).sort((a, b) => a.time - b.time).slice(-60);
       if (rawBars.length >= 20) {
-        const lastRawClose = rawBars[rawBars.length - 1].close;
-        const basisShift = targetSpotPrice - lastRawClose;
-        const calibrated = rawBars.map((b, idx) => {
-          const isLast = idx === rawBars.length - 1;
-          const open = Math.round((b.open + basisShift) * 100) / 100;
-          const close = isLast ? targetSpotPrice : Math.round((b.close + basisShift) * 100) / 100;
-          const high = Math.round(Math.max(open, close, b.high + basisShift) * 100) / 100;
-          const low = Math.round(Math.min(open, close, b.low + basisShift) * 100) / 100;
-          return { time: b.time, open, high, low, close, volume: Math.max(120, Math.round(b.volume)) };
-        });
-        return calibrated;
+        // Return raw unshifted candle bars to avoid wick distortion
+        return rawBars;
       }
     }
   } catch {}
@@ -433,7 +426,7 @@ export function computePineScriptEngine(
   const count = candles.length;
   const close = oandaPrice;
 
-  // 1. Fibonacci Lookback Period (50 bars for XAUUSD 15m Optimal Preset)
+  // 1. Fibonacci Lookback Period (strictly 50 bars for XAUUSD 15m Optimal Preset)
   const lookback = Math.min(50, count);
   const slice = candles.slice(count - lookback);
   const highest_high = Math.max(...slice.map(c => c.high), oandaHigh);
@@ -447,52 +440,76 @@ export function computePineScriptEngine(
     : 6.85;
 
   // 3. Multi-Timeframe EMA Dots (Pine Script: request.security(syminfo.tickerid, tf, ta.ema(close, 9) > ta.ema(close, 21)))
-  const dot_5 = (typeof tvMetrics["EMA9|5"] === "number" && typeof tvMetrics["EMA21|5"] === "number")
-    ? (tvMetrics["EMA9|5"] > tvMetrics["EMA21|5"] ? "🟢" : "🔴")
-    : (close > (tvMetrics["EMA20|15"] || close) ? "🟢" : "🔴");
+  // Honest check: if data from scanner is null/undefined, output "⚪ N/A" instead of false red/green dots
+  const getEmaDot = (ema9Key: string, ema21Key: string, fallbackEma20Key?: string): string => {
+    const ema9 = tvMetrics[ema9Key];
+    const ema21 = tvMetrics[ema21Key];
+    if (typeof ema9 === "number" && typeof ema21 === "number" && !isNaN(ema9) && !isNaN(ema21)) {
+      return ema9 > ema21 ? "🟢" : "🔴";
+    }
+    if (fallbackEma20Key && typeof tvMetrics[fallbackEma20Key] === "number" && !isNaN(tvMetrics[fallbackEma20Key])) {
+      return close > tvMetrics[fallbackEma20Key] ? "🟢" : "🔴";
+    }
+    return "⚪ N/A";
+  };
 
-  const dot_15 = (typeof tvMetrics["EMA9|15"] === "number" && typeof tvMetrics["EMA21|15"] === "number")
-    ? (tvMetrics["EMA9|15"] > tvMetrics["EMA21|15"] ? "🟢" : "🔴")
-    : (close > (tvMetrics["EMA20|15"] || close) ? "🟢" : "🔴");
+  const dot_5 = getEmaDot("EMA9|5", "EMA21|5");
+  const dot_15 = getEmaDot("EMA9|15", "EMA21|15", "EMA20|15");
+  const dot_60 = getEmaDot("EMA9|60", "EMA21|60");
+  const dot_240 = getEmaDot("EMA9|240", "EMA21|240");
+  const dot_D = getEmaDot("EMA9", "EMA21");
+  const dot_W = getEmaDot("EMA9|1W", "EMA21|1W");
 
-  const dot_60 = (typeof tvMetrics["EMA9|60"] === "number" && typeof tvMetrics["EMA21|60"] === "number")
-    ? (tvMetrics["EMA9|60"] > tvMetrics["EMA21|60"] ? "🟢" : "🔴")
-    : (close > (tvMetrics["EMA20|60"] || close) ? "🟢" : "🔴");
+  // 4. Liquidity Sweeps (Matching Pine Script: scriptSuper.txt lines 1184-1210)
+  // Lookback: 50 bars. Key reference pivots are taken from prior bars before recent test.
+  const priorBars = candles.slice(Math.max(0, count - lookback), Math.max(1, count - 4));
+  const priorKeyHigh = priorBars.length > 0 ? Math.max(...priorBars.map(c => c.high)) : highest_high;
+  const priorKeyLow = priorBars.length > 0 ? Math.min(...priorBars.map(c => c.low)) : lowest_low;
 
-  const dot_240 = (typeof tvMetrics["EMA9|240"] === "number" && typeof tvMetrics["EMA21|240"] === "number")
-    ? (tvMetrics["EMA9|240"] > tvMetrics["EMA21|240"] ? "🟢" : "🔴")
-    : (close > (tvMetrics["EMA20|240"] || close) ? "🟢" : "🔴");
-
-  const dot_D = (typeof tvMetrics["EMA9"] === "number" && typeof tvMetrics["EMA21"] === "number")
-    ? (tvMetrics["EMA9"] > tvMetrics["EMA21"] ? "🟢" : "🔴")
-    : "🔴";
-
-  const dot_W = (typeof tvMetrics["EMA9|1W"] === "number" && typeof tvMetrics["EMA21|1W"] === "number")
-    ? (tvMetrics["EMA9|1W"] > tvMetrics["EMA21|1W"] ? "🟢" : "🔴")
-    : "🔴";
-
-  // 4. Liquidity Sweeps (Pine Script: is_high_sweep & is_low_sweep)
   let is_high_sweep = false;
   let is_low_sweep = false;
   let sweepPrice = 0;
-  for (let i = count - 6; i < count; i++) {
+  let sweepBarIdx = -1;
+  let sweepDetails = "";
+
+  const checkBars = Math.min(count, 6);
+  for (let i = count - checkBars; i < count; i++) {
     const c = candles[i];
     if (!c) continue;
-    const totalH = c.high - c.low || 1;
+    const totalH = Math.max(0.1, c.high - c.low);
+    const bodyH = Math.abs(c.close - c.open);
     const wickHigh = c.high - Math.max(c.open, c.close);
     const wickLow = Math.min(c.open, c.close) - c.low;
-    if (c.high >= highest_high * 0.9995 && wickHigh / totalH >= 0.38) {
+
+    // High Sweep: Price pierces or approaches prior high (>= 0.999 of priorKeyHigh / highest_high)
+    // with distinct upper wick rejection (wick >= 35% or small body with close in bottom half)
+    const isHighRejection = (wickHigh / totalH >= 0.35) || (bodyH <= totalH * 0.45 && c.close <= c.high - totalH * 0.5);
+    if ((c.high >= priorKeyHigh * 0.999 || c.high >= highest_high * 0.999) && isHighRejection && c.close <= c.high - wickHigh * 0.4) {
       is_high_sweep = true;
-      sweepPrice = c.high;
+      sweepPrice = Math.round(c.high * 100) / 100;
+      sweepBarIdx = count - 1 - i;
+      sweepDetails = `High: $${c.high.toFixed(2)}, KeyRef: $${priorKeyHigh.toFixed(2)}, Wick: ${(wickHigh / totalH * 100).toFixed(0)}%, Close: $${c.close.toFixed(2)}`;
     }
-    if (c.low <= lowest_low * 1.0005 && wickLow / totalH >= 0.38) {
+
+    // Low Sweep: Price pierces or approaches prior low (<= 1.001 of priorKeyLow / lowest_low)
+    // with distinct lower wick rejection (wick >= 35% or small body with close in top half)
+    const isLowRejection = (wickLow / totalH >= 0.35) || (bodyH <= totalH * 0.45 && c.close >= c.low + totalH * 0.5);
+    if ((c.low <= priorKeyLow * 1.001 || c.low <= lowest_low * 1.001) && isLowRejection && c.close >= c.low + wickLow * 0.4) {
       is_low_sweep = true;
-      sweepPrice = c.low;
+      sweepPrice = Math.round(c.low * 100) / 100;
+      sweepBarIdx = count - 1 - i;
+      sweepDetails = `Low: $${c.low.toFixed(2)}, KeyRef: $${priorKeyLow.toFixed(2)}, Wick: ${(wickLow / totalH * 100).toFixed(0)}%, Close: $${c.close.toFixed(2)}`;
     }
   }
 
+  if (is_high_sweep) {
+    console.log(`[Pine Indicator SWEEP] 🔴 HIGH SWEEP detected (${sweepBarIdx} bars ago) at $${sweepPrice}! Details: ${sweepDetails}`);
+  } else if (is_low_sweep) {
+    console.log(`[Pine Indicator SWEEP] 🟢 LOW SWEEP detected (${sweepBarIdx} bars ago) at $${sweepPrice}! Details: ${sweepDetails}`);
+  }
+
   // 5. Consensus Scoring & Direction (Matching scriptSuper.txt lines 700-739)
-  const htf_trend_up = dot_60 === "🟢";
+  const htf_trend_up = dot_60 === "🟢" || (dot_60.includes("N/A") && (dot_240 === "🟢" || dot_15 === "🟢"));
   const rsi15 = typeof tvMetrics["RSI|15"] === "number" ? tvMetrics["RSI|15"] : 38.5;
 
   let bull_score = 0;

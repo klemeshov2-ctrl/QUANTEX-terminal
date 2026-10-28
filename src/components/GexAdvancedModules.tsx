@@ -1068,7 +1068,8 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
   const isRealOptions = Boolean(
     gexReport.source &&
-    (gexReport.source.includes("Yahoo Finance Real Options") ||
+    (gexReport.source.includes("CBOE") ||
+     gexReport.source.includes("Yahoo Finance Real Options") ||
      gexReport.source.includes("Real Option"))
   );
   const isSyntheticModel = Boolean(
@@ -1077,7 +1078,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
   return (
     <div className="space-y-6 pt-2">
-      {/* 🟢/⚠️ DATA SOURCE STATUS BANNER (REAL YAHOO OPTIONS VS SYNTHETIC FALLBACK) */}
+      {/* 🟢/⚠️ DATA SOURCE STATUS BANNER (REAL CBOE/YAHOO OPTIONS VS SYNTHETIC FALLBACK) */}
       {isRealOptions ? (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-4 py-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/35 text-emerald-300 text-xs shadow-lg shadow-emerald-950/20">
           <div className="flex items-center gap-2.5">
@@ -1086,12 +1087,14 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             </span>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-extrabold text-white text-xs tracking-wide">🟢 Live Options</span>
+              <span className="font-extrabold text-white text-xs sm:text-sm tracking-wide">
+                🟢 Live Options (Реальные данные)
+              </span>
               <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-200 rounded border border-emerald-500/40 font-bold">
-                Реальный поток опционов
+                Институциональный поток
               </span>
               <span className="text-[11px] text-emerald-200/90 hidden md:inline">
-                Открытый интерес (OI) и гамма дилеров рассчитаны по биржевой опционной цепи Yahoo Finance.
+                Открытый интерес (OI) и гамма дилеров рассчитаны по реальной биржевой опционной цепи ({gexReport.source.includes("CBOE") ? "CBOE" : "Yahoo Finance"}).
               </span>
             </div>
           </div>
@@ -1105,16 +1108,18 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
             <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-extrabold text-amber-300 text-xs tracking-wide">⚠️ Синтетическая модель</span>
+                <span className="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide">
+                  ⚠️ Синтетическая модель (Резервный режим)
+                </span>
                 <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-300 rounded border border-amber-500/50 font-bold">
                   Реальный API недоступен
                 </span>
                 <span className="text-[10px] font-mono text-amber-400/70">
-                  Кэш 15 мин • Резервный режим
+                  Кэш 15 мин • Спот-привязка
                 </span>
               </div>
               <p className="text-[11px] text-amber-300/85 mt-1 leading-relaxed">
-                Биржевой опционный фид Yahoo Finance сейчас недоступен или рынок закрыт. Уровни (Call/Put Wall) рассчитаны по адаптивной гауссовой математической модели и исторической волатильности GVZ. При сильном тренде уровни могут требовать поправки.
+                Биржевой опционный фид сейчас недоступен или рынок закрыт. Уровни (Call/Put Wall) рассчитаны по адаптивной математической модели, строго привязанной к текущему споту ${(gexReport.spotPrice || 4043).toFixed(1)}.
               </p>
             </div>
           </div>
