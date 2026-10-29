@@ -421,26 +421,36 @@ export function computePineScriptEngine(
   candles: LivePineCandle[],
   tvMetrics: Record<string, any>,
   moexGD: any,
-  spreadUsd: number
+  spreadUsd: number,
+  liveGexReport?: { callWall?: number; putWall?: number; gammaFlip?: number; maxPain?: number } | null
 ) {
   const count = candles.length;
   const close = oandaPrice;
 
-  // 1. Fibonacci Lookback Period (strictly 50 bars for XAUUSD 15m Optimal Preset)
+  // 1. ATR 14 & Local Candle Volatility (Evaluated first to scale dynamic swing_range)
+  const rawCandleAtr = count >= 5
+    ? candles.slice(-14).reduce((acc, c) => acc + Math.max(0.5, c.high - c.low), 0) / Math.min(14, count)
+    : 6.85;
+  const atr15 = typeof tvMetrics["ATR|15"] === "number" && tvMetrics["ATR|15"] > 0
+    ? Number(tvMetrics["ATR|15"])
+    : Math.max(4.8, rawCandleAtr);
+  const atr60 = typeof tvMetrics["ATR|60"] === "number" && tvMetrics["ATR|60"] > 0
+    ? Number(tvMetrics["ATR|60"])
+    : atr15 * 1.85;
+
+  // 2. Dynamic Swing Range (50 bars lookback + ATR extrapolation when range is compressed)
   const lookback = Math.min(50, count);
   const slice = candles.slice(count - lookback);
   const highest_high = Math.max(...slice.map(c => c.high), oandaHigh);
   const lowest_low = Math.min(...slice.map(c => c.low), oandaLow);
-  const swing_range = Math.max(10, highest_high - lowest_low);
-  const fib_500 = Math.round((lowest_low + swing_range * 0.5) * 100) / 100;
+  const raw_swing = Math.max(1.0, highest_high - lowest_low);
 
-  // 2. ATR 14
-  const atr15 = typeof tvMetrics["ATR|15"] === "number" && tvMetrics["ATR|15"] > 0
-    ? Number(tvMetrics["ATR|15"])
-    : 6.85;
+  // If market is compressed in a tight box, extrapolate Fibonacci grid from ATR (min 2.8x ATR15 or 1.5x ATR60, floor $18)
+  const is_compressed_range = raw_swing < atr15 * 2.2;
+  const swing_range = Math.round(Math.max(18.0, atr15 * 2.8, atr60 * 1.45, raw_swing) * 100) / 100;
+  const fib_500 = Math.round(((highest_high + lowest_low) / 2) * 100) / 100;
 
-  // 3. Multi-Timeframe EMA Dots (Pine Script: request.security(syminfo.tickerid, tf, ta.ema(close, 9) > ta.ema(close, 21)))
-  // Honest check: if data from scanner is null/undefined, output "⚪ N/A" instead of false red/green dots
+  // 3. Multi-Timeframe EMA Dots (Honest check: output "⚪ N/A" if scanner data is unavailable)
   const getEmaDot = (ema9Key: string, ema21Key: string, fallbackEma20Key?: string): string => {
     const ema9 = tvMetrics[ema9Key];
     const ema21 = tvMetrics[ema21Key];
@@ -461,7 +471,6 @@ export function computePineScriptEngine(
   const dot_W = getEmaDot("EMA9|1W", "EMA21|1W");
 
   // 4. Liquidity Sweeps (Matching Pine Script: scriptSuper.txt lines 1184-1210)
-  // Lookback: 50 bars. Key reference pivots are taken from prior bars before recent test.
   const priorBars = candles.slice(Math.max(0, count - lookback), Math.max(1, count - 4));
   const priorKeyHigh = priorBars.length > 0 ? Math.max(...priorBars.map(c => c.high)) : highest_high;
   const priorKeyLow = priorBars.length > 0 ? Math.min(...priorBars.map(c => c.low)) : lowest_low;
@@ -481,8 +490,6 @@ export function computePineScriptEngine(
     const wickHigh = c.high - Math.max(c.open, c.close);
     const wickLow = Math.min(c.open, c.close) - c.low;
 
-    // High Sweep: Price pierces or approaches prior high (>= 0.999 of priorKeyHigh / highest_high)
-    // with distinct upper wick rejection (wick >= 35% or small body with close in bottom half)
     const isHighRejection = (wickHigh / totalH >= 0.35) || (bodyH <= totalH * 0.45 && c.close <= c.high - totalH * 0.5);
     if ((c.high >= priorKeyHigh * 0.999 || c.high >= highest_high * 0.999) && isHighRejection && c.close <= c.high - wickHigh * 0.4) {
       is_high_sweep = true;
@@ -491,8 +498,6 @@ export function computePineScriptEngine(
       sweepDetails = `High: $${c.high.toFixed(2)}, KeyRef: $${priorKeyHigh.toFixed(2)}, Wick: ${(wickHigh / totalH * 100).toFixed(0)}%, Close: $${c.close.toFixed(2)}`;
     }
 
-    // Low Sweep: Price pierces or approaches prior low (<= 1.001 of priorKeyLow / lowest_low)
-    // with distinct lower wick rejection (wick >= 35% or small body with close in top half)
     const isLowRejection = (wickLow / totalH >= 0.35) || (bodyH <= totalH * 0.45 && c.close >= c.low + totalH * 0.5);
     if ((c.low <= priorKeyLow * 1.001 || c.low <= lowest_low * 1.001) && isLowRejection && c.close >= c.low + wickLow * 0.4) {
       is_low_sweep = true;
@@ -508,16 +513,29 @@ export function computePineScriptEngine(
     console.log(`[Pine Indicator SWEEP] 🟢 LOW SWEEP detected (${sweepBarIdx} bars ago) at $${sweepPrice}! Details: ${sweepDetails}`);
   }
 
-  // 5. Consensus Scoring & Direction (Matching scriptSuper.txt lines 700-739)
+  // 5. Consensus Scoring, Efficiency Ratio (ER) & Market Regime Detection
   const htf_trend_up = dot_60 === "🟢" || (dot_60.includes("N/A") && (dot_240 === "🟢" || dot_15 === "🟢"));
-  const rsi15 = typeof tvMetrics["RSI|15"] === "number" ? tvMetrics["RSI|15"] : 38.5;
+  const rsi15 = typeof tvMetrics["RSI|15"] === "number" ? tvMetrics["RSI|15"] : 50.0;
+  const tvRec15 = typeof tvMetrics["Recommend.All|15"] === "number" ? Number(tvMetrics["Recommend.All|15"]) : 0;
+  const tvRec60 = typeof tvMetrics["Recommend.All|60"] === "number" ? Number(tvMetrics["Recommend.All|60"]) : 0;
+
+  // Kaufman Efficiency Ratio (ER) over last 20 candles to distinguish Impulse Trend vs Choppy Flat
+  const erPeriod = Math.min(20, Math.max(2, count - 1));
+  const netMove = count >= erPeriod + 1 ? Math.abs(close - candles[count - 1 - erPeriod].close) : Math.abs(close - oandaOpen);
+  let pathSum = 0;
+  for (let i = Math.max(1, count - erPeriod); i < count; i++) {
+    pathSum += Math.abs(candles[i].close - candles[i - 1].close);
+  }
+  const er15 = pathSum > 0 ? netMove / pathSum : 0.30;
 
   let bull_score = 0;
   let bear_score = 0;
   if (htf_trend_up) bull_score += 35; else bear_score += 35;
+  if (dot_240 === "🟢") bull_score += 15; else if (dot_240 === "🔴") bear_score += 15;
   if (close > fib_500) bull_score += 20; else bear_score += 20;
   if (rsi15 < 45) bull_score += 15;
   if (rsi15 > 55) bear_score += 15;
+  if (tvRec15 > 0.25) bull_score += 10; else if (tvRec15 < -0.25) bear_score += 10;
   if (is_low_sweep) bull_score += 35;
   if (is_high_sweep) bear_score += 35;
 
@@ -525,7 +543,38 @@ export function computePineScriptEngine(
   const isBull = is_low_sweep ? true : (is_high_sweep ? false : consensus_is_bull);
   const direction: "LONG" | "SHORT" = isBull ? "LONG" : "SHORT";
 
-  // 6. Fibonacci Extensions & OTE Levels (Matching scriptSuper.txt lines 592-604)
+  // Mathematical Trend Filter:
+  // STRONG_TREND: HTF + 15m aligned AND (ER >= 0.38 OR strong TV momentum OR EMA ribbon expansion)
+  const ema9_15 = typeof tvMetrics["EMA9|15"] === "number" ? tvMetrics["EMA9|15"] : close;
+  const ema21_15 = typeof tvMetrics["EMA21|15"] === "number" ? tvMetrics["EMA21|15"] : close;
+  const ema50_15 = typeof tvMetrics["EMA50|15"] === "number" ? tvMetrics["EMA50|15"] : fib_500;
+
+  const isBullRibbon = close >= ema9_15 && ema9_15 >= ema21_15 && ema21_15 >= ema50_15;
+  const isBearRibbon = close <= ema9_15 && ema9_15 <= ema21_15 && ema21_15 <= ema50_15;
+  const htfAlignedWithSignal = isBull
+    ? (dot_15 === "🟢" && (dot_60 === "🟢" || dot_240 === "🟢"))
+    : (dot_15 === "🔴" && (dot_60 === "🔴" || dot_240 === "🔴"));
+
+  const isStrongTrend = htfAlignedWithSignal && (
+    er15 >= 0.38 ||
+    (isBull && (isBullRibbon || tvRec15 >= 0.35 || tvRec60 >= 0.35)) ||
+    (!isBull && (isBearRibbon || tvRec15 <= -0.35 || tvRec60 <= -0.35))
+  );
+  const isFlatRange = !isStrongTrend && (er15 < 0.24 || is_compressed_range);
+
+  // 6. Institutional GEX Levels (Evaluated BEFORE targets so TP1/TP2 respect Call/Put Walls!)
+  const rawCallWall = liveGexReport?.callWall && liveGexReport.callWall > close
+    ? liveGexReport.callWall
+    : Math.ceil(Math.max(highest_high + atr15 * 0.8, close + Math.max(20, atr15 * 2.5)) / 10) * 10;
+  const rawPutWall = liveGexReport?.putWall && liveGexReport.putWall < close
+    ? liveGexReport.putWall
+    : Math.floor(Math.min(lowest_low - atr15 * 0.8, close - Math.max(20, atr15 * 2.5)) / 10) * 10;
+  const callWall = Math.max(Math.ceil((close + 10) / 10) * 10, rawCallWall);
+  const putWall = Math.min(Math.floor((close - 10) / 10) * 10, rawPutWall);
+  const maxPain = liveGexReport?.maxPain || Math.round(fib_500 / 10) * 10;
+  const zeroFlip = liveGexReport?.gammaFlip || Math.round(fib_500 * 10) / 10;
+
+  // 7. Adaptive Entry (entryPrice), Smart Stop-Loss (trailingStop) & GEX-Aware Targets (tp1, tp2, tp3)
   let ote_top = 0;
   let ote_bottom = 0;
   let ext_1 = 0;
@@ -538,66 +587,187 @@ export function computePineScriptEngine(
   let trailingStop = 0;
   let altBreakLevel = 0;
 
+  // Dynamic minimum TP1 threshold: 20-30 pts ($2.0-$3.0+) or 1.8x ATR15 in normal/trend markets,
+  // or 1.35x ATR15 in compressed ranges, always strictly respecting R:R >= 1.20
+  const baseMinTp1Dist = isFlatRange
+    ? Math.max(10.0, atr15 * 1.35)
+    : Math.max(18.0, atr15 * 2.0);
+
   if (isBull) {
-    ote_top = Math.round((highest_high - swing_range * 0.618) * 100) / 100;
-    ote_bottom = Math.round((highest_high - swing_range * 0.786) * 100) / 100;
-    ext_1 = Math.round((highest_high + swing_range * 0.272) * 100) / 100; // TP1 1.272 Fib
-    ext_2 = Math.round((highest_high + swing_range * 0.618) * 100) / 100; // TP2 1.618 Fib Target
-    ext_3 = Math.round((highest_high + swing_range * 1.618) * 100) / 100; // TP3 2.618 Fib Target
+    const eff_high = Math.max(highest_high, close + atr15 * 0.4);
 
-    entryPrice = close <= ote_top && close >= ote_bottom
-      ? close
-      : Math.round(((ote_top + ote_bottom) / 2) * 100) / 100;
+    if (is_low_sweep) {
+      // Sweep of lows already confirmed -> enter on shallow immediate retest
+      ote_top = Math.round((close - atr15 * 0.10) * 100) / 100;
+      ote_bottom = Math.round((close - atr15 * 0.45) * 100) / 100;
+      entryPrice = Math.round((close - atr15 * 0.15) * 100) / 100;
+    } else if (isStrongTrend) {
+      // Strong Impulse Trend -> Shallow retracement zone (38.2% - 50.0% EQ) so trade isn't missed!
+      ote_top = Math.round((eff_high - swing_range * 0.382) * 100) / 100;
+      ote_bottom = Math.round((eff_high - swing_range * 0.500) * 100) / 100;
+      const targetPullback = close <= ote_top && close >= ote_bottom
+        ? close
+        : (ote_top * 0.65 + ote_bottom * 0.35);
+      // Cap pullback distance at 0.50 ATR15 or EMA21 support in strong trend
+      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 0.50)) * 100) / 100;
+    } else if (isFlatRange) {
+      // Flat / Range -> Wait for deep institutional OTE (61.8% - 78.6% discount)
+      ote_top = Math.round((eff_high - swing_range * 0.618) * 100) / 100;
+      ote_bottom = Math.round((eff_high - swing_range * 0.786) * 100) / 100;
+      const targetPullback = close <= ote_top && close >= ote_bottom
+        ? close
+        : (ote_top + ote_bottom) / 2;
+      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 1.10)) * 100) / 100;
+    } else {
+      // Normal Trend -> Golden Pocket / Equilibrium (50.0% EQ - 61.8%)
+      ote_top = Math.round((eff_high - swing_range * 0.500) * 100) / 100;
+      ote_bottom = Math.round((eff_high - swing_range * 0.618) * 100) / 100;
+      const targetPullback = close <= ote_top && close >= ote_bottom
+        ? close
+        : (ote_top + ote_bottom) / 2;
+      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 0.75)) * 100) / 100;
+    }
 
-    tp1 = Math.round(Math.max(ext_1, highest_high + swing_range * 0.05) * 100) / 100;
-    tp2 = ext_2;
-    tp3 = ext_3;
-    trailingStop = Math.round(Math.min(close - atr15 * 1.5, lowest_low - atr15 * 0.4) * 100) / 100;
+    // Stop Loss strictly below entryPrice (structural low or 1.15x-1.85x ATR15)
+    const structSl = Math.min(ote_bottom - atr15 * 0.35, lowest_low - atr15 * 0.25);
+    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, entryPrice - structSl));
+    trailingStop = Math.round((entryPrice - rawRisk) * 100) / 100;
+    const riskDist = Math.max(2.0, entryPrice - trailingStop);
+
+    // Minimum TP1 distance enforcing R:R >= 1.25 and minimum volatility floor
+    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+
+    ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
+    ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
+    ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
+
+    // Align TP1 & TP2 with Call Wall (GEX Magnet & Resistance Barrier)
+    let candidateTp1 = ext_1;
+    if (callWall > entryPrice + riskDist * 1.20) {
+      // If TP1 is close to Call Wall or slightly overshoots it, front-run Call Wall by $1.0
+      if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
+        candidateTp1 = callWall - 1.0;
+      }
+    }
+    tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
+
+    // If TP2 is near Call Wall, snap TP2 to Call Wall; otherwise place above TP1
+    const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
+      ? callWall
+      : Math.max(ext_2, tp1 + atr15 * 1.5);
+    tp2 = Math.round(candidateTp2 * 100) / 100;
+    tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
     altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
   } else {
-    ote_top = Math.round((lowest_low + swing_range * 0.786) * 100) / 100;
-    ote_bottom = Math.round((lowest_low + swing_range * 0.618) * 100) / 100;
-    ext_1 = Math.round((lowest_low - swing_range * 0.272) * 100) / 100; // TP1 1.272 Fib
-    ext_2 = Math.round((lowest_low - swing_range * 0.618) * 100) / 100; // TP2 1.618 Fib Target
-    ext_3 = Math.round((lowest_low - swing_range * 1.618) * 100) / 100; // TP3 2.618 Fib Target
+    const eff_low = Math.min(lowest_low, close - atr15 * 0.4);
 
-    entryPrice = close >= ote_bottom && close <= ote_top
-      ? close
-      : Math.round(((ote_top + ote_bottom) / 2) * 100) / 100;
+    if (is_high_sweep) {
+      // Sweep of highs already confirmed -> enter on shallow immediate retest
+      ote_bottom = Math.round((close + atr15 * 0.10) * 100) / 100;
+      ote_top = Math.round((close + atr15 * 0.45) * 100) / 100;
+      entryPrice = Math.round((close + atr15 * 0.15) * 100) / 100;
+    } else if (isStrongTrend) {
+      // Strong Bearish Impulse -> Shallow retracement zone (38.2% - 50.0% EQ)
+      ote_bottom = Math.round((eff_low + swing_range * 0.382) * 100) / 100;
+      ote_top = Math.round((eff_low + swing_range * 0.500) * 100) / 100;
+      const targetPullback = close >= ote_bottom && close <= ote_top
+        ? close
+        : (ote_bottom * 0.65 + ote_top * 0.35);
+      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 0.50)) * 100) / 100;
+    } else if (isFlatRange) {
+      // Flat / Range -> Deep institutional OTE (61.8% - 78.6% premium)
+      ote_bottom = Math.round((eff_low + swing_range * 0.618) * 100) / 100;
+      ote_top = Math.round((eff_low + swing_range * 0.786) * 100) / 100;
+      const targetPullback = close >= ote_bottom && close <= ote_top
+        ? close
+        : (ote_top + ote_bottom) / 2;
+      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 1.10)) * 100) / 100;
+    } else {
+      // Normal Trend -> Golden Pocket / Equilibrium (50.0% EQ - 61.8%)
+      ote_bottom = Math.round((eff_low + swing_range * 0.500) * 100) / 100;
+      ote_top = Math.round((eff_low + swing_range * 0.618) * 100) / 100;
+      const targetPullback = close >= ote_bottom && close <= ote_top
+        ? close
+        : (ote_top + ote_bottom) / 2;
+      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 0.75)) * 100) / 100;
+    }
 
-    tp1 = Math.round(Math.min(ext_1, lowest_low - swing_range * 0.05) * 100) / 100;
-    tp2 = ext_2;
-    tp3 = ext_3;
-    trailingStop = Math.round(Math.max(close + atr15 * 1.5, highest_high + atr15 * 0.4) * 100) / 100;
+    // Stop Loss strictly above entryPrice
+    const structSl = Math.max(ote_top + atr15 * 0.35, highest_high + atr15 * 0.25);
+    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, structSl - entryPrice));
+    trailingStop = Math.round((entryPrice + rawRisk) * 100) / 100;
+    const riskDist = Math.max(2.0, trailingStop - entryPrice);
+
+    // Minimum TP1 distance enforcing R:R >= 1.25 and minimum volatility floor
+    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+
+    ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
+    ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
+    ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
+
+    // Align TP1 & TP2 with Put Wall (GEX Magnet & Support Barrier)
+    let candidateTp1 = ext_1;
+    if (putWall < entryPrice - riskDist * 1.20) {
+      if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
+        candidateTp1 = putWall + 1.0;
+      }
+    }
+    tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
+
+    const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
+      ? putWall
+      : Math.min(ext_2, tp1 - atr15 * 1.5);
+    tp2 = Math.round(candidateTp2 * 100) / 100;
+    tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
     altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
   }
 
-  // 7. Success Probability
+  // 8. Risk/Reward (R:R) & GEX Barrier Quality Gate ("Нет сетапа / Ожидание" filter)
+  const finalRisk = Math.max(0.5, Math.abs(entryPrice - trailingStop));
+  const finalRewardTp1 = Math.abs(tp1 - entryPrice);
+  const rrRatio = Math.round((finalRewardTp1 / finalRisk) * 100) / 100;
+
+  // Check if opposing GEX wall blocks room to TP1 (e.g., buying directly under Call Wall or selling directly on Put Wall)
+  const isBlockedByGexWall = isBull
+    ? (callWall > entryPrice && (callWall - entryPrice) < finalRisk * 0.95)
+    : (putWall < entryPrice && (entryPrice - putWall) < finalRisk * 0.95);
+  const isNoisyChop = er15 < 0.16 && !is_low_sweep && !is_high_sweep && Math.abs(bull_score - bear_score) < 15;
+  const hasValidSetup = rrRatio >= 1.20 && !isBlockedByGexWall && !isNoisyChop;
+
+  // 9. Success Probability
   let prob = 55.0;
   if (isBull === htf_trend_up) prob += 15.0; else prob -= 8.0;
+  if (isStrongTrend) prob += 8.0;
   if (is_low_sweep || is_high_sweep) prob += 15.0;
   if (isBull && rsi15 < 45) prob += 10.0;
   else if (!isBull && rsi15 > 55) prob += 10.0;
-  const fc_probability = Math.min(94, Math.max(52, Math.round(prob)));
+  if (!hasValidSetup) prob = Math.min(prob, 48.0);
+  const fc_probability = Math.min(94, Math.max(42, Math.round(prob)));
 
-  // 8. Dynamic ML Signal and Setup Name
-  const mlSignal = isBull
-    ? (is_low_sweep ? "🟢 LONG (⚡ SWEEP Low)" : "🟢 LONG | 15m OTE Отскок")
-    : (is_high_sweep ? "🔴 SHORT (⚡ SWEEP High)" : "🔴 SHORT | 15m OTE Отбой");
+  // 10. Dynamic ML Signal and Setup Name (preserving HUD compatibility)
+  const entryZoneTag = is_low_sweep || is_high_sweep
+    ? "⚡ SWEEP Retest"
+    : isStrongTrend
+    ? "🚀 Импульс 38.2%-50% EQ"
+    : isFlatRange
+    ? "🛡️ Глубокий OTE 61.8%-78.6%"
+    : "📐 OTE 50%-61.8%";
 
-  const setupName = isBull
-    ? `🟢LONG ${fc_probability}% (🎯 Цель TP2: $${tp2})`
-    : `🔴SHORT ${fc_probability}% (🎯 Цель TP2: $${tp2})`;
+  const mlSignal = !hasValidSetup
+    ? `⚪ ОЖИДАНИЕ | Нет сетапа (${isBlockedByGexWall ? "Упор в GEX стену" : `Шум / R:R ${rrRatio.toFixed(1)}`})`
+    : isBull
+    ? `🟢 LONG (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`
+    : `🔴 SHORT (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`;
 
-  const consensusSummary = `5м${dot_5} 15м${dot_15} 1ч${dot_60} 4ч${dot_240} 1Д${dot_D} 1Н${dot_W} | ${fc_probability}% ${direction}`;
+  const setupName = !hasValidSetup
+    ? `⚪ НЕТ СЕТАПА (Ожидание выхода из шума • R:R 1:${rrRatio.toFixed(1)})`
+    : isBull
+    ? `🟢LONG ${fc_probability}% (Вход $${entryPrice} → TP1 $${tp1} / TP2 $${tp2})`
+    : `🔴SHORT ${fc_probability}% (Вход $${entryPrice} → TP1 $${tp1} / TP2 $${tp2})`;
 
-  // 9. Institutional CME Gold Options Strikes
-  const callWall = Math.round((Math.max(highest_high, close + 25)) / 25) * 25;
-  const putWall = Math.round((Math.min(lowest_low, close - 25)) / 25) * 25;
-  const maxPain = Math.round(fib_500 / 25) * 25;
-  const zeroFlip = Math.round(fib_500 * 10) / 10;
+  const consensusSummary = `5м${dot_5} 15м${dot_15} 1ч${dot_60} 4ч${dot_240} 1Д${dot_D} 1Н${dot_W} | ${fc_probability}% ${hasValidSetup ? direction : "WAIT"}`;
 
-  // 10. Synchronized MOEX GD Levels
+  // 11. Synchronized MOEX GD Levels
   const moexEntry = Math.round((entryPrice + spreadUsd) * 10) / 10;
   const moexSl = Math.round((trailingStop + spreadUsd) * 10) / 10;
   const moexTargetTp1 = Math.round((tp1 + spreadUsd) * 10) / 10;
@@ -909,8 +1079,11 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
     arbitrageSignal = "Нормальный институциональный базис (0.5% - 1.0%): устойчивый контанго-перенос позиций.";
   }
 
-  // 4. Run QUANTEX Pine Script Ultimate Super Indicator Engine on calibrated live candles
-  const liveCandles = await fetchCalibratedPineCandles(oandaPrice);
+  // 4. Run QUANTEX Pine Script Ultimate Super Indicator Engine on calibrated live candles + GEX barriers
+  const [liveCandles, liveGexReport] = await Promise.all([
+    fetchCalibratedPineCandles(oandaPrice),
+    getGexReportForAsset("XAUUSD", "DAY").catch(() => null)
+  ]);
   const scriptIndicators = computePineScriptEngine(
     oandaPrice,
     oandaOpen,
@@ -919,7 +1092,8 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
     liveCandles,
     tvMetrics,
     moexGD,
-    spreadUsd
+    spreadUsd,
+    liveGexReport
   );
 
   const timeMsk = new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }) + " МСК";
