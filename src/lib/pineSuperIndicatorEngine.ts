@@ -2181,3 +2181,295 @@ export function generateHudData(
     hudHtfUp: fc.isBull
   };
 }
+
+// ============================================================================
+// 🎯 QUANT GEX PROBABILITY ENGINE (ВЕРОЯТНОСТНЫЙ ДВИЖОК ПРОГНОЗА ЦЕНЫ)
+// ============================================================================
+
+export interface GexProbabilityEngineInput {
+  spotPrice: number;
+  callWall: number;
+  putWall: number;
+  zeroFlip: number;
+  totalCallVolume: number;
+  totalPutVolume: number;
+  iv: number; // Implied Volatility (%)
+  rv: number; // Realized Volatility (%)
+  normalTotalVolume?: number; // Baseline normal volume for comparison
+  maxPain?: number;
+}
+
+export interface GexProbabilityFactorBreakdown {
+  label: string;
+  impactText: string;
+  bias: "LONG" | "SHORT" | "FLAT" | "SWEEP";
+  points: number;
+}
+
+export interface GexProbabilityEngineOutput {
+  probabilityLong: number;
+  probabilityShort: number;
+  probabilityFlat: number;
+  recommendation: string;
+  confidenceScore: number;
+  // Additional rich diagnostics for the top-of-page visual forecast chart
+  dominantScenario: "LONG" | "SHORT" | "FLAT";
+  sweepRiskActive: boolean;
+  sweepProbability: number;
+  distToCallWallPts: number;
+  distToPutWallPts: number;
+  distToCallWallPct: number;
+  distToPutWallPct: number;
+  rawScores: {
+    long: number;
+    short: number;
+    flat: number;
+    sweepBonus: number;
+  };
+  factors: GexProbabilityFactorBreakdown[];
+}
+
+export function calculateGexProbabilityEngine(
+  input: GexProbabilityEngineInput
+): GexProbabilityEngineOutput {
+  const {
+    spotPrice,
+    callWall,
+    putWall,
+    zeroFlip,
+    totalCallVolume,
+    totalPutVolume,
+    iv,
+    rv,
+    normalTotalVolume = 35000,
+    maxPain
+  } = input;
+
+  // 1. Базовая система баллов: 50 баллов за нейтральный рынок каждому вектору
+  let scoreLong = 50;
+  let scoreShort = 50;
+  let scoreFlat = 50;
+  let sweepBonus = 0;
+
+  const factors: GexProbabilityFactorBreakdown[] = [];
+
+  // 2. Положение Spot относительно Zero-Flip (+20 баллов)
+  const isBelowFlip = spotPrice < zeroFlip;
+  if (isBelowFlip) {
+    // Spot < Zero Flip: +20 баллов к сценарию "Тренд" (SHORT bias / отрицательная гамма)
+    scoreShort += 20;
+    factors.push({
+      label: `Spot ($${spotPrice.toFixed(1)}) < Zero-Flip ($${zeroFlip})`,
+      impactText: "+20 баллов к Тренду вниз (SHORT bias, дилеры в -GEX продают по рынку)",
+      bias: "SHORT",
+      points: 20
+    });
+  } else {
+    // Spot >= Zero Flip: +20 баллов к "Боковик/Отскок" (LONG bias / положительная гамма)
+    scoreLong += 20;
+    scoreFlat += 15;
+    factors.push({
+      label: `Spot ($${spotPrice.toFixed(1)}) > Zero-Flip ($${zeroFlip})`,
+      impactText: "+20 баллов к Отскоку / Боковику (LONG bias, дилеры в +GEX выкупают проливы)",
+      bias: "LONG",
+      points: 20
+    });
+  }
+
+  // 3. Расстояние до стен (Put Wall и Call Wall) в пунктах и процентах (до +30 баллов)
+  const corridorRange = Math.max(1, callWall - putWall);
+  const distToPutWallPts = Math.round((spotPrice - putWall) * 10) / 10;
+  const distToCallWallPts = Math.round((callWall - spotPrice) * 10) / 10;
+  const distToPutWallPct = Math.round(((spotPrice - putWall) / Math.max(1, spotPrice)) * 10000) / 100;
+  const distToCallWallPct = Math.round(((callWall - spotPrice) / Math.max(1, spotPrice)) * 10000) / 100;
+
+  // Нормализованная позиция внутри коридора [0 = на Put Wall, 1 = на Call Wall]
+  const posInCorridor = Math.max(0, Math.min(1, (spotPrice - putWall) / corridorRange));
+
+  if (posInCorridor <= 0.32) {
+    // Чем ближе Spot к Put Wall, тем выше вероятность отскока вверх (+30 баллов к LONG)
+    const proximityWeight = Math.max(0.45, 1 - posInCorridor / 0.35);
+    const putBonus = Math.round(30 * proximityWeight);
+    scoreLong += putBonus;
+    factors.push({
+      label: `Близость к поддержке Put Wall ($${putWall}, дист. $${Math.abs(distToPutWallPts).toFixed(1)} / ${Math.abs(distToPutWallPct).toFixed(2)}%)`,
+      impactText: `+${putBonus} баллов к LONG (высокая плотность путов — зона алгоритмического отскока вверх)`,
+      bias: "LONG",
+      points: putBonus
+    });
+  } else if (posInCorridor >= 0.68) {
+    // Чем ближе Spot к Call Wall, тем выше вероятность отката вниз (+30 баллов к SHORT)
+    const proximityWeight = Math.max(0.45, (posInCorridor - 0.65) / 0.35);
+    const callBonus = Math.round(30 * Math.min(1, proximityWeight));
+    scoreShort += callBonus;
+    factors.push({
+      label: `Близость к потолку Call Wall ($${callWall}, дист. $${Math.abs(distToCallWallPts).toFixed(1)} / ${Math.abs(distToCallWallPct).toFixed(2)}%)`,
+      impactText: `+${callBonus} баллов к SHORT (барьер хеджирования коллов — высокая вероятность отбоя вниз)`,
+      bias: "SHORT",
+      points: callBonus
+    });
+  } else {
+    // Цена в середине коридора — усиление бокового сценария и притяжения к Max Pain
+    const flatBonus = 22;
+    scoreFlat += flatBonus;
+    factors.push({
+      label: `Баланс в центре коридора ($${putWall} – $${callWall})`,
+      impactText: `+${flatBonus} балла к Боковику (равноудаленность от стен, тяга к Max Pain $${maxPain || Math.round((callWall + putWall) / 2)})`,
+      bias: "FLAT",
+      points: flatBonus
+    });
+  }
+
+  // 4. Учет внутридневного объема (Total Call Volume + Total Put Volume) (+10 баллов к пробою ближайшего барьера)
+  const totalVol = Math.max(0, totalCallVolume + totalPutVolume);
+  const effectiveBaselineVol = Math.max(5000, normalTotalVolume);
+  const isHighVolume = totalVol >= effectiveBaselineVol * 1.15 || Math.abs(totalCallVolume - totalPutVolume) / Math.max(1, totalVol) > 0.22;
+
+  const closerToCallWall = Math.abs(callWall - spotPrice) <= Math.abs(spotPrice - putWall);
+  if (isHighVolume) {
+    if (closerToCallWall) {
+      // Ближайший барьер — Call Wall: повышенный объем увеличивает шанс пробоя вверх (+10 к LONG)
+      scoreLong += 10;
+      factors.push({
+        label: `Аномальный опционный Volume (${totalVol.toLocaleString()} контр.) у верхнего барьера`,
+        impactText: `+10 баллов к пробою Call Wall вверх (давление потока на снос стопов за $${callWall})`,
+        bias: "LONG",
+        points: 10
+      });
+    } else {
+      // Ближайший барьер — Put Wall: повышенный объем увеличивает шанс пробоя вниз (+10 к SHORT)
+      scoreShort += 10;
+      factors.push({
+        label: `Аномальный опционный Volume (${totalVol.toLocaleString()} контр.) у нижнего барьера`,
+        impactText: `+10 баллов к пробою Put Wall вниз (агрессивный поток усиливает тест $${putWall})`,
+        bias: "SHORT",
+        points: 10
+      });
+    }
+  } else {
+    scoreFlat += 8;
+    factors.push({
+      label: `Умеренный опционный Volume (${totalVol.toLocaleString()} контр.)`,
+      impactText: `+8 баллов к удержанию границ без импульсного пробоя`,
+      bias: "FLAT",
+      points: 8
+    });
+  }
+
+  // 5. Учет IV > RV (+10 баллов к сценарию "Пробой и ложный вынос / Liquidity Sweep")
+  const ivRvSpread = Math.round((iv - rv) * 10) / 10;
+  const sweepRiskActive = ivRvSpread >= 1.5;
+  if (sweepRiskActive) {
+    sweepBonus = 10;
+    // При высоком IV > RV цена часто делает ложный прокол ближайшей стены (Sweep) и разворачивается обратно к центру
+    if (closerToCallWall) {
+      scoreShort += 10;
+    } else {
+      scoreLong += 10;
+    }
+    factors.push({
+      label: `IV (${iv.toFixed(1)}%) > RV (${rv.toFixed(1)}%) на +${ivRvSpread.toFixed(1)}%`,
+      impactText: `+10 баллов к сценарию «Пробой и ложный вынос (Liquidity Sweep)» за ближайшим уровнем`,
+      bias: "SWEEP",
+      points: 10
+    });
+  } else if (ivRvSpread <= -1.0) {
+    // IV < RV: опционы дешевые, идет устойчивое трендовое движение
+    if (isBelowFlip) scoreShort += 8;
+    else scoreLong += 8;
+    factors.push({
+      label: `IV (${iv.toFixed(1)}%) < RV (${rv.toFixed(1)}%) (${ivRvSpread.toFixed(1)}%)`,
+      impactText: `+8 баллов к продолжению чистого направленного движения без ложных запилов`,
+      bias: isBelowFlip ? "SHORT" : "LONG",
+      points: 8
+    });
+  }
+
+  // 6. Нормализация баллов в проценты вероятности (сумма = 100%)
+  const totalRaw = Math.max(1, scoreLong + scoreShort + scoreFlat);
+  let probabilityLong = Math.round((scoreLong / totalRaw) * 100);
+  let probabilityShort = Math.round((scoreShort / totalRaw) * 100);
+  let probabilityFlat = 100 - probabilityLong - probabilityShort;
+
+  if (probabilityFlat < 5) {
+    const diff = 5 - probabilityFlat;
+    probabilityFlat = 5;
+    if (probabilityLong >= probabilityShort) probabilityLong -= diff;
+    else probabilityShort -= diff;
+  }
+
+  // Определение доминирующего сценария и индекса уверенности (Confidence Score)
+  const sortedProbs = [
+    { type: "LONG" as const, val: probabilityLong },
+    { type: "SHORT" as const, val: probabilityShort },
+    { type: "FLAT" as const, val: probabilityFlat }
+  ].sort((a, b) => b.val - a.val);
+
+  const dominantScenario = sortedProbs[0].type;
+  const spreadTopTwo = sortedProbs[0].val - sortedProbs[1].val;
+  const confidenceScore = Math.max(54, Math.min(94, Math.round(58 + spreadTopTwo * 1.15 + (sweepRiskActive ? 4 : 0))));
+  const sweepProbability = sweepRiskActive
+    ? Math.min(82, Math.round(52 + ivRvSpread * 4.5 + (isHighVolume ? 10 : 0)))
+    : Math.max(18, Math.round(25 + Math.max(0, ivRvSpread) * 4));
+
+  // 7. Генерация понятного вердикта-рекомендации на русском языке
+  const mpTarget = maxPain || Math.round((callWall + putWall) / 2);
+  let recommendation = "";
+
+  if (dominantScenario === "LONG") {
+    if (posInCorridor <= 0.35) {
+      recommendation = `Приоритет LONG (${probabilityLong}%): Цена находится в зоне притяжения поддержки Put Wall ($${putWall}) при ${
+        isBelowFlip ? "контртрендовом отскоке" : "положительной гамме (+GEX)"
+      }. Ожидается алгоритмический откуп маркетмейкерами с целью возврата к балансу $${mpTarget} и верхней границе $${callWall}.${
+        sweepRiskActive
+          ? ` Внимание: так как IV > RV (+${ivRvSpread.toFixed(1)}%), вероятен предварительный ложный закол (Sweep) под $${putWall} перед разворотом вверх.`
+          : ""
+      }`;
+    } else {
+      recommendation = `Приоритет LONG (${probabilityLong}%): Котировки удерживаются выше рубежа Zero-Flip ($${zeroFlip}) в режиме положительной гаммы (+GEX), а повышенный поток объемов поддерживает движение к потолку Call Wall ($${callWall}).${
+        sweepRiskActive
+          ? ` Учитывайте повышенную IV (${iv.toFixed(1)}%): при подходе к $${callWall} возможен ложный вынос стопов (Sweep) с последующим откатом.`
+          : ""
+      }`;
+    }
+  } else if (dominantScenario === "SHORT") {
+    if (isBelowFlip) {
+      recommendation = `Приоритет SHORT (${probabilityShort}%): Цена торгуется под границей Zero-Flip ($${zeroFlip}) в зоне отрицательной гаммы (-GEX). Дилеры хеджируют дельту продажами по тренду, ускоряя импульс вниз к поддержке Put Wall ($${putWall}).${
+        sweepRiskActive
+          ? ` Из-за превышения IV над RV (+${ivRvSpread.toFixed(1)}%) возможен резкий снос стопов (Sweep) под $${putWall}.`
+          : ""
+      }`;
+    } else {
+      recommendation = `Приоритет SHORT / Откат от потолка (${probabilityShort}%): Цена подошла вплотную к сопротивлению Call Wall ($${callWall}, дистанция $${Math.abs(distToCallWallPts).toFixed(1)}). Маркетмейкеры сдерживают рост продажами базового актива — ожидается откат к магниту Max Pain ($${mpTarget}).${
+        sweepRiskActive
+          ? ` Высокий спред IV > RV (+${ivRvSpread.toFixed(1)}%) указывает на риск ложного прокола (Sweep) чуть выше $${callWall} перед разворотом вниз.`
+          : ""
+      }`;
+    }
+  } else {
+    recommendation = `Приоритет БОКОВИК / Возврат к среднему (${probabilityFlat}%): Цена сбалансирована выше Zero-Flip ($${zeroFlip}) в центральной части коридора $${putWall}–$${callWall}. Дилеры гасят волатильность, стягивая котировки к магниту экспирации Max Pain ($${mpTarget}). Оптимальна работа от границ диапазона.`;
+  }
+
+  return {
+    probabilityLong,
+    probabilityShort,
+    probabilityFlat,
+    recommendation,
+    confidenceScore,
+    dominantScenario,
+    sweepRiskActive,
+    sweepProbability,
+    distToCallWallPts,
+    distToPutWallPts,
+    distToCallWallPct,
+    distToPutWallPct,
+    rawScores: {
+      long: scoreLong,
+      short: scoreShort,
+      flat: scoreFlat,
+      sweepBonus
+    },
+    factors
+  };
+}
+

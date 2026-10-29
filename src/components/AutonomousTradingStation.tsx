@@ -74,6 +74,7 @@ import {
 import { GexMarketReport, GexStrikeData } from "../../server/gexEngine";
 import { AutonomousAiAnalystPanel, MacroNewsItem } from "./AutonomousAiAnalystPanel";
 import { GexAdvancedModules } from "./GexAdvancedModules";
+import { GexProbabilityHero } from "./GexProbabilityHero";
 import { UnifiedStationSettings, ThemeId, STATION_THEMES, UserAccountItem } from "./UnifiedStationSettings";
 
 export const THEME_PALETTES: Record<ThemeId, {
@@ -7287,6 +7288,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     </span>
                   </div>
                 )}
+
+                {/* 🎯 0. САМЫЙ ВЕРХНИЙ БЛОК ПРОГНОЗА: QUANT GEX PROBABILITY ENGINE & VISUAL CONE */}
+                <GexProbabilityHero
+                  gexReport={gexReport}
+                  candles={candles}
+                  activeAsset={activeAsset}
+                />
                 
                 {/* 4 Key Institutional Diagnostic Cards (With Concise '⚡ Сейчас для цены' & Compact Tooltips) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
