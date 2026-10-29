@@ -767,11 +767,167 @@ export function computePineScriptEngine(
 
   const consensusSummary = `5м${dot_5} 15м${dot_15} 1ч${dot_60} 4ч${dot_240} 1Д${dot_D} 1Н${dot_W} | ${fc_probability}% ${hasValidSetup ? direction : "WAIT"}`;
 
-  // 11. Synchronized MOEX GD Levels
+  // 11. Real Institutional Fair Value Gap (FVG) & Order Block (OB) Detection from Candles
+  const minFvgGap = Math.max(0.35, atr15 * 0.12); // Volatility filter against micro-gaps (1-2 cents noise)
+  const minImpulseBody = Math.max(0.60, atr15 * 0.30);
+
+  let activeBullFvg: { bottom: number; top: number; gap: number; barsAgo: number } | null = null;
+  let activeBearFvg: { bottom: number; top: number; gap: number; barsAgo: number } | null = null;
+
+  const startScanIdx = Math.max(2, count - lookback);
+  for (let i = startScanIdx; i < count; i++) {
+    const c0 = candles[i - 2];
+    const c1 = candles[i - 1]; // Middle impulse candle
+    const c2 = candles[i];
+    if (!c0 || !c1 || !c2) continue;
+
+    const c1Body = Math.abs(c1.close - c1.open);
+    if (c1Body < minImpulseBody) continue;
+
+    // Bullish 3-candle FVG: c2.low > c0.high with bullish middle impulse candle
+    if (c1.close > c1.open && c2.low > c0.high) {
+      const rawGap = c2.low - c0.high;
+      if (rawGap >= minFvgGap) {
+        let isInvalidated = false;
+        let minLowAfter = c2.low;
+        for (let k = i + 1; k < count; k++) {
+          if (candles[k].close < c0.high) {
+            isInvalidated = true;
+            break;
+          }
+          if (candles[k].low < minLowAfter) minLowAfter = candles[k].low;
+        }
+        const openTop = Math.min(c2.low, minLowAfter);
+        if (!isInvalidated && (openTop - c0.high) >= minFvgGap * 0.5) {
+          activeBullFvg = {
+            bottom: Math.round(c0.high * 100) / 100,
+            top: Math.round(openTop * 100) / 100,
+            gap: Math.round((openTop - c0.high) * 100) / 100,
+            barsAgo: count - 1 - i
+          };
+        }
+      }
+    }
+
+    // Bearish 3-candle FVG: c2.high < c0.low with bearish middle impulse candle
+    if (c1.close < c1.open && c2.high < c0.low) {
+      const rawGap = c0.low - c2.high;
+      if (rawGap >= minFvgGap) {
+        let isInvalidated = false;
+        let maxHighAfter = c2.high;
+        for (let k = i + 1; k < count; k++) {
+          if (candles[k].close > c0.low) {
+            isInvalidated = true;
+            break;
+          }
+          if (candles[k].high > maxHighAfter) maxHighAfter = candles[k].high;
+        }
+        const openBottom = Math.max(c2.high, maxHighAfter);
+        if (!isInvalidated && (c0.low - openBottom) >= minFvgGap * 0.5) {
+          activeBearFvg = {
+            bottom: Math.round(openBottom * 100) / 100,
+            top: Math.round(c0.low * 100) / 100,
+            gap: Math.round((c0.low - openBottom) * 100) / 100,
+            barsAgo: count - 1 - i
+          };
+        }
+      }
+    }
+  }
+
+  const chosenFvg = isBull ? (activeBullFvg || activeBearFvg) : (activeBearFvg || activeBullFvg);
+  const fvgZone = chosenFvg
+    ? `$${chosenFvg.bottom.toFixed(2)} – $${chosenFvg.top.toFixed(2)} (${chosenFvg === activeBullFvg ? "+FVG Бычий имбаланс" : "-FVG Медвежий имбаланс"} $${chosenFvg.gap.toFixed(2)} • ${chosenFvg.barsAgo} св. назад)`
+    : "Нет активного FVG (Имбалансы перекрыты или ниже порога волатильности ATR)";
+
+  // Order Block (OB) Detection: Last opposite candle before a confirmed displacement candle
+  let activeBullOb: { low: number; high: number; impulseBody: number; barsAgo: number } | null = null;
+  let activeBearOb: { low: number; high: number; impulseBody: number; barsAgo: number } | null = null;
+
+  const startObIdx = Math.max(0, count - lookback);
+  for (let i = startObIdx; i < count - 1; i++) {
+    const cOb = candles[i];
+    const cNext = candles[i + 1];
+    if (!cOb || !cNext) continue;
+
+    const obBody = Math.max(0.05, Math.abs(cOb.close - cOb.open));
+    const nextBody = Math.abs(cNext.close - cNext.open);
+    const cNext2 = i + 2 < count ? candles[i + 2] : null;
+    const twoBarBullBody = cNext2 && cNext2.close > cNext.open ? (cNext2.close - cNext.open) : 0;
+    const twoBarBearBody = cNext2 && cNext2.close < cNext.open ? (cNext.open - cNext2.close) : 0;
+
+    // Bullish OB (+OB): Red candle (close < open) followed by strong green displacement candle engulfing OB body & high
+    const effBullImpulse = Math.max(nextBody, twoBarBullBody);
+    const isBullDisplacement =
+      cOb.close < cOb.open &&
+      cNext.close > cNext.open &&
+      effBullImpulse >= obBody * 1.35 &&
+      effBullImpulse >= atr15 * 0.35 &&
+      (cNext.close > cOb.high || (cNext2 !== null && cNext2.close > cOb.high));
+
+    if (isBullDisplacement) {
+      let brokenDown = false;
+      for (let k = i + 2; k < count; k++) {
+        if (candles[k].close < cOb.low) {
+          brokenDown = true;
+          break;
+        }
+      }
+      if (!brokenDown && close >= cOb.low) {
+        activeBullOb = {
+          low: Math.round(cOb.low * 100) / 100,
+          high: Math.round(cOb.high * 100) / 100,
+          impulseBody: Math.round(effBullImpulse * 100) / 100,
+          barsAgo: count - 1 - i
+        };
+      }
+    }
+
+    // Bearish OB (-OB): Green candle (close > open) followed by strong red displacement candle engulfing OB body & low
+    const effBearImpulse = Math.max(nextBody, twoBarBearBody);
+    const isBearDisplacement =
+      cOb.close > cOb.open &&
+      cNext.close < cNext.open &&
+      effBearImpulse >= obBody * 1.35 &&
+      effBearImpulse >= atr15 * 0.35 &&
+      (cNext.close < cOb.low || (cNext2 !== null && cNext2.close < cOb.low));
+
+    if (isBearDisplacement) {
+      let brokenUp = false;
+      for (let k = i + 2; k < count; k++) {
+        if (candles[k].close > cOb.high) {
+          brokenUp = true;
+          break;
+        }
+      }
+      if (!brokenUp && close <= cOb.high) {
+        activeBearOb = {
+          low: Math.round(cOb.low * 100) / 100,
+          high: Math.round(cOb.high * 100) / 100,
+          impulseBody: Math.round(effBearImpulse * 100) / 100,
+          barsAgo: count - 1 - i
+        };
+      }
+    }
+  }
+
+  const bullishOb = activeBullOb
+    ? `$${activeBullOb.low.toFixed(2)} – $${activeBullOb.high.toFixed(2)} (+OB Demand • импульс $${activeBullOb.impulseBody.toFixed(1)} • ${activeBullOb.barsAgo} св. назад)`
+    : "Нет активного +OB";
+
+  const bearishOb = activeBearOb
+    ? `$${activeBearOb.low.toFixed(2)} – $${activeBearOb.high.toFixed(2)} (-OB Supply • импульс $${activeBearOb.impulseBody.toFixed(1)} • ${activeBearOb.barsAgo} св. назад)`
+    : "Нет активного -OB";
+
+  // 12. Synchronized MOEX GD Levels
   const moexEntry = Math.round((entryPrice + spreadUsd) * 10) / 10;
   const moexSl = Math.round((trailingStop + spreadUsd) * 10) / 10;
   const moexTargetTp1 = Math.round((tp1 + spreadUsd) * 10) / 10;
   const moexTargetTp2 = Math.round((tp2 + spreadUsd) * 10) / 10;
+  const primaryObForMoex = isBull ? (activeBullOb || activeBearOb) : (activeBearOb || activeBullOb);
+  const moexObZone = primaryObForMoex
+    ? `${(primaryObForMoex.low + spreadUsd).toFixed(1)} – ${(primaryObForMoex.high + spreadUsd).toFixed(1)} (${primaryObForMoex === activeBullOb ? "+OB" : "-OB"} MOEX)`
+    : "Нет активного OB MOEX";
 
   const asianHigh = Math.round((highest_high - swing_range * 0.1) * 10) / 10;
   const asianLow = Math.round((lowest_low + swing_range * 0.1) * 10) / 10;
@@ -805,9 +961,9 @@ export function computePineScriptEngine(
     mlSignal,
     mlConfidence: fc_probability,
     asianSweepStatus,
-    bullishOb: `${(lowest_low + 2.0).toFixed(1)} – ${(lowest_low + 6.0).toFixed(1)} (+OB Demand Zone)`,
-    bearishOb: `${(highest_high - 6.0).toFixed(1)} – ${(highest_high - 2.0).toFixed(1)} (-OB Supply Zone)`,
-    fvgZone: `${ote_bottom.toFixed(1)} – ${ote_top.toFixed(1)} (15m OTE FVG Retest)`,
+    bullishOb,
+    bearishOb,
+    fvgZone,
     pineScriptForecast: {
       preset: "Золото (XAUUSD) - 15 мин Оптимальный",
       direction,
@@ -851,7 +1007,7 @@ export function computePineScriptEngine(
         : "Дилеры продают пробой ниже Zero-Gamma Flip " + zeroFlip
     },
     moexLevels: {
-      moexObZone: `${(moexGD.price - 12.0).toFixed(1)} – ${(moexGD.price - 6.0).toFixed(1)} (+OB MOEX)`,
+      moexObZone,
       moexResistance: Math.round((moexGD.price + atr15 * 0.8) * 10) / 10,
       moexSupport: Math.round((moexGD.price - atr15 * 1.5) * 10) / 10,
       moexZeroFlip: Math.round((moexGD.price - 5.0) * 10) / 10,
