@@ -1804,9 +1804,16 @@ export const DeepSeekGoldScheduler: React.FC = () => {
                   <span className={`font-bold ${dualMarketData?.scriptIndicators?.direction === "SHORT" ? "text-rose-400" : "text-emerald-400"}`}>
                     {dualMarketData?.scriptIndicators?.mlSignal || "🟢 LONG (15m OTE)"}
                   </span>
-                  <span className="text-[9px] text-gray-300 block mt-0.5 font-mono">
-                    Вход OTE: ${dualMarketData?.scriptIndicators?.entryPrice?.toFixed(2) || "..."}
-                  </span>
+                  <div className="flex items-center justify-between text-[9px] mt-0.5">
+                    <span className="text-gray-300 font-mono">
+                      Вход: ${dualMarketData?.scriptIndicators?.entryPrice?.toFixed(2) || "..."}
+                    </span>
+                    {(dualMarketData?.scriptIndicators as any)?.isFrozen && (
+                      <span className="px-1 py-0.5 text-[8px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded font-mono" title="Точка входа жестко зафиксирована (Stateful Lock), 0% перерисовки">
+                        🔒 Зафиксирован
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="p-2 rounded bg-black/50 border border-gray-800">
                   <span className="text-gray-400 block">Цели (TP1 / TP2 / TP3):</span>

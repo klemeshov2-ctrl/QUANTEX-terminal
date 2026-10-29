@@ -413,6 +413,97 @@ export async function fetchCalibratedPineCandles(targetSpotPrice: number): Promi
   return fallbackCandles;
 }
 
+export interface LockedPineSignal {
+  setupId: string;
+  direction: "LONG" | "SHORT";
+  entryPrice: number;
+  trailingStop: number;
+  initialSl: number;
+  activeTrailingSl: number;
+  trailingStageStr: string;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  altBreakLevel: number;
+  oteTop: number;
+  oteBottom: number;
+  fib500: number;
+  ext1: number;
+  ext2: number;
+  ext3: number;
+  swingRange: number;
+  highestHigh: number;
+  lowestLow: number;
+  mlSignal: string;
+  setupName: string;
+  fc_probability: number;
+  createdAt: number;
+  entryHit: boolean;
+  entryHitTime?: number;
+  tp1Hit: boolean;
+  tp2Hit: boolean;
+  tp3Hit: boolean;
+  slHit: boolean;
+  status: "WAITING_FOR_ENTRY" | "ACTIVE_IN_TRADE";
+  statusText: string;
+}
+
+const LOCKED_SETUPS_FILE = path.join(process.cwd(), "data", "locked-setups.json");
+
+export function loadLockedSetupFromFile(): LockedPineSignal | null {
+  try {
+    if (fs.existsSync(LOCKED_SETUPS_FILE)) {
+      const raw = fs.readFileSync(LOCKED_SETUPS_FILE, "utf-8");
+      if (raw && raw.trim().length > 0) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && parsed.entryPrice && parsed.direction) {
+          if (parsed.createdAt && Date.now() - parsed.createdAt > 24 * 3600 * 1000) {
+            console.log(`[Pine Engine LOCK] ⚠️ Setup from disk is older than 24h (${parsed.setupId}), ignoring.`);
+            return null;
+          }
+          console.log(`[Pine Engine LOCK] 📂 Loaded active locked setup from disk: ${parsed.setupId} (${parsed.direction} @ $${parsed.entryPrice}, status=${parsed.status || "WAITING_FOR_ENTRY"})`);
+          return parsed as LockedPineSignal;
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("[Pine Engine LOCK] Notice loading locked setup from file:", err.message);
+  }
+  return null;
+}
+
+export function saveLockedSetupToFile(setup: LockedPineSignal | null): void {
+  try {
+    const dir = path.dirname(LOCKED_SETUPS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (setup) {
+      fs.writeFileSync(LOCKED_SETUPS_FILE, JSON.stringify(setup, null, 2), "utf-8");
+      console.log(`[Pine Engine LOCK] 💾 Saved locked setup ${setup.setupId} (${setup.direction} @ $${setup.entryPrice}) to ${LOCKED_SETUPS_FILE}`);
+    } else {
+      if (fs.existsSync(LOCKED_SETUPS_FILE)) {
+        fs.writeFileSync(LOCKED_SETUPS_FILE, JSON.stringify(null), "utf-8");
+        console.log(`[Pine Engine LOCK] 🗑️ Cleared locked setup in ${LOCKED_SETUPS_FILE}`);
+      }
+    }
+  } catch (err: any) {
+    console.warn("[Pine Engine LOCK] Notice saving locked setup to file:", err.message);
+  }
+}
+
+let activeLockedServerSetup: LockedPineSignal | null = loadLockedSetupFromFile();
+
+export function resetPineScriptEngineLock() {
+  activeLockedServerSetup = null;
+  saveLockedSetupToFile(null);
+  console.log("[Pine Engine LOCK] 🔄 Server signal lock reset manually.");
+}
+
+export function getActiveLockedPineSignal(): LockedPineSignal | null {
+  return activeLockedServerSetup;
+}
+
 export function computePineScriptEngine(
   oandaPrice: number,
   oandaOpen: number,
@@ -427,7 +518,7 @@ export function computePineScriptEngine(
   const count = candles.length;
   const close = oandaPrice;
 
-  // 1. ATR 14 & Local Candle Volatility (Evaluated first to scale dynamic swing_range)
+  // 1. ATR 14 & Volatility Baseline
   const rawCandleAtr = count >= 5
     ? candles.slice(-14).reduce((acc, c) => acc + Math.max(0.5, c.high - c.low), 0) / Math.min(14, count)
     : 6.85;
@@ -438,19 +529,18 @@ export function computePineScriptEngine(
     ? Number(tvMetrics["ATR|60"])
     : atr15 * 1.85;
 
-  // 2. Dynamic Swing Range (50 bars lookback + ATR extrapolation when range is compressed)
+  // 2. Confirmed Structural Swings (Strictly from candle history, never floating tick highs/lows)
   const lookback = Math.min(50, count);
   const slice = candles.slice(count - lookback);
-  const highest_high = Math.max(...slice.map(c => c.high), oandaHigh);
-  const lowest_low = Math.min(...slice.map(c => c.low), oandaLow);
+  let highest_high = Math.max(...slice.map(c => c.high));
+  let lowest_low = Math.min(...slice.map(c => c.low));
   const raw_swing = Math.max(1.0, highest_high - lowest_low);
 
-  // If market is compressed in a tight box, extrapolate Fibonacci grid from ATR (min 2.8x ATR15 or 1.5x ATR60, floor $18)
   const is_compressed_range = raw_swing < atr15 * 2.2;
-  const swing_range = Math.round(Math.max(18.0, atr15 * 2.8, atr60 * 1.45, raw_swing) * 100) / 100;
-  const fib_500 = Math.round(((highest_high + lowest_low) / 2) * 100) / 100;
+  let swing_range = Math.round(Math.max(18.0, atr15 * 2.8, atr60 * 1.45, raw_swing) * 100) / 100;
+  let fib_500 = Math.round(((highest_high + lowest_low) / 2) * 100) / 100;
 
-  // 3. Multi-Timeframe EMA Dots (Honest check: output "⚪ N/A" if scanner data is unavailable)
+  // 3. Multi-Timeframe EMA Dots
   const getEmaDot = (ema9Key: string, ema21Key: string, fallbackEma20Key?: string): string => {
     const ema9 = tvMetrics[ema9Key];
     const ema21 = tvMetrics[ema21Key];
@@ -470,7 +560,7 @@ export function computePineScriptEngine(
   const dot_D = getEmaDot("EMA9", "EMA21");
   const dot_W = getEmaDot("EMA9|1W", "EMA21|1W");
 
-  // 4. Liquidity Sweeps (Matching Pine Script: scriptSuper.txt lines 1184-1210)
+  // 4. Confirmed Liquidity Sweeps from Candle Geometry
   const priorBars = candles.slice(Math.max(0, count - lookback), Math.max(1, count - 4));
   const priorKeyHigh = priorBars.length > 0 ? Math.max(...priorBars.map(c => c.high)) : highest_high;
   const priorKeyLow = priorBars.length > 0 ? Math.min(...priorBars.map(c => c.low)) : lowest_low;
@@ -507,268 +597,8 @@ export function computePineScriptEngine(
     }
   }
 
-  if (is_high_sweep) {
-    console.log(`[Pine Indicator SWEEP] 🔴 HIGH SWEEP detected (${sweepBarIdx} bars ago) at $${sweepPrice}! Details: ${sweepDetails}`);
-  } else if (is_low_sweep) {
-    console.log(`[Pine Indicator SWEEP] 🟢 LOW SWEEP detected (${sweepBarIdx} bars ago) at $${sweepPrice}! Details: ${sweepDetails}`);
-  }
-
-  // 5. Consensus Scoring, Efficiency Ratio (ER) & Market Regime Detection
-  const htf_trend_up = dot_60 === "🟢" || (dot_60.includes("N/A") && (dot_240 === "🟢" || dot_15 === "🟢"));
-  const rsi15 = typeof tvMetrics["RSI|15"] === "number" ? tvMetrics["RSI|15"] : 50.0;
-  const tvRec15 = typeof tvMetrics["Recommend.All|15"] === "number" ? Number(tvMetrics["Recommend.All|15"]) : 0;
-  const tvRec60 = typeof tvMetrics["Recommend.All|60"] === "number" ? Number(tvMetrics["Recommend.All|60"]) : 0;
-
-  // Kaufman Efficiency Ratio (ER) over last 20 candles to distinguish Impulse Trend vs Choppy Flat
-  const erPeriod = Math.min(20, Math.max(2, count - 1));
-  const netMove = count >= erPeriod + 1 ? Math.abs(close - candles[count - 1 - erPeriod].close) : Math.abs(close - oandaOpen);
-  let pathSum = 0;
-  for (let i = Math.max(1, count - erPeriod); i < count; i++) {
-    pathSum += Math.abs(candles[i].close - candles[i - 1].close);
-  }
-  const er15 = pathSum > 0 ? netMove / pathSum : 0.30;
-
-  let bull_score = 0;
-  let bear_score = 0;
-  if (htf_trend_up) bull_score += 35; else bear_score += 35;
-  if (dot_240 === "🟢") bull_score += 15; else if (dot_240 === "🔴") bear_score += 15;
-  if (close > fib_500) bull_score += 20; else bear_score += 20;
-  if (rsi15 < 45) bull_score += 15;
-  if (rsi15 > 55) bear_score += 15;
-  if (tvRec15 > 0.25) bull_score += 10; else if (tvRec15 < -0.25) bear_score += 10;
-  if (is_low_sweep) bull_score += 35;
-  if (is_high_sweep) bear_score += 35;
-
-  const consensus_is_bull = bull_score >= bear_score;
-  const isBull = is_low_sweep ? true : (is_high_sweep ? false : consensus_is_bull);
-  const direction: "LONG" | "SHORT" = isBull ? "LONG" : "SHORT";
-
-  // Mathematical Trend Filter:
-  // STRONG_TREND: HTF + 15m aligned AND (ER >= 0.38 OR strong TV momentum OR EMA ribbon expansion)
-  const ema9_15 = typeof tvMetrics["EMA9|15"] === "number" ? tvMetrics["EMA9|15"] : close;
-  const ema21_15 = typeof tvMetrics["EMA21|15"] === "number" ? tvMetrics["EMA21|15"] : close;
-  const ema50_15 = typeof tvMetrics["EMA50|15"] === "number" ? tvMetrics["EMA50|15"] : fib_500;
-
-  const isBullRibbon = close >= ema9_15 && ema9_15 >= ema21_15 && ema21_15 >= ema50_15;
-  const isBearRibbon = close <= ema9_15 && ema9_15 <= ema21_15 && ema21_15 <= ema50_15;
-  const htfAlignedWithSignal = isBull
-    ? (dot_15 === "🟢" && (dot_60 === "🟢" || dot_240 === "🟢"))
-    : (dot_15 === "🔴" && (dot_60 === "🔴" || dot_240 === "🔴"));
-
-  const isStrongTrend = htfAlignedWithSignal && (
-    er15 >= 0.38 ||
-    (isBull && (isBullRibbon || tvRec15 >= 0.35 || tvRec60 >= 0.35)) ||
-    (!isBull && (isBearRibbon || tvRec15 <= -0.35 || tvRec60 <= -0.35))
-  );
-  const isFlatRange = !isStrongTrend && (er15 < 0.24 || is_compressed_range);
-
-  // 6. Institutional GEX Levels (Evaluated BEFORE targets so TP1/TP2 respect Call/Put Walls!)
-  const rawCallWall = liveGexReport?.callWall && liveGexReport.callWall > close
-    ? liveGexReport.callWall
-    : Math.ceil(Math.max(highest_high + atr15 * 0.8, close + Math.max(20, atr15 * 2.5)) / 10) * 10;
-  const rawPutWall = liveGexReport?.putWall && liveGexReport.putWall < close
-    ? liveGexReport.putWall
-    : Math.floor(Math.min(lowest_low - atr15 * 0.8, close - Math.max(20, atr15 * 2.5)) / 10) * 10;
-  const callWall = Math.max(Math.ceil((close + 10) / 10) * 10, rawCallWall);
-  const putWall = Math.min(Math.floor((close - 10) / 10) * 10, rawPutWall);
-  const maxPain = liveGexReport?.maxPain || Math.round(fib_500 / 10) * 10;
-  const zeroFlip = liveGexReport?.gammaFlip || Math.round(fib_500 * 10) / 10;
-
-  // 7. Adaptive Entry (entryPrice), Smart Stop-Loss (trailingStop) & GEX-Aware Targets (tp1, tp2, tp3)
-  let ote_top = 0;
-  let ote_bottom = 0;
-  let ext_1 = 0;
-  let ext_2 = 0;
-  let ext_3 = 0;
-  let entryPrice = 0;
-  let tp1 = 0;
-  let tp2 = 0;
-  let tp3 = 0;
-  let trailingStop = 0;
-  let altBreakLevel = 0;
-
-  // Dynamic minimum TP1 threshold: 20-30 pts ($2.0-$3.0+) or 1.8x ATR15 in normal/trend markets,
-  // or 1.35x ATR15 in compressed ranges, always strictly respecting R:R >= 1.20
-  const baseMinTp1Dist = isFlatRange
-    ? Math.max(10.0, atr15 * 1.35)
-    : Math.max(18.0, atr15 * 2.0);
-
-  if (isBull) {
-    const eff_high = Math.max(highest_high, close + atr15 * 0.4);
-
-    if (is_low_sweep) {
-      // Sweep of lows already confirmed -> enter on shallow immediate retest
-      ote_top = Math.round((close - atr15 * 0.10) * 100) / 100;
-      ote_bottom = Math.round((close - atr15 * 0.45) * 100) / 100;
-      entryPrice = Math.round((close - atr15 * 0.15) * 100) / 100;
-    } else if (isStrongTrend) {
-      // Strong Impulse Trend -> Shallow retracement zone (38.2% - 50.0% EQ) so trade isn't missed!
-      ote_top = Math.round((eff_high - swing_range * 0.382) * 100) / 100;
-      ote_bottom = Math.round((eff_high - swing_range * 0.500) * 100) / 100;
-      const targetPullback = close <= ote_top && close >= ote_bottom
-        ? close
-        : (ote_top * 0.65 + ote_bottom * 0.35);
-      // Cap pullback distance at 0.50 ATR15 or EMA21 support in strong trend
-      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 0.50)) * 100) / 100;
-    } else if (isFlatRange) {
-      // Flat / Range -> Wait for deep institutional OTE (61.8% - 78.6% discount)
-      ote_top = Math.round((eff_high - swing_range * 0.618) * 100) / 100;
-      ote_bottom = Math.round((eff_high - swing_range * 0.786) * 100) / 100;
-      const targetPullback = close <= ote_top && close >= ote_bottom
-        ? close
-        : (ote_top + ote_bottom) / 2;
-      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 1.10)) * 100) / 100;
-    } else {
-      // Normal Trend -> Golden Pocket / Equilibrium (50.0% EQ - 61.8%)
-      ote_top = Math.round((eff_high - swing_range * 0.500) * 100) / 100;
-      ote_bottom = Math.round((eff_high - swing_range * 0.618) * 100) / 100;
-      const targetPullback = close <= ote_top && close >= ote_bottom
-        ? close
-        : (ote_top + ote_bottom) / 2;
-      entryPrice = Math.round(Math.min(close, Math.max(targetPullback, close - atr15 * 0.75)) * 100) / 100;
-    }
-
-    // Stop Loss strictly below entryPrice (structural low or 1.15x-1.85x ATR15)
-    const structSl = Math.min(ote_bottom - atr15 * 0.35, lowest_low - atr15 * 0.25);
-    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, entryPrice - structSl));
-    trailingStop = Math.round((entryPrice - rawRisk) * 100) / 100;
-    const riskDist = Math.max(2.0, entryPrice - trailingStop);
-
-    // Minimum TP1 distance enforcing R:R >= 1.25 and minimum volatility floor
-    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-
-    ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
-    ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
-    ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
-
-    // Align TP1 & TP2 with Call Wall (GEX Magnet & Resistance Barrier)
-    let candidateTp1 = ext_1;
-    if (callWall > entryPrice + riskDist * 1.20) {
-      // If TP1 is close to Call Wall or slightly overshoots it, front-run Call Wall by $1.0
-      if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
-        candidateTp1 = callWall - 1.0;
-      }
-    }
-    tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
-
-    // If TP2 is near Call Wall, snap TP2 to Call Wall; otherwise place above TP1
-    const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
-      ? callWall
-      : Math.max(ext_2, tp1 + atr15 * 1.5);
-    tp2 = Math.round(candidateTp2 * 100) / 100;
-    tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
-    altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
-  } else {
-    const eff_low = Math.min(lowest_low, close - atr15 * 0.4);
-
-    if (is_high_sweep) {
-      // Sweep of highs already confirmed -> enter on shallow immediate retest
-      ote_bottom = Math.round((close + atr15 * 0.10) * 100) / 100;
-      ote_top = Math.round((close + atr15 * 0.45) * 100) / 100;
-      entryPrice = Math.round((close + atr15 * 0.15) * 100) / 100;
-    } else if (isStrongTrend) {
-      // Strong Bearish Impulse -> Shallow retracement zone (38.2% - 50.0% EQ)
-      ote_bottom = Math.round((eff_low + swing_range * 0.382) * 100) / 100;
-      ote_top = Math.round((eff_low + swing_range * 0.500) * 100) / 100;
-      const targetPullback = close >= ote_bottom && close <= ote_top
-        ? close
-        : (ote_bottom * 0.65 + ote_top * 0.35);
-      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 0.50)) * 100) / 100;
-    } else if (isFlatRange) {
-      // Flat / Range -> Deep institutional OTE (61.8% - 78.6% premium)
-      ote_bottom = Math.round((eff_low + swing_range * 0.618) * 100) / 100;
-      ote_top = Math.round((eff_low + swing_range * 0.786) * 100) / 100;
-      const targetPullback = close >= ote_bottom && close <= ote_top
-        ? close
-        : (ote_top + ote_bottom) / 2;
-      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 1.10)) * 100) / 100;
-    } else {
-      // Normal Trend -> Golden Pocket / Equilibrium (50.0% EQ - 61.8%)
-      ote_bottom = Math.round((eff_low + swing_range * 0.500) * 100) / 100;
-      ote_top = Math.round((eff_low + swing_range * 0.618) * 100) / 100;
-      const targetPullback = close >= ote_bottom && close <= ote_top
-        ? close
-        : (ote_top + ote_bottom) / 2;
-      entryPrice = Math.round(Math.max(close, Math.min(targetPullback, close + atr15 * 0.75)) * 100) / 100;
-    }
-
-    // Stop Loss strictly above entryPrice
-    const structSl = Math.max(ote_top + atr15 * 0.35, highest_high + atr15 * 0.25);
-    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, structSl - entryPrice));
-    trailingStop = Math.round((entryPrice + rawRisk) * 100) / 100;
-    const riskDist = Math.max(2.0, trailingStop - entryPrice);
-
-    // Minimum TP1 distance enforcing R:R >= 1.25 and minimum volatility floor
-    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-
-    ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
-    ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
-    ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
-
-    // Align TP1 & TP2 with Put Wall (GEX Magnet & Support Barrier)
-    let candidateTp1 = ext_1;
-    if (putWall < entryPrice - riskDist * 1.20) {
-      if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
-        candidateTp1 = putWall + 1.0;
-      }
-    }
-    tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
-
-    const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
-      ? putWall
-      : Math.min(ext_2, tp1 - atr15 * 1.5);
-    tp2 = Math.round(candidateTp2 * 100) / 100;
-    tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
-    altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
-  }
-
-  // 8. Risk/Reward (R:R) & GEX Barrier Quality Gate ("Нет сетапа / Ожидание" filter)
-  const finalRisk = Math.max(0.5, Math.abs(entryPrice - trailingStop));
-  const finalRewardTp1 = Math.abs(tp1 - entryPrice);
-  const rrRatio = Math.round((finalRewardTp1 / finalRisk) * 100) / 100;
-
-  // Check if opposing GEX wall blocks room to TP1 (e.g., buying directly under Call Wall or selling directly on Put Wall)
-  const isBlockedByGexWall = isBull
-    ? (callWall > entryPrice && (callWall - entryPrice) < finalRisk * 0.95)
-    : (putWall < entryPrice && (entryPrice - putWall) < finalRisk * 0.95);
-  const isNoisyChop = er15 < 0.16 && !is_low_sweep && !is_high_sweep && Math.abs(bull_score - bear_score) < 15;
-  const hasValidSetup = rrRatio >= 1.20 && !isBlockedByGexWall && !isNoisyChop;
-
-  // 9. Success Probability
-  let prob = 55.0;
-  if (isBull === htf_trend_up) prob += 15.0; else prob -= 8.0;
-  if (isStrongTrend) prob += 8.0;
-  if (is_low_sweep || is_high_sweep) prob += 15.0;
-  if (isBull && rsi15 < 45) prob += 10.0;
-  else if (!isBull && rsi15 > 55) prob += 10.0;
-  if (!hasValidSetup) prob = Math.min(prob, 48.0);
-  const fc_probability = Math.min(94, Math.max(42, Math.round(prob)));
-
-  // 10. Dynamic ML Signal and Setup Name (preserving HUD compatibility)
-  const entryZoneTag = is_low_sweep || is_high_sweep
-    ? "⚡ SWEEP Retest"
-    : isStrongTrend
-    ? "🚀 Импульс 38.2%-50% EQ"
-    : isFlatRange
-    ? "🛡️ Глубокий OTE 61.8%-78.6%"
-    : "📐 OTE 50%-61.8%";
-
-  const mlSignal = !hasValidSetup
-    ? `⚪ ОЖИДАНИЕ | Нет сетапа (${isBlockedByGexWall ? "Упор в GEX стену" : `Шум / R:R ${rrRatio.toFixed(1)}`})`
-    : isBull
-    ? `🟢 LONG (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`
-    : `🔴 SHORT (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`;
-
-  const setupName = !hasValidSetup
-    ? `⚪ НЕТ СЕТАПА (Ожидание выхода из шума • R:R 1:${rrRatio.toFixed(1)})`
-    : isBull
-    ? `🟢LONG ${fc_probability}% (Вход $${entryPrice} → TP1 $${tp1} / TP2 $${tp2})`
-    : `🔴SHORT ${fc_probability}% (Вход $${entryPrice} → TP1 $${tp1} / TP2 $${tp2})`;
-
-  const consensusSummary = `5м${dot_5} 15м${dot_15} 1ч${dot_60} 4ч${dot_240} 1Д${dot_D} 1Н${dot_W} | ${fc_probability}% ${hasValidSetup ? direction : "WAIT"}`;
-
-  // 11. Real Institutional Fair Value Gap (FVG) & Order Block (OB) Detection from Candles
-  const minFvgGap = Math.max(0.35, atr15 * 0.12); // Volatility filter against micro-gaps (1-2 cents noise)
+  // 5. Institutional Fair Value Gap (FVG) Detection (Computed BEFORE entry)
+  const minFvgGap = Math.max(0.35, atr15 * 0.12);
   const minImpulseBody = Math.max(0.60, atr15 * 0.30);
 
   let activeBullFvg: { bottom: number; top: number; gap: number; barsAgo: number } | null = null;
@@ -777,14 +607,14 @@ export function computePineScriptEngine(
   const startScanIdx = Math.max(2, count - lookback);
   for (let i = startScanIdx; i < count; i++) {
     const c0 = candles[i - 2];
-    const c1 = candles[i - 1]; // Middle impulse candle
+    const c1 = candles[i - 1];
     const c2 = candles[i];
     if (!c0 || !c1 || !c2) continue;
 
     const c1Body = Math.abs(c1.close - c1.open);
     if (c1Body < minImpulseBody) continue;
 
-    // Bullish 3-candle FVG: c2.low > c0.high with bullish middle impulse candle
+    // Bullish 3-candle FVG: c2.low > c0.high
     if (c1.close > c1.open && c2.low > c0.high) {
       const rawGap = c2.low - c0.high;
       if (rawGap >= minFvgGap) {
@@ -809,7 +639,7 @@ export function computePineScriptEngine(
       }
     }
 
-    // Bearish 3-candle FVG: c2.high < c0.low with bearish middle impulse candle
+    // Bearish 3-candle FVG: c2.high < c0.low
     if (c1.close < c1.open && c2.high < c0.low) {
       const rawGap = c0.low - c2.high;
       if (rawGap >= minFvgGap) {
@@ -835,12 +665,7 @@ export function computePineScriptEngine(
     }
   }
 
-  const chosenFvg = isBull ? (activeBullFvg || activeBearFvg) : (activeBearFvg || activeBullFvg);
-  const fvgZone = chosenFvg
-    ? `$${chosenFvg.bottom.toFixed(2)} – $${chosenFvg.top.toFixed(2)} (${chosenFvg === activeBullFvg ? "+FVG Бычий имбаланс" : "-FVG Медвежий имбаланс"} $${chosenFvg.gap.toFixed(2)} • ${chosenFvg.barsAgo} св. назад)`
-    : "Нет активного FVG (Имбалансы перекрыты или ниже порога волатильности ATR)";
-
-  // Order Block (OB) Detection: Last opposite candle before a confirmed displacement candle
+  // 6. Institutional Order Block (OB) Detection (Computed BEFORE entry)
   let activeBullOb: { low: number; high: number; impulseBody: number; barsAgo: number } | null = null;
   let activeBearOb: { low: number; high: number; impulseBody: number; barsAgo: number } | null = null;
 
@@ -856,7 +681,6 @@ export function computePineScriptEngine(
     const twoBarBullBody = cNext2 && cNext2.close > cNext.open ? (cNext2.close - cNext.open) : 0;
     const twoBarBearBody = cNext2 && cNext2.close < cNext.open ? (cNext.open - cNext2.close) : 0;
 
-    // Bullish OB (+OB): Red candle (close < open) followed by strong green displacement candle engulfing OB body & high
     const effBullImpulse = Math.max(nextBody, twoBarBullBody);
     const isBullDisplacement =
       cOb.close < cOb.open &&
@@ -883,7 +707,6 @@ export function computePineScriptEngine(
       }
     }
 
-    // Bearish OB (-OB): Green candle (close > open) followed by strong red displacement candle engulfing OB body & low
     const effBearImpulse = Math.max(nextBody, twoBarBearBody);
     const isBearDisplacement =
       cOb.close > cOb.open &&
@@ -911,6 +734,374 @@ export function computePineScriptEngine(
     }
   }
 
+  // 7. Consensus Scoring & Regime
+  const htf_trend_up = dot_60 === "🟢" || (dot_60.includes("N/A") && (dot_240 === "🟢" || dot_15 === "🟢"));
+  const rsi15 = typeof tvMetrics["RSI|15"] === "number" ? tvMetrics["RSI|15"] : 50.0;
+  const tvRec15 = typeof tvMetrics["Recommend.All|15"] === "number" ? Number(tvMetrics["Recommend.All|15"]) : 0;
+  const tvRec60 = typeof tvMetrics["Recommend.All|60"] === "number" ? Number(tvMetrics["Recommend.All|60"]) : 0;
+
+  const erPeriod = Math.min(20, Math.max(2, count - 1));
+  const netMove = count >= erPeriod + 1 ? Math.abs(close - candles[count - 1 - erPeriod].close) : Math.abs(close - oandaOpen);
+  let pathSum = 0;
+  for (let i = Math.max(1, count - erPeriod); i < count; i++) {
+    pathSum += Math.abs(candles[i].close - candles[i - 1].close);
+  }
+  const er15 = pathSum > 0 ? netMove / pathSum : 0.30;
+
+  let bull_score = 0;
+  let bear_score = 0;
+  if (htf_trend_up) bull_score += 35; else bear_score += 35;
+  if (dot_240 === "🟢") bull_score += 15; else if (dot_240 === "🔴") bear_score += 15;
+  if (close > fib_500) bull_score += 20; else bear_score += 20;
+  if (rsi15 < 45) bull_score += 15;
+  if (rsi15 > 55) bear_score += 15;
+  if (tvRec15 > 0.25) bull_score += 10; else if (tvRec15 < -0.25) bear_score += 10;
+  if (is_low_sweep) bull_score += 35;
+  if (is_high_sweep) bear_score += 35;
+
+  const consensus_is_bull = bull_score >= bear_score;
+  const isBull = is_low_sweep ? true : (is_high_sweep ? false : consensus_is_bull);
+  const direction: "LONG" | "SHORT" = isBull ? "LONG" : "SHORT";
+
+  const ema9_15 = typeof tvMetrics["EMA9|15"] === "number" ? tvMetrics["EMA9|15"] : close;
+  const ema21_15 = typeof tvMetrics["EMA21|15"] === "number" ? tvMetrics["EMA21|15"] : close;
+  const ema50_15 = typeof tvMetrics["EMA50|15"] === "number" ? tvMetrics["EMA50|15"] : fib_500;
+
+  const isBullRibbon = close >= ema9_15 && ema9_15 >= ema21_15 && ema21_15 >= ema50_15;
+  const isBearRibbon = close <= ema9_15 && ema9_15 <= ema21_15 && ema21_15 <= ema50_15;
+  const htfAlignedWithSignal = isBull
+    ? (dot_15 === "🟢" && (dot_60 === "🟢" || dot_240 === "🟢"))
+    : (dot_15 === "🔴" && (dot_60 === "🔴" || dot_240 === "🔴"));
+
+  const isStrongTrend = htfAlignedWithSignal && (
+    er15 >= 0.38 ||
+    (isBull && (isBullRibbon || tvRec15 >= 0.35 || tvRec60 >= 0.35)) ||
+    (!isBull && (isBearRibbon || tvRec15 <= -0.35 || tvRec60 <= -0.35))
+  );
+  const isFlatRange = !isStrongTrend && (er15 < 0.24 || is_compressed_range);
+
+  // 8. Institutional GEX Levels
+  const rawCallWall = liveGexReport?.callWall && liveGexReport.callWall > close
+    ? liveGexReport.callWall
+    : Math.ceil(Math.max(highest_high + atr15 * 0.8, close + Math.max(20, atr15 * 2.5)) / 10) * 10;
+  const rawPutWall = liveGexReport?.putWall && liveGexReport.putWall < close
+    ? liveGexReport.putWall
+    : Math.floor(Math.min(lowest_low - atr15 * 0.8, close - Math.max(20, atr15 * 2.5)) / 10) * 10;
+  const callWall = Math.max(Math.ceil((close + 10) / 10) * 10, rawCallWall);
+  const putWall = Math.min(Math.floor((close - 10) / 10) * 10, rawPutWall);
+  const maxPain = liveGexReport?.maxPain || Math.round(fib_500 / 10) * 10;
+  const zeroFlip = liveGexReport?.gammaFlip || Math.round(fib_500 * 10) / 10;
+
+  // 9. Pure Static Structural Calculation (Zero 'close' in formulas to prevent repainting!)
+  let ote_top = 0;
+  let ote_bottom = 0;
+  let ext_1 = 0;
+  let ext_2 = 0;
+  let ext_3 = 0;
+  let entryPrice = 0;
+  let tp1 = 0;
+  let tp2 = 0;
+  let tp3 = 0;
+  let trailingStop = 0;
+  let altBreakLevel = 0;
+
+  const baseMinTp1Dist = isFlatRange
+    ? Math.max(10.0, atr15 * 1.35)
+    : Math.max(18.0, atr15 * 2.0);
+
+  if (isBull) {
+    ote_top = isStrongTrend
+      ? Math.round((highest_high - swing_range * 0.382) * 100) / 100
+      : isFlatRange
+      ? Math.round((highest_high - swing_range * 0.618) * 100) / 100
+      : Math.round((highest_high - swing_range * 0.500) * 100) / 100;
+
+    ote_bottom = isStrongTrend
+      ? Math.round((highest_high - swing_range * 0.500) * 100) / 100
+      : isFlatRange
+      ? Math.round((highest_high - swing_range * 0.786) * 100) / 100
+      : Math.round((highest_high - swing_range * 0.618) * 100) / 100;
+
+    // Anchor limit entry price to static market structures (sweep > OB > FVG > OTE)
+    if (is_low_sweep && sweepPrice > 0) {
+      entryPrice = sweepPrice;
+    } else if (activeBullOb && activeBullOb.high <= ote_top + atr15 * 0.25 && activeBullOb.low >= lowest_low) {
+      entryPrice = Math.round(((activeBullOb.low + activeBullOb.high) / 2) * 100) / 100;
+    } else if (activeBullFvg && activeBullFvg.top <= ote_top + atr15 * 0.25 && activeBullFvg.bottom >= lowest_low) {
+      entryPrice = Math.round(((activeBullFvg.bottom + activeBullFvg.top) / 2) * 100) / 100;
+    } else if (isStrongTrend) {
+      entryPrice = ote_top;
+    } else if (isFlatRange) {
+      entryPrice = Math.round((ote_top * 0.382 + ote_bottom * 0.618) * 100) / 100;
+    } else {
+      entryPrice = Math.round(((ote_top + ote_bottom) / 2) * 100) / 100;
+    }
+
+    const structSl = Math.min(ote_bottom - atr15 * 0.35, lowest_low - atr15 * 0.25);
+    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, entryPrice - structSl));
+    trailingStop = Math.round((entryPrice - rawRisk) * 100) / 100;
+    const riskDist = Math.max(2.0, entryPrice - trailingStop);
+
+    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+    ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
+    ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
+    ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
+
+    let candidateTp1 = ext_1;
+    if (callWall > entryPrice + riskDist * 1.20) {
+      if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
+        candidateTp1 = callWall - 1.0;
+      }
+    }
+    tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
+
+    const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
+      ? callWall
+      : Math.max(ext_2, tp1 + atr15 * 1.5);
+    tp2 = Math.round(candidateTp2 * 100) / 100;
+    tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
+    altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+  } else {
+    ote_bottom = isStrongTrend
+      ? Math.round((lowest_low + swing_range * 0.382) * 100) / 100
+      : isFlatRange
+      ? Math.round((lowest_low + swing_range * 0.618) * 100) / 100
+      : Math.round((lowest_low + swing_range * 0.500) * 100) / 100;
+
+    ote_top = isStrongTrend
+      ? Math.round((lowest_low + swing_range * 0.500) * 100) / 100
+      : isFlatRange
+      ? Math.round((lowest_low + swing_range * 0.786) * 100) / 100
+      : Math.round((lowest_low + swing_range * 0.618) * 100) / 100;
+
+    // Anchor limit entry price to static market structures (sweep > OB > FVG > OTE)
+    if (is_high_sweep && sweepPrice > 0) {
+      entryPrice = sweepPrice;
+    } else if (activeBearOb && activeBearOb.low >= ote_bottom - atr15 * 0.25 && activeBearOb.high <= highest_high) {
+      entryPrice = Math.round(((activeBearOb.low + activeBearOb.high) / 2) * 100) / 100;
+    } else if (activeBearFvg && activeBearFvg.bottom >= ote_bottom - atr15 * 0.25 && activeBearFvg.top <= highest_high) {
+      entryPrice = Math.round(((activeBearFvg.bottom + activeBearFvg.top) / 2) * 100) / 100;
+    } else if (isStrongTrend) {
+      entryPrice = ote_bottom;
+    } else if (isFlatRange) {
+      entryPrice = Math.round((ote_bottom * 0.382 + ote_top * 0.618) * 100) / 100;
+    } else {
+      entryPrice = Math.round(((ote_bottom + ote_top) / 2) * 100) / 100;
+    }
+
+    const structSl = Math.max(ote_top + atr15 * 0.35, highest_high + atr15 * 0.25);
+    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, structSl - entryPrice));
+    trailingStop = Math.round((entryPrice + rawRisk) * 100) / 100;
+    const riskDist = Math.max(2.0, trailingStop - entryPrice);
+
+    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+    ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
+    ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
+    ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
+
+    let candidateTp1 = ext_1;
+    if (putWall < entryPrice - riskDist * 1.20) {
+      if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
+        candidateTp1 = putWall + 1.0;
+      }
+    }
+    tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
+
+    const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
+      ? putWall
+      : Math.min(ext_2, tp1 - atr15 * 1.5);
+    tp2 = Math.round(candidateTp2 * 100) / 100;
+    tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
+    altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+  }
+
+  // 10. Quality Gate & R:R Verification
+  const finalRisk = Math.max(0.5, Math.abs(entryPrice - trailingStop));
+  const finalRewardTp1 = Math.abs(tp1 - entryPrice);
+  const rrRatio = Math.round((finalRewardTp1 / finalRisk) * 100) / 100;
+
+  const isBlockedByGexWall = isBull
+    ? (callWall > entryPrice && (callWall - entryPrice) < finalRisk * 0.95)
+    : (putWall < entryPrice && (entryPrice - putWall) < finalRisk * 0.95);
+  const isNoisyChop = er15 < 0.16 && !is_low_sweep && !is_high_sweep && Math.abs(bull_score - bear_score) < 15;
+  const hasValidSetup = rrRatio >= 1.20 && !isBlockedByGexWall && !isNoisyChop;
+
+  let prob = 55.0;
+  if (isBull === htf_trend_up) prob += 15.0; else prob -= 8.0;
+  if (isStrongTrend) prob += 8.0;
+  if (is_low_sweep || is_high_sweep) prob += 15.0;
+  if (isBull && rsi15 < 45) prob += 10.0;
+  else if (!isBull && rsi15 > 55) prob += 10.0;
+  if (!hasValidSetup) prob = Math.min(prob, 48.0);
+  const fc_probability = Math.min(94, Math.max(42, Math.round(prob)));
+
+  // 11. Stateful Setup Freeze & Execution Lifecycle Engine
+  const nowMs = Date.now();
+  let currentLock = activeLockedServerSetup;
+
+  if (currentLock) {
+    const isLockLong = currentLock.direction === "LONG";
+    const lockAgeMs = nowMs - currentLock.createdAt;
+    const isTimeout = lockAgeMs > 3.5 * 3600 * 1000;
+
+    if (!currentLock.entryHit) {
+      // Stage A: Waiting for entry fill
+      const isEntryFilled = isLockLong
+        ? (close <= currentLock.entryPrice || oandaLow <= currentLock.entryPrice)
+        : (close >= currentLock.entryPrice || oandaHigh >= currentLock.entryPrice);
+
+      if (isEntryFilled) {
+        currentLock.entryHit = true;
+        currentLock.entryHitTime = nowMs;
+        currentLock.status = "ACTIVE_IN_TRADE";
+        currentLock.statusText = `🚀 В СДЕЛКЕ ${currentLock.direction} от $${currentLock.entryPrice.toFixed(2)} (Цель TP1 $${currentLock.tp1.toFixed(2)})`;
+        saveLockedSetupToFile(currentLock);
+        console.log(`[Pine Engine LOCK] ⚡ ENTRY FILLED! ${currentLock.direction} @ $${currentLock.entryPrice.toFixed(2)}, current live spot: $${close}`);
+      } else {
+        // Invalidation triggers before entry fill
+        const isRunaway = isLockLong ? (close >= currentLock.tp1) : (close <= currentLock.tp1);
+        const isSlBroken = isLockLong ? (close <= currentLock.trailingStop) : (close >= currentLock.trailingStop);
+        const isDirectionReversed = (isLockLong && !isBull && Math.abs(bull_score - bear_score) >= 25) ||
+                                    (!isLockLong && isBull && Math.abs(bull_score - bear_score) >= 25);
+
+        if (isRunaway || isSlBroken || isDirectionReversed || isTimeout) {
+          console.log(`[Pine Engine LOCK] 🔄 Setup ${currentLock.setupId} invalidated (runaway=${isRunaway}, slBroken=${isSlBroken}, dirRev=${isDirectionReversed}, timeout=${isTimeout}). Resetting lock.`);
+          activeLockedServerSetup = null;
+          saveLockedSetupToFile(null);
+          currentLock = null;
+        }
+      }
+    } else {
+      // Stage B: Position active in trade
+      if (!currentLock.tp1Hit) {
+        const isTp1Reached = isLockLong ? (close >= currentLock.tp1) : (close <= currentLock.tp1);
+        if (isTp1Reached) {
+          currentLock.tp1Hit = true;
+          if (isLockLong) {
+            currentLock.activeTrailingSl = Math.max(currentLock.activeTrailingSl, currentLock.entryPrice + 1.0);
+          } else {
+            currentLock.activeTrailingSl = Math.min(currentLock.activeTrailingSl, currentLock.entryPrice - 1.0);
+          }
+          currentLock.trailingStageStr = "TP1 достигнут! SL перенесен в безубыток (+1.0 pt)";
+          saveLockedSetupToFile(currentLock);
+          console.log(`[Pine Engine LOCK] 🎯 TP1 REACHED for ${currentLock.direction}! SL moved to BE: $${currentLock.activeTrailingSl.toFixed(2)}`);
+        }
+      }
+
+      const isTp2Reached = isLockLong ? (close >= currentLock.tp2) : (close <= currentLock.tp2);
+      const isSlHit = isLockLong ? (close <= currentLock.activeTrailingSl) : (close >= currentLock.activeTrailingSl);
+
+      if (isTp2Reached || isSlHit || isTimeout) {
+        console.log(`[Pine Engine LOCK] 🏁 Trade completed (tp2Reached=${isTp2Reached}, slHit=${isSlHit}, timeout=${isTimeout}). Resetting lock.`);
+        activeLockedServerSetup = null;
+        saveLockedSetupToFile(null);
+        currentLock = null;
+      }
+    }
+  }
+
+  // If a valid frozen lock exists, enforce FROZEN levels to completely prevent repainting!
+  if (currentLock) {
+    entryPrice = currentLock.entryPrice;
+    trailingStop = currentLock.activeTrailingSl;
+    tp1 = currentLock.tp1;
+    tp2 = currentLock.tp2;
+    tp3 = currentLock.tp3;
+    altBreakLevel = currentLock.altBreakLevel;
+    ote_top = currentLock.oteTop;
+    ote_bottom = currentLock.oteBottom;
+    fib_500 = currentLock.fib500;
+    ext_1 = currentLock.ext1;
+    ext_2 = currentLock.ext2;
+    ext_3 = currentLock.ext3;
+    swing_range = currentLock.swingRange;
+    highest_high = currentLock.highestHigh;
+    lowest_low = currentLock.lowestLow;
+  } else if (hasValidSetup) {
+    // Fresh setup validated -> LOCK IMMEDIATELY!
+    activeLockedServerSetup = {
+      setupId: `setup-${Date.now()}-${direction}`,
+      direction,
+      entryPrice,
+      trailingStop,
+      initialSl: trailingStop,
+      activeTrailingSl: trailingStop,
+      trailingStageStr: "Ожидание лимитного входа",
+      tp1,
+      tp2,
+      tp3,
+      altBreakLevel,
+      oteTop: ote_top,
+      oteBottom: ote_bottom,
+      fib500: fib_500,
+      ext1: ext_1,
+      ext2: ext_2,
+      ext3: ext_3,
+      swingRange: swing_range,
+      highestHigh: highest_high,
+      lowestLow: lowest_low,
+      mlSignal: "",
+      setupName: "",
+      fc_probability,
+      createdAt: nowMs,
+      entryHit: false,
+      tp1Hit: false,
+      tp2Hit: false,
+      tp3Hit: false,
+      slHit: false,
+      status: "WAITING_FOR_ENTRY",
+      statusText: `⏳ Ожидание входа: Лимитный ${direction} по $${entryPrice.toFixed(2)}`
+    };
+    saveLockedSetupToFile(activeLockedServerSetup);
+    currentLock = activeLockedServerSetup;
+  }
+
+  // 12. Dynamic Signal Labels and HUD Descriptions
+  const entryZoneTag = is_low_sweep || is_high_sweep
+    ? "⚡ SWEEP Retest"
+    : isStrongTrend
+    ? "🚀 Импульс 38.2%-50% EQ"
+    : isFlatRange
+    ? "🛡️ Глубокий OTE 61.8%-78.6%"
+    : "📐 OTE 50%-61.8%";
+
+  let mlSignal = "";
+  let setupName = "";
+
+  if (currentLock && currentLock.entryHit) {
+    mlSignal = isBull
+      ? `🚀 В СДЕЛКЕ LONG (Вход $${entryPrice.toFixed(2)} • SL $${trailingStop.toFixed(2)})`
+      : `🚀 В СДЕЛКЕ SHORT (Вход $${entryPrice.toFixed(2)} • SL $${trailingStop.toFixed(2)})`;
+    setupName = `🎯 В СДЕЛКЕ ${direction} (Вход $${entryPrice.toFixed(2)} → TP1 $${tp1.toFixed(2)} / TP2 $${tp2.toFixed(2)})`;
+    if (!currentLock.mlSignal || currentLock.mlSignal !== mlSignal) {
+      currentLock.mlSignal = mlSignal;
+      currentLock.setupName = setupName;
+      saveLockedSetupToFile(currentLock);
+    }
+  } else if (currentLock) {
+    mlSignal = isBull
+      ? `🟢 LONG [ЛИМИТ $${entryPrice.toFixed(2)}] (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`
+      : `🔴 SHORT [ЛИМИТ $${entryPrice.toFixed(2)}] (${entryZoneTag} • R:R 1:${rrRatio.toFixed(1)})`;
+    setupName = isBull
+      ? `🟢LONG ${fc_probability}% (Зафиксирован вход $${entryPrice.toFixed(2)} → TP1 $${tp1.toFixed(2)} / TP2 $${tp2.toFixed(2)})`
+      : `🔴SHORT ${fc_probability}% (Зафиксирован вход $${entryPrice.toFixed(2)} → TP1 $${tp1.toFixed(2)} / TP2 $${tp2.toFixed(2)})`;
+    if (!currentLock.mlSignal || currentLock.mlSignal !== mlSignal) {
+      currentLock.mlSignal = mlSignal;
+      currentLock.setupName = setupName;
+      saveLockedSetupToFile(currentLock);
+    }
+  } else {
+    mlSignal = `⚪ ОЖИДАНИЕ | Нет сетапа (${isBlockedByGexWall ? "Упор в GEX стену" : `Шум / R:R ${rrRatio.toFixed(1)}`})`;
+    setupName = `⚪ НЕТ СЕТАПА (Ожидание выхода из шума • R:R 1:${rrRatio.toFixed(1)})`;
+  }
+
+  const consensusSummary = `5м${dot_5} 15м${dot_15} 1ч${dot_60} 4ч${dot_240} 1Д${dot_D} 1Н${dot_W} | ${fc_probability}% ${currentLock ? direction : "WAIT"}`;
+
+  const chosenFvg = isBull ? (activeBullFvg || activeBearFvg) : (activeBearFvg || activeBullFvg);
+  const fvgZone = chosenFvg
+    ? `$${chosenFvg.bottom.toFixed(2)} – $${chosenFvg.top.toFixed(2)} (${chosenFvg === activeBullFvg ? "+FVG Бычий имбаланс" : "-FVG Медвежий имбаланс"} $${chosenFvg.gap.toFixed(2)} • ${chosenFvg.barsAgo} св. назад)`
+    : "Нет активного FVG (Имбалансы перекрыты или ниже порога волатильности ATR)";
+
   const bullishOb = activeBullOb
     ? `$${activeBullOb.low.toFixed(2)} – $${activeBullOb.high.toFixed(2)} (+OB Demand • импульс $${activeBullOb.impulseBody.toFixed(1)} • ${activeBullOb.barsAgo} св. назад)`
     : "Нет активного +OB";
@@ -919,7 +1110,7 @@ export function computePineScriptEngine(
     ? `$${activeBearOb.low.toFixed(2)} – $${activeBearOb.high.toFixed(2)} (-OB Supply • импульс $${activeBearOb.impulseBody.toFixed(1)} • ${activeBearOb.barsAgo} св. назад)`
     : "Нет активного -OB";
 
-  // 12. Synchronized MOEX GD Levels
+  // 13. Synchronized MOEX GD Levels
   const moexEntry = Math.round((entryPrice + spreadUsd) * 10) / 10;
   const moexSl = Math.round((trailingStop + spreadUsd) * 10) / 10;
   const moexTargetTp1 = Math.round((tp1 + spreadUsd) * 10) / 10;
@@ -964,6 +1155,11 @@ export function computePineScriptEngine(
     bullishOb,
     bearishOb,
     fvgZone,
+    isFrozen: !!currentLock,
+    executionStatus: currentLock?.status || "NO_SETUP",
+    entryHit: !!currentLock?.entryHit,
+    tp1Hit: !!currentLock?.tp1Hit,
+    statusText: currentLock?.statusText || (hasValidSetup ? `Сетап сформирован` : "Ожидание сетапа"),
     pineScriptForecast: {
       preset: "Золото (XAUUSD) - 15 мин Оптимальный",
       direction,
@@ -986,6 +1182,9 @@ export function computePineScriptEngine(
       ext3: ext_3,
       sweepType: is_low_sweep ? ("low" as const) : (is_high_sweep ? ("high" as const) : ("none" as const)),
       sweepPrice: sweepPrice || undefined,
+      isFrozen: !!currentLock,
+      executionStatus: currentLock?.status || "NO_SETUP",
+      entryHit: !!currentLock?.entryHit,
       mtfDots: {
         m5: dot_5,
         m15: dot_15,
@@ -5956,6 +6155,26 @@ app.get("/api/gold/dual-market", async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// Endpoint to inspect currently locked setup and persistence status
+app.get("/api/gold/locked-setup", (req, res) => {
+  const current = getActiveLockedPineSignal();
+  res.json({
+    success: true,
+    setup: current,
+    isLocked: !!current,
+    persistenceFile: "data/locked-setups.json"
+  });
+});
+
+// Endpoint to manually reset locked setup and clear data/locked-setups.json
+app.post("/api/gold/reset-lock", (req, res) => {
+  resetPineScriptEngineLock();
+  res.json({
+    success: true,
+    message: "Лимитный сетап сброшен, файл data/locked-setups.json очищен"
+  });
 });
 
 // Endpoint to run on-demand dual-market analysis with script overlay and send to Telegram

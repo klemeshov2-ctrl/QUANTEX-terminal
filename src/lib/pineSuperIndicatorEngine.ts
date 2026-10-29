@@ -1461,7 +1461,7 @@ export function evaluateSuperIndicator(
     bAtr: number,
     isSweep: boolean
   ): SetupLevelsResult => {
-    const bClose = bCandle.close;
+    const bOpen = bCandle.open;
     const isWkOrMo = tfSec >= 604800;
     const isDly = tfSec >= 86400 && tfSec < 604800;
     const is240 = tfSec >= 14400 && tfSec < 86400;
@@ -1477,29 +1477,28 @@ export function evaluateSuperIndicator(
 
     if (isBullDir) {
       if (isSweep) {
-        entry = Math.min(bClose, bCandle.low);
+        entry = bCandle.low;
       } else {
         let pFound: number | null = null;
         for (let i = cleanBullOb.length - 1; i >= 0; i--) {
           const ob = cleanBullOb[i];
-          if (ob.left <= bIdx && ob.top < bClose && ob.top >= bClose - bAtr * max_pullback_atr) {
-            pFound = Math.max((ob.top + ob.bottom) / 2, bClose - bAtr * max_pullback_atr);
+          if (ob.left <= bIdx && ob.top < bOpen && ob.top >= bOpen - bAtr * max_pullback_atr) {
+            pFound = (ob.top + ob.bottom) / 2;
             break;
           }
         }
         if (pFound === null && cleanBullFvg.length > 0) {
           for (let i = cleanBullFvg.length - 1; i >= 0; i--) {
             const fvg = cleanBullFvg[i];
-            if (fvg.left <= bIdx && fvg.top < bClose && fvg.top >= bClose - bAtr * max_pullback_atr) {
-              pFound = Math.max((fvg.top + fvg.bottom) / 2, bClose - bAtr * max_pullback_atr);
+            if (fvg.left <= bIdx && fvg.top < bOpen && fvg.top >= bOpen - bAtr * max_pullback_atr) {
+              pFound = (fvg.top + fvg.bottom) / 2;
               break;
             }
           }
         }
-        entry = pFound !== null ? pFound : bClose - bAtr * (tfSec < 86400 ? 0.42 : 0.35);
+        entry = pFound !== null ? pFound : bOpen - bAtr * (tfSec < 86400 ? 0.42 : 0.35);
       }
-      // Safety limit: long pullback entry must never exceed close
-      entry = Math.min(bClose, Math.max(bClose - bAtr * max_pullback_atr, entry));
+      entry = Math.round(entry * 100) / 100;
 
       // TP1 anchored to entry
       const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
@@ -1543,29 +1542,28 @@ export function evaluateSuperIndicator(
     } else {
       // SHORT DIRECTION
       if (isSweep) {
-        entry = Math.max(bClose, bCandle.high);
+        entry = bCandle.high;
       } else {
         let pFound: number | null = null;
         for (let i = cleanBearOb.length - 1; i >= 0; i--) {
           const ob = cleanBearOb[i];
-          if (ob.left <= bIdx && ob.bottom > bClose && ob.bottom <= bClose + bAtr * max_pullback_atr) {
-            pFound = Math.min((ob.top + ob.bottom) / 2, bClose + bAtr * max_pullback_atr);
+          if (ob.left <= bIdx && ob.bottom > bOpen && ob.bottom <= bOpen + bAtr * max_pullback_atr) {
+            pFound = (ob.top + ob.bottom) / 2;
             break;
           }
         }
         if (pFound === null && cleanBearFvg.length > 0) {
           for (let i = cleanBearFvg.length - 1; i >= 0; i--) {
             const fvg = cleanBearFvg[i];
-            if (fvg.left <= bIdx && fvg.bottom > bClose && fvg.bottom <= bClose + bAtr * max_pullback_atr) {
-              pFound = Math.min((fvg.top + fvg.bottom) / 2, bClose + bAtr * max_pullback_atr);
+            if (fvg.left <= bIdx && fvg.bottom > bOpen && fvg.bottom <= bOpen + bAtr * max_pullback_atr) {
+              pFound = (fvg.top + fvg.bottom) / 2;
               break;
             }
           }
         }
-        entry = pFound !== null ? pFound : bClose + bAtr * (tfSec < 86400 ? 0.42 : 0.35);
+        entry = pFound !== null ? pFound : bOpen + bAtr * (tfSec < 86400 ? 0.42 : 0.35);
       }
-      // Safety limit: short pullback entry must never be below close
-      entry = Math.max(bClose, Math.min(bClose + bAtr * max_pullback_atr, entry));
+      entry = Math.round(entry * 100) / 100;
 
       // TP1 anchored to entry (strictly below entry)
       const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
