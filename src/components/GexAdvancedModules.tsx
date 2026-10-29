@@ -462,13 +462,40 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     ];
 
     const periodName = periodLabel === "week" ? "за неделю (7 дней)" : "за 24 часа";
+    const nowMs = Date.now();
+
+    const formatActiveLifetime = (sinceMs: number): string => {
+      const diffMs = Math.max(60000, nowMs - sinceMs);
+      const totalMins = Math.round(diffMs / 60000);
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      if (hours === 0) return `${mins} мин`;
+      return `${hours} ч ${mins} мин`;
+    };
 
     return levelsToAudit.map((lvl) => {
       // 1. Audit CURRENT active level ONLY for the period it has been active
       const currentFromSec = Math.max(windowStartSec, Math.floor(lvl.activeSinceMs / 1000));
       const currentCandles = sourceCandles.filter((c) => c.time >= currentFromSec);
-      const activeCandlesForCurrent = currentCandles.length >= 3 ? currentCandles : sourceCandles.slice(-12);
+      const activeCandlesForCurrent = currentCandles.length >= 2 ? currentCandles : sourceCandles.slice(-6);
       const currentAudit = auditSingleGexLevel(activeCandlesForCurrent, lvl.price, lvl.type, 0);
+
+      const currentTouches = currentAudit.touches;
+      const currentBounces = currentAudit.bounces;
+      const currentBreakouts = currentAudit.breakouts;
+      const currentIsTested = currentTouches > 0;
+      const currentHitRatePct = currentTouches > 0 ? Math.round((currentBounces / currentTouches) * 100) : 100;
+      const currentIsStrong = !currentIsTested || currentBounces >= currentBreakouts;
+      const currentActiveDurationText = formatActiveLifetime(lvl.activeSinceMs);
+
+      let currentVerdict = "";
+      if (!currentIsTested) {
+        currentVerdict = `⏳ Ожидание теста: к текущему страйку $${lvl.price} цена ещё не подходила за время его жизни (${currentActiveDurationText}). Ближайший экстремум $${currentAudit.closestExtreme.toFixed(1)} (запас $${currentAudit.distToExtreme.toFixed(1)}). Ликвидность уровня свежая и не тронута.`;
+      } else if (currentIsStrong) {
+        currentVerdict = `🛡️ Текущий страйк $${lvl.price} активно удерживается дилерами (в строю ${currentActiveDurationText}): касаний ${currentTouches}, отскоков ${currentBounces}, пробоев ${currentBreakouts} (${currentHitRatePct}% удержаний).`;
+      } else {
+        currentVerdict = `⚠️ Текущий страйк $${lvl.price} прошивался ценой (в строю ${currentActiveDurationText}): касаний ${currentTouches}, удержал ${currentBounces}, пробоев ${currentBreakouts} (${currentHitRatePct}% удержаний). Ликвидность частично снята.`;
+      }
 
       // 2. Audit PREVIOUS levels from migrationLogs ONLY for their respective active intervals
       const pastMigrations = migrationLogs.filter((m) => {
@@ -504,9 +531,9 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       }
 
       // 3. Composite Hit Rate across current active level and past migrated levels
-      const totalTouches = currentAudit.touches + histTouches;
-      const totalBounces = currentAudit.bounces + histBounces;
-      const totalBreakouts = currentAudit.breakouts + histBreakouts;
+      const totalTouches = currentTouches + histTouches;
+      const totalBounces = currentBounces + histBounces;
+      const totalBreakouts = currentBreakouts + histBreakouts;
       const isTested = totalTouches > 0;
       const hitRatePct = totalTouches > 0 ? Math.round((totalBounces / totalTouches) * 100) : 100;
       const isStrong = !isTested || totalBounces >= totalBreakouts;
@@ -516,7 +543,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         simpleVerdict = `Цена не доходила до уровней ${periodName} (ближайший экстремум $${currentAudit.closestExtreme.toFixed(1)}, запас $${currentAudit.distToExtreme.toFixed(1)}). Ликвидность не тронута.`;
       } else if (isStrong) {
         if (pastMigrations.length > 0) {
-          simpleVerdict = `Уровни прочные ${periodName} (с учетом миграции страйков). Всего касаний: ${totalTouches}, удержали: ${totalBounces}, пробоев: ${totalBreakouts} (${hitRatePct}% удержаний). Текущий уровень $${lvl.price} удержал: ${currentAudit.bounces}/${currentAudit.touches}.`;
+          simpleVerdict = `Уровни прочные ${periodName} (с учетом миграции страйков). Всего касаний: ${totalTouches}, удержали: ${totalBounces}, пробоев: ${totalBreakouts} (${hitRatePct}% удержаний). Текущий уровень $${lvl.price} удержал: ${currentBounces}/${currentTouches}.`;
         } else {
           simpleVerdict = `Уровень $${lvl.price} прочный ${periodName}. Касаний: ${totalTouches}, удержал цену: ${totalBounces}, пробоев: ${totalBreakouts} (${hitRatePct}% удержаний).`;
         }
@@ -526,6 +553,22 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
       return {
         ...lvl,
+        // Current active level exclusive stats (Focus block)
+        currentTouches,
+        currentBounces,
+        currentBreakouts,
+        currentHitRatePct,
+        currentIsTested,
+        currentIsStrong,
+        currentActiveDurationText,
+        currentVerdict,
+        currentClosestExtreme: currentAudit.closestExtreme,
+        currentDistToExtreme: currentAudit.distToExtreme,
+        // Historical & Composite stats across all shifted levels (Background migration block)
+        histTouches,
+        histBounces,
+        histBreakouts,
+        shiftsCount: pastMigrations.length,
         touches: totalTouches,
         bounces: totalBounces,
         breakouts: totalBreakouts,
@@ -1367,9 +1410,11 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               </div>
             </div>
 
-            {/* Hit Rate Cards */}
-            <div className="mt-3 space-y-2.5">
+            {/* Hit Rate Cards: Strictly Split into (1) Current Active Level Focus & (2) Historical Migration Context */}
+            <div className="mt-3 space-y-3.5">
               {activeHitRateStats.map((stat) => {
+                const dayStat = hitRateStatsDay.find((s) => s.id === stat.id) || stat;
+                const weekStat = hitRateStatsWeek.find((s) => s.id === stat.id) || stat;
                 const prev = (stat.id === "call_wall" || stat.id === "put_wall" || stat.id === "gamma_flip")
                   ? getPreviousLevelSummary(stat.id as "call_wall" | "put_wall" | "gamma_flip", stat.price)
                   : null;
@@ -1377,78 +1422,151 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                 return (
                   <div
                     key={stat.id}
-                    className={`p-3 rounded-xl border transition-all ${
-                      !stat.isTested
-                        ? "bg-[#0b101b] border-cyan-500/25 hover:border-cyan-500/45"
-                        : stat.isStrong
-                        ? "bg-[#0c121d] border-emerald-500/30 hover:border-emerald-500/50"
-                        : "bg-[#140c11] border-rose-500/30 hover:border-rose-500/50"
+                    className={`rounded-xl border overflow-hidden transition-all shadow-md ${
+                      !stat.currentIsTested
+                        ? "bg-[#0b101b] border-cyan-500/30 hover:border-cyan-500/50"
+                        : stat.currentIsStrong
+                        ? "bg-[#0c121d] border-emerald-500/35 hover:border-emerald-500/55"
+                        : "bg-[#140c11] border-rose-500/35 hover:border-rose-500/55"
                     }`}
                   >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-white text-xs">{stat.name}</span>
-                        <span className="font-mono text-xs font-extrabold text-amber-300 bg-gray-900 border border-gray-800 px-1.5 py-0.2 rounded">
-                          ${stat.price}
-                        </span>
-                        {/* Dynamic Tolerance Buffer Badge */}
-                        <span
-                          className="text-[10px] font-mono px-2 py-0.2 rounded bg-blue-950/70 border border-blue-800/60 text-blue-300 font-bold"
-                          title={`Точный страйк $${stat.price}. Зона касания с учетом волатильности: $${(stat.price - stat.touchTol).toFixed(1)} – $${(stat.price + stat.touchTol).toFixed(1)}`}
-                        >
-                          Буфер: ±${stat.touchTol.toFixed(1)}
-                        </span>
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.2 rounded-full border ${
-                            !stat.isTested
-                              ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
-                              : stat.isStrong
-                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
-                              : "bg-rose-500/15 text-rose-300 border-rose-500/40"
-                          }`}
-                        >
-                          {!stat.isTested
-                            ? "🛡️ Не тестировался (Свежий)"
-                            : stat.isStrong
-                            ? "🛡️ Прочный уровень"
-                            : "⚠️ Слабый / Пробивался"}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3 text-xs font-mono">
-                        <span className="text-gray-400">
-                          Удары: <strong className="text-white">{stat.touches}</strong>
-                        </span>
-                        <span className="text-emerald-400">
-                          Держал: <strong>{stat.bounces}</strong>
-                        </span>
-                        <span className="text-rose-400">
-                          Пробили: <strong>{stat.breakouts}</strong>
-                        </span>
-                        <span className="text-cyan-300 bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800/60 font-bold">
-                          {stat.isTested ? `${stat.hitRatePct}%` : "Свежий"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-[11px] text-gray-300 mt-1.5 pl-1 border-l-2 border-gray-700">
-                      {stat.simpleVerdict}
-                    </p>
-
-                    {/* Previous Level Migration Stats Line */}
-                    {prev && (
-                      <div className="mt-2 pt-2 border-t border-gray-800/60 flex items-center justify-between text-[11px] font-mono text-gray-400 flex-wrap gap-1">
-                        <div className="flex items-center gap-1.5">
-                          <History className="h-3 w-3 text-cyan-400" />
-                          <span>
-                            Текущий уровень: <strong className="text-white">${stat.price}</strong>. Предыдущий: <strong className="text-amber-300">${prev.prevPrice}</strong>
+                    {/* ==================================================================== */}
+                    {/* БЛОК 1. ТЕКУЩИЙ АКТИВНЫЙ УРОВЕНЬ (ФОКУС ВНИМАНИЯ — ТОЛЬКО ЭТОТ СТРАЙК) */}
+                    {/* ==================================================================== */}
+                    <div className="p-3.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-400 font-bold">
+                            Активный уровень
                           </span>
-                          <span className="text-gray-500">
-                            (был активен {prev.durationText}, имел {prev.touches} касания, {prev.bounces} отскока и {prev.breakouts} {prev.breakouts === 1 ? "пробой" : "пробоев"})
+                          <span className="text-gray-600" aria-hidden="true">·</span>
+                          <span className="font-bold text-white text-xs sm:text-sm">{stat.name}</span>
+                          <span className="font-mono text-xs sm:text-sm font-extrabold text-amber-300 bg-gray-900/90 border border-amber-500/30 px-2 py-0.5 rounded">
+                            ${stat.price}
+                          </span>
+                          <span className="text-gray-600" aria-hidden="true">·</span>
+                          <span className="inline-flex items-center gap-1 text-[11px] font-mono text-gray-300">
+                            <Clock className="h-3 w-3 text-cyan-400" />
+                            <span>В строю: <strong className="text-white">{stat.currentActiveDurationText}</strong></span>
+                          </span>
+                          <span className="text-gray-600" aria-hidden="true">·</span>
+                          <span
+                            className="text-[11px] font-mono text-blue-300"
+                            title={`Точный страйк $${stat.price}. Зона касания с учетом волатильности: $${(stat.price - stat.touchTol).toFixed(1)} – $${(stat.price + stat.touchTol).toFixed(1)}`}
+                          >
+                            Буфер ±${stat.touchTol.toFixed(1)}
                           </span>
                         </div>
+
+                        {/* Статус и удары ТОЛЬКО текущего страйка */}
+                        {!stat.currentIsTested ? (
+                          <div className="flex items-center gap-2.5 text-xs font-mono bg-cyan-950/40 border border-cyan-500/30 px-2.5 py-1 rounded-lg self-start sm:self-auto">
+                            <span className="text-cyan-300 font-bold">
+                              ⏳ Ожидание теста (0 касаний)
+                            </span>
+                            <span className="text-gray-500" aria-hidden="true">|</span>
+                            <span className="text-gray-400 text-[11px]">
+                              Свежий страйк
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2.5 text-xs font-mono bg-gray-950/70 border border-gray-800 px-2.5 py-1 rounded-lg self-start sm:self-auto">
+                            <span className="text-gray-300">
+                              Удары текущего: <strong className="text-white">{stat.currentTouches}</strong>
+                            </span>
+                            <span className="text-gray-600" aria-hidden="true">·</span>
+                            <span className="text-emerald-400">
+                              Держал: <strong>{stat.currentBounces}</strong>
+                            </span>
+                            <span className="text-gray-600" aria-hidden="true">·</span>
+                            <span className="text-rose-400">
+                              Пробили: <strong>{stat.currentBreakouts}</strong>
+                            </span>
+                            <span className="text-gray-600" aria-hidden="true">·</span>
+                            <span className={stat.currentIsStrong ? "text-emerald-300 font-bold" : "text-rose-300 font-bold"}>
+                              {stat.currentHitRatePct}%
+                            </span>
+                          </div>
+                        )}
                       </div>
-                    )}
+
+                      {/* Честный вердикт исключительно по текущему активному страйку */}
+                      <p className="text-[11.5px] text-gray-200 mt-2 pl-2.5 border-l-2 border-cyan-500/60 leading-relaxed">
+                        {stat.currentVerdict}
+                      </p>
+                    </div>
+
+                    {/* ==================================================================== */}
+                    {/* БЛОК 2. ИСТОРИЯ МИГРАЦИИ ЗА 24Ч И 7Д (ФОНОВЫЙ ИСТОРИЧЕСКИЙ КОНТЕКСТ) */}
+                    {/* ==================================================================== */}
+                    <div className="bg-[#070a11] border-t border-gray-800/90 px-3.5 py-2.5 text-[11px]">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+                        <div className="flex items-start gap-1.5 text-gray-400">
+                          <History className="h-3.5 w-3.5 text-purple-400 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-bold text-gray-300">
+                              Фоновый контекст (История миграции всех сдвигов уровня):
+                            </span>{" "}
+                            <span className="text-gray-400">
+                              Агрегированная статистика включает все предыдущие, уже сместившиеся страйки за выбранный период и не приписывается текущему уровню <strong className="text-gray-300">${stat.price}</strong>.
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Сводка за 24 часа и за 7 дней по всем историческим сдвигам */}
+                        <div className="flex flex-wrap items-center gap-2 shrink-0 font-mono text-[10.5px]">
+                          <div
+                            className={`px-2.5 py-1 rounded border ${
+                              hitRatePeriod === "DAY"
+                                ? "bg-blue-950/40 border-blue-500/40 text-blue-200"
+                                : "bg-gray-900/60 border-gray-800 text-gray-400"
+                            }`}
+                          >
+                            <span className="font-bold text-blue-300">За 24ч (все сдвиги):</span>{" "}
+                            <span>Удары <b>{dayStat.touches}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-emerald-400">Отск. <b>{dayStat.bounces}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-rose-400">Проб. <b>{dayStat.breakouts}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-cyan-300 font-bold">
+                              {dayStat.isTested ? `${dayStat.hitRatePct}%` : "0 кас."}
+                            </span>
+                          </div>
+
+                          <div
+                            className={`px-2.5 py-1 rounded border ${
+                              hitRatePeriod === "WEEK"
+                                ? "bg-purple-950/40 border-purple-500/40 text-purple-200"
+                                : "bg-gray-900/60 border-gray-800 text-gray-400"
+                            }`}
+                          >
+                            <span className="font-bold text-purple-300">За 7д (неделя):</span>{" "}
+                            <span>Удары <b>{weekStat.touches}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-emerald-400">Отск. <b>{weekStat.bounces}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-rose-400">Проб. <b>{weekStat.breakouts}</b></span>
+                            <span className="mx-1 text-gray-600">·</span>
+                            <span className="text-cyan-300 font-bold">
+                              {weekStat.isTested ? `${weekStat.hitRatePct}%` : "0 кас."}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Детали последнего сместившегося страйка */}
+                      {prev && (
+                        <div className="mt-1.5 pt-1.5 border-t border-gray-800/60 flex items-center justify-between text-[10.5px] font-mono text-gray-400 flex-wrap gap-1">
+                          <span>
+                            Последняя миграция: <strong className="text-amber-300/90">${prev.prevPrice}</strong> ➔ <strong className="text-white">${stat.price}</strong>
+                            <span className="text-gray-500 ml-1.5">
+                              (прошлый страйк $${prev.prevPrice} держался {prev.durationText}: касаний {prev.touches}, отскоков {prev.bounces}, пробоев {prev.breakouts})
+                            </span>
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
