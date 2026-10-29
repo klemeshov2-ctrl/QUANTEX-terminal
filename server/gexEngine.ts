@@ -786,13 +786,17 @@ async function fetchCboeGoldOptionChain(
       const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
       const avgIv = (avgCallIv + avgPutIv) / 2;
 
-      // Real GEX Formula: Gamma * Open Interest * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+      // Real GEX Formula (OI + Intraday Volume Flow):
+      // Gamma * (Open Interest + 0.35 * Intraday Volume) * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
       const contractMultiplier = 100; // CME / COMEX Gold Futures Standard: 100 troy oz
       const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
       const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
 
-      const callGex = (callGamma * d.callOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
-      const putGex = -(putGamma * d.putOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+      const effectiveCallContracts = d.callOi + d.callVol * 0.35;
+      const effectivePutContracts = d.putOi + d.putVol * 0.35;
+
+      const callGex = (callGamma * effectiveCallContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+      const putGex = -(putGamma * effectivePutContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
       const netGex = callGex + putGex;
 
       strikes.push({
@@ -1158,13 +1162,17 @@ async function fetchYahooGoldRealOptions(
     const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
     const avgIv = (avgCallIv + avgPutIv) / 2;
 
-    // Real GEX Formula: Gamma * Open Interest * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+    // Real GEX Formula (OI + Intraday Volume Flow):
+    // Gamma * (Open Interest + 0.35 * Intraday Volume) * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
     const contractMultiplier = 100; // CME / COMEX Gold Standard: 100 troy oz
     const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
     const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
 
-    const callGex = (callGamma * d.callOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
-    const putGex = -(putGamma * d.putOi * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+    const effectiveCallContracts = d.callOi + d.callVol * 0.35;
+    const effectivePutContracts = d.putOi + d.putVol * 0.35;
+
+    const callGex = (callGamma * effectiveCallContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+    const putGex = -(putGamma * effectivePutContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
     const netGex = callGex + putGex;
 
     strikes.push({
@@ -1319,8 +1327,10 @@ function calculateSyntheticGoldGex(
     totalPutVol += putVol;
 
     const { gamma } = calculateOptionGreeks(spotPrice, k, tYears, baseIv / 100, true);
-    const callGex = (gamma * callOi * 100 * spotPrice * spotPrice * 0.01) / 1000000;
-    const putGex = -(gamma * putOi * 100 * spotPrice * spotPrice * 0.01) / 1000000;
+    const effectiveCall = callOi + callVol * 0.35;
+    const effectivePut = putOi + putVol * 0.35;
+    const callGex = (gamma * effectiveCall * 100 * spotPrice * spotPrice * 0.01) / 1000000;
+    const putGex = -(gamma * effectivePut * 100 * spotPrice * spotPrice * 0.01) / 1000000;
 
     strikes.push({
       strike: k,
@@ -1523,15 +1533,27 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   // Process real strikes
   const strikes = realData.strikes;
 
-  // STRICT WALL DETECTION:
+  // STRICT WALL DETECTION (Weighted by both GEX and Intraday Option Volume Flow):
   // Call Wall MUST be strictly > spotPrice
-  const callsAboveSpot = strikes.filter(s => s.strike > spotPrice && s.callGex > 0).sort((a, b) => b.callGex - a.callGex);
+  const callsAboveSpot = strikes
+    .filter(s => s.strike > spotPrice && s.callGex > 0)
+    .sort((a, b) => {
+      const scoreA = a.callGex * (1 + Math.min(0.65, a.callVolume / Math.max(100, a.callOi)));
+      const scoreB = b.callGex * (1 + Math.min(0.65, b.callVolume / Math.max(100, b.callOi)));
+      return scoreB - scoreA;
+    });
   const callWall = callsAboveSpot.length > 0
     ? callsAboveSpot[0].strike
     : Math.ceil((spotPrice + 20) / 10) * 10;
 
   // Put Wall MUST be strictly < spotPrice
-  const putsBelowSpot = strikes.filter(s => s.strike < spotPrice && s.putGex < 0).sort((a, b) => a.putGex - b.putGex);
+  const putsBelowSpot = strikes
+    .filter(s => s.strike < spotPrice && s.putGex < 0)
+    .sort((a, b) => {
+      const scoreA = Math.abs(a.putGex) * (1 + Math.min(0.65, a.putVolume / Math.max(100, a.putOi)));
+      const scoreB = Math.abs(b.putGex) * (1 + Math.min(0.65, b.putVolume / Math.max(100, b.putOi)));
+      return scoreB - scoreA;
+    });
   const putWall = putsBelowSpot.length > 0
     ? putsBelowSpot[0].strike
     : Math.floor((spotPrice - 20) / 10) * 10;
@@ -1569,7 +1591,7 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     }
   }
 
-  // Max Pain: strictly evaluate across strikes in range [putWall, callWall]
+  // Max Pain: strictly evaluate across strikes in range [putWall, callWall], weighting OI + 25% Intraday Volume
   let minPainCost = Infinity;
   let calculatedMaxPain = Math.round(spotPrice / 10) * 10;
   const painGrid = strikes.filter(s => s.strike >= putWall - 30 && s.strike <= callWall + 30);
@@ -1577,8 +1599,10 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   for (const testStrike of painGrid) {
     let pain = 0;
     for (const s of strikes) {
-      if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * s.callOi;
-      if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * s.putOi;
+      const callWeight = s.callOi + s.callVolume * 0.25;
+      const putWeight = s.putOi + s.putVolume * 0.25;
+      if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * callWeight;
+      if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * putWeight;
     }
     if (pain < minPainCost && pain > 0) {
       minPainCost = pain;
@@ -1608,18 +1632,26 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
 
   const avgIv =
     strikes.reduce((sum, s) => sum + s.iv, 0) / (strikes.length || 1) || 0.185;
-  const expectedMovePct68 = avgIv * Math.sqrt(Math.max(realData.tYears, 1 / 365));
+  const impliedVolPct = Math.round(avgIv * 1000) / 10;
+  const intradayRangePct = oandaHigh > oandaLow && spotPrice > 0 ? ((oandaHigh - oandaLow) / spotPrice) * Math.sqrt(252) * 100 : 14.8;
+  const realizedVol30d = Math.round(Math.max(10.5, Math.min(28.0, intradayRangePct * 0.65 + 14.8 * 0.35)) * 10) / 10;
+  const volSpreadIvRv = Math.round((impliedVolPct - realizedVol30d) * 10) / 10;
+
+  // Variance Risk Premium adjustment: if IV > RV, options price in a wider move (impulse risk or post-event IV crush);
+  // if IV < RV, options are underpricing active trend volatility.
+  const ivRvMultiplier = volSpreadIvRv > 2.0 ? 1.06 : volSpreadIvRv < -1.5 ? 1.12 : 1.0;
+  const expectedMovePct68 = avgIv * Math.sqrt(Math.max(realData.tYears, 1 / 365)) * ivRvMultiplier;
   const expectedMovePct95 = expectedMovePct68 * 2.0;
 
   const isPositiveGamma = totalNetGex >= 0;
   const regimeText = isPositiveGamma
-    ? `Режим реальной гаммы (Положительная гамма): Нетто-гамма дилеров +$${Math.abs(totalNetGex).toFixed(1)}M. Дилеры абсорбируют волатильность между Put Wall $${finalPutWall} и Call Wall $${finalCallWall}.`
-    : `Режим реальной гаммы (Отрицательная гамма): Нетто-гамма дилеров -$${Math.abs(totalNetGex).toFixed(1)}M. Дилеры хеджируются в сторону движения, ускоряя тренд при пробое уровней.`;
+    ? `Режим реальной гаммы (Положительная гамма): Нетто-гамма дилеров +$${Math.abs(totalNetGex).toFixed(1)}M (с учетом OI и Volume). Дилеры абсорбируют волатильность между Put Wall $${finalPutWall} и Call Wall $${finalCallWall}.`
+    : `Режим реальной гаммы (Отрицательная гамма): Нетто-гамма дилеров -$${Math.abs(totalNetGex).toFixed(1)}M (с учетом OI и Volume). Дилеры хеджируются по тренду, ускоряя импульс при пробое уровней.`;
 
-  const sortedByOi = strikes.slice().sort((a, b) => b.totalOi - a.totalOi);
+  const sortedByOi = strikes.slice().sort((a, b) => (b.totalOi + b.callVolume + b.putVolume) - (a.totalOi + a.callVolume + a.putVolume));
   const oiAnomalies = sortedByOi.slice(0, 3).map((s, idx) => ({
     strike: s.strike,
-    type: (s.callOi >= s.putOi ? "CALL" : "PUT") as "CALL" | "PUT",
+    type: (s.callOi + s.callVolume >= s.putOi + s.putVolume ? "CALL" : "PUT") as "CALL" | "PUT",
     volume: s.callVolume + s.putVolume,
     oi: s.totalOi,
     ratio: Math.round(((s.callVolume + s.putVolume) / Math.max(1, s.totalOi * 0.1)) * 10) / 10,
@@ -1654,13 +1686,13 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     dealerGreeks: {
       charm: -12.4,
       vanna: 8.6,
-      aggregateDelta: Math.round((totalCallOi - totalPutOi) * 0.35)
+      aggregateDelta: Math.round(((totalCallOi + totalCallVol * 0.35) - (totalPutOi + totalPutVol * 0.35)) * 0.35)
     },
     pcrOi: totalCallOi > 0 ? Math.round((totalPutOi / totalCallOi) * 100) / 100 : 1,
     pcrVol: totalCallVol > 0 ? Math.round((totalPutVol / totalCallVol) * 100) / 100 : 1,
-    impliedVolAvg: Math.round(avgIv * 1000) / 10,
-    realizedVol30d: 14.8,
-    volSpreadIvRv: Math.round((avgIv * 100 - 14.8) * 10) / 10,
+    impliedVolAvg: impliedVolPct,
+    realizedVol30d,
+    volSpreadIvRv,
     strikes,
     oiAnomalies
   };

@@ -7288,135 +7288,229 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   </div>
                 )}
                 
-                {/* 4 Key Institutional Diagnostic Cards */}
+                {/* 4 Key Institutional Diagnostic Cards (With Concise '⚡ Сейчас для цены' & Compact Tooltips) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   
-                  {/* Card 1: Net GEX Regime */}
-                  <div className="bg-[#0b0e17] border border-gray-800/90 rounded-xl p-3.5 space-y-2 relative overflow-hidden">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Режим Дилеров</span>
-                      <span className="text-[10px] text-gray-500 font-mono">Net GEX</span>
+                  {/* Card 1: Net GEX Regime (OI + Volume) */}
+                  <div className="bg-[#0b0e17] border border-gray-800/90 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Режим Дилеров</span>
+                        <span className="text-[10px] text-cyan-400 font-mono">OI + Volume GEX</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`text-xs font-extrabold px-2 py-0.5 rounded inline-block ${
+                            gexReport.netGexRegime === "POSITIVE_GAMMA"
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                              : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                          }`}
+                        >
+                          {gexReport.netGexRegime === "POSITIVE_GAMMA" ? "🟢 +GEX (ШТИЛЬ)" : "🔴 -GEX (ШТОРМ)"}
+                        </span>
+                        <span className="text-xs font-mono font-bold text-white">
+                          {gexReport.netGexTotal > 0 ? `+${gexReport.netGexTotal}` : gexReport.netGexTotal} $M
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      <span
-                        className={`text-xs font-extrabold px-2 py-1 rounded inline-block ${
-                          gexReport.netGexRegime === "POSITIVE_GAMMA"
-                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                            : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                        }`}
-                      >
-                        {gexReport.netGexRegime === "POSITIVE_GAMMA" ? "🟢 ПОЛОЖИТЕЛЬНАЯ (+GEX)" : "🔴 ОТРИЦАТЕЛЬНАЯ (-GEX)"}
-                      </span>
+
+                    <div className="p-2 rounded-lg bg-[#101522] border border-gray-800/90 text-[11px] text-gray-200 leading-snug">
+                      <b className="text-amber-300">⚡ Сейчас для цены:</b>{" "}
+                      {gexReport.netGexRegime === "POSITIVE_GAMMA"
+                        ? `Ложные пробои гасятся дилерами — работаем от границ $${gexReport.putWall}–$${gexReport.callWall} к магниту $${gexReport.maxPain}.`
+                        : `Дилеры хеджируют по тренду — пробой уровней вызывает быстрый импульс без откатов.`}
                     </div>
-                    <div className="text-[11px] text-gray-300 leading-snug">
-                      {gexReport.netGexRegime === "POSITIVE_GAMMA" ? (
-                        <span><b className="text-emerald-400">Спокойный коридор:</b> Дилеры гасят резкие рывки, продавая на росте и выкупая проливы.</span>
-                      ) : (
-                        <span><b className="text-rose-400">Штормовой тренд:</b> Дилеры усиливают движение, высокая турбулентность и риск импульсов.</span>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-gray-500 block font-mono">
-                      Индекс гаммы: <b className="text-white">{gexReport.netGexTotal > 0 ? `+${gexReport.netGexTotal}` : gexReport.netGexTotal}</b> $M/pt
-                    </span>
+
+                    <details className="group text-[10px] text-gray-400">
+                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                        <span>ℹ️ Суть метрики Net GEX</span>
+                        <span className="group-open:rotate-180 transition-transform">▾</span>
+                      </summary>
+                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                        Учитывает открытый интерес (OI) и внутридневной объем (Volume). В +GEX маркетмейкеры продают на росте и покупают на падении; в -GEX — усиливают направленный импульс.
+                      </p>
+                    </details>
                   </div>
 
                   {/* Card 2: Call Wall (Потолок) */}
-                  <div className="bg-[#0b0e17] border border-emerald-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden shadow-sm shadow-emerald-500/5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                        🏰 Потолок (Call Wall)
-                      </span>
-                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-mono font-bold">
-                        Сопротивление
-                      </span>
+                  <div className="bg-[#0b0e17] border border-emerald-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-emerald-500/5">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                          🏰 Call Wall (Потолок)
+                        </span>
+                        <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                          +{(((gexReport.callWall - gexReport.spotPrice) / gexReport.spotPrice) * 100).toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <div className="text-2xl font-mono font-bold text-emerald-400">
+                          {activeAsset === "MOEX_MINI" ? `${gexReport.callWall} ₽` : `$${gexReport.callWall}`}
+                        </div>
+                        <span className="text-[11px] font-mono text-emerald-300">
+                          Дист: +${(gexReport.callWall - gexReport.spotPrice).toFixed(1)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-2xl font-mono font-bold text-emerald-400">
-                      {activeAsset === "MOEX_MINI" ? `${gexReport.callWall} ₽` : `$${gexReport.callWall}`}
+
+                    <div className="p-2 rounded-lg bg-emerald-950/25 border border-emerald-500/25 text-[11px] text-emerald-100 leading-snug">
+                      <b className="text-emerald-300">⚡ Сейчас для цены:</b>{" "}
+                      {gexReport.callWall - gexReport.spotPrice <= 8
+                        ? `Цена вплотную у потолка $${gexReport.callWall} — высокая вероятность торможения и отката, либо сквиза при закреплении выше.`
+                        : `Главный целевой барьер сверху ($${gexReport.callWall}), где фиксируются лонги и включается продажа дилеров.`}
                     </div>
-                    <div className="text-[11px] text-gray-300">
-                      {gexReport.callWall >= gexReport.spotPrice ? (
-                        <span>Выше спота на <b className="text-emerald-300 font-mono">+{(gexReport.callWall - gexReport.spotPrice).toFixed(1)} (+{(((gexReport.callWall - gexReport.spotPrice) / gexReport.spotPrice) * 100).toFixed(1)}%)</b></span>
-                      ) : (
-                        <span className="text-amber-300 font-bold">⚠️ Спот пробил потолок! Риск шорт-сквиза!</span>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-gray-400">
-                      Главный барьер для роста. Здесь маркетмейкеры массово продают базовый актив для хеджа.
-                    </p>
+
+                    <details className="group text-[10px] text-gray-400">
+                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                        <span>ℹ️ Суть Call Wall</span>
+                        <span className="group-open:rotate-180 transition-transform">▾</span>
+                      </summary>
+                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                        Страйк с максимальной гаммой и объемом Call выше спота. За его пределами сосредоточены стопы шортистов (Buy-Side Liquidity).
+                      </p>
+                    </details>
                   </div>
 
                   {/* Card 3: Put Wall (Поддержка) */}
-                  <div className="bg-[#0b0e17] border border-rose-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden shadow-sm shadow-rose-500/5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                        🛡️ Поддержка (Put Wall)
-                      </span>
-                      <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.2 rounded font-mono font-bold">
-                        Пол рынка
-                      </span>
+                  <div className="bg-[#0b0e17] border border-rose-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-rose-500/5">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                          🛡️ Put Wall (Пол)
+                        </span>
+                        <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                          -{(((gexReport.spotPrice - gexReport.putWall) / gexReport.spotPrice) * 100).toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <div className="text-2xl font-mono font-bold text-rose-400">
+                          {activeAsset === "MOEX_MINI" ? `${gexReport.putWall} ₽` : `$${gexReport.putWall}`}
+                        </div>
+                        <span className="text-[11px] font-mono text-rose-300">
+                          Дист: -${(gexReport.spotPrice - gexReport.putWall).toFixed(1)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-2xl font-mono font-bold text-rose-400">
-                      {activeAsset === "MOEX_MINI" ? `${gexReport.putWall} ₽` : `$${gexReport.putWall}`}
+
+                    <div className="p-2 rounded-lg bg-rose-950/25 border border-rose-500/25 text-[11px] text-rose-100 leading-snug">
+                      <b className="text-rose-300">⚡ Сейчас для цены:</b>{" "}
+                      {gexReport.spotPrice - gexReport.putWall <= 8
+                        ? `Цена тестирует защиту $${gexReport.putWall} — зона лимитного выкупа дилерами (стоп выносить за ATR-буфер).`
+                        : `Институциональное дно на $${gexReport.putWall}: проливы к уровню встречают алгоритмический откуп.`}
                     </div>
-                    <div className="text-[11px] text-gray-300">
-                      {gexReport.putWall <= gexReport.spotPrice ? (
-                        <span>Ниже спота на <b className="text-rose-300 font-mono">-{(gexReport.spotPrice - gexReport.putWall).toFixed(1)} (-{(((gexReport.spotPrice - gexReport.putWall) / gexReport.spotPrice) * 100).toFixed(1)}%)</b></span>
-                      ) : (
-                        <span className="text-rose-400 font-bold">⚠️ Спот провалился под пол!</span>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-gray-400">
-                      Главный пол рынка. На этом страйке дилеры обязаны агрессивно выкупать рынок своими миллионами.
-                    </p>
+
+                    <details className="group text-[10px] text-gray-400">
+                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                        <span>ℹ️ Суть Put Wall</span>
+                        <span className="group-open:rotate-180 transition-transform">▾</span>
+                      </summary>
+                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                        Страйк максимальной концентрации Put-опционов ниже спота. Закрытие путов при подходе цены вынуждает дилеров выкупать фьючерс.
+                      </p>
+                    </details>
                   </div>
 
                   {/* Card 4: Gamma Flip & Max Pain */}
-                  <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 space-y-1.5 relative overflow-hidden">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                        ⚡ Граница Гаммы (Flip)
-                      </span>
-                      <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.2 rounded font-mono font-bold">
-                        Zero Level
-                      </span>
+                  <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                          ⚡ Zero-Flip &amp; Max Pain
+                        </span>
+                        <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                          MP: ${gexReport.maxPain}
+                        </span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <div className="text-2xl font-mono font-bold text-purple-400">
+                          {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+                        </div>
+                        <span className={`text-[10px] font-mono font-bold ${gexReport.spotPrice >= gexReport.gammaFlip ? "text-emerald-400" : "text-rose-400"}`}>
+                          {gexReport.spotPrice >= gexReport.gammaFlip ? "Выше Flip (+GEX)" : "Ниже Flip (-GEX)"}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-2xl font-mono font-bold text-purple-400">
-                      {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+
+                    <div className="p-2 rounded-lg bg-purple-950/25 border border-purple-500/25 text-[11px] text-purple-100 leading-snug">
+                      <b className="text-purple-300">⚡ Сейчас для цены:</b>{" "}
+                      {gexReport.spotPrice >= gexReport.gammaFlip
+                        ? `Цена удерживается выше $${gexReport.gammaFlip} — приоритет возврата к балансу Max Pain $${gexReport.maxPain}.`
+                        : `Цена ниже $${gexReport.gammaFlip} — повышенный риск ускорения распродаж к Put Wall $${gexReport.putWall}.`}
                     </div>
-                    <div className="text-[11px] text-gray-300 flex items-center justify-between">
-                      <span>Магнит экспирации (Max Pain):</span>
-                      <b className="text-cyan-300 font-mono">{activeAsset === "MOEX_MINI" ? `${gexReport.maxPain} ₽` : `$${gexReport.maxPain}`}</b>
-                    </div>
-                    <p className="text-[10px] text-gray-400">
-                      Рубеж смены режима: пока цена выше Flip — рынок управляем. Пробой вниз включает режим паники.
-                    </p>
+
+                    <details className="group text-[10px] text-gray-400">
+                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                        <span>ℹ️ Суть Flip и Max Pain</span>
+                        <span className="group-open:rotate-180 transition-transform">▾</span>
+                      </summary>
+                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                        Zero-Flip — точка смены знака гаммы дилеров. Max Pain ($${gexReport.maxPain}) — страйк минимальных выплат по опционам к экспирации.
+                      </p>
+                    </details>
                   </div>
                 </div>
 
-                {/* Additional Institutional Flow Bar (PCR & Greeks) */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#080b12] border border-gray-800/80 rounded-xl p-3 text-xs font-mono">
-                  <div className="flex flex-col">
-                    <span className="text-gray-500 text-[10px] uppercase">Put/Call Ratio (По OI)</span>
-                    <span className={`font-bold text-sm ${gexReport.pcrOi > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
-                      {gexReport.pcrOi.toFixed(2)} {gexReport.pcrOi > 1.0 ? "(Перевес путов)" : "(Перевес коллов)"}
+                {/* Additional Institutional Flow Bar (PCR & IV vs RV with Live Price Action Takeaways) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 bg-[#080b12] border border-gray-800/80 rounded-xl p-3 text-xs font-mono">
+                  <div className="flex flex-col justify-between p-2 rounded-lg bg-[#0d111c] border border-gray-800/70">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400 text-[10px] uppercase">Put/Call Ratio (OI)</span>
+                      <span className={`font-bold text-xs ${gexReport.pcrOi > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
+                        {gexReport.pcrOi.toFixed(2)}
+                      </span>
+                    </div>
+                    <span className="text-[10.5px] font-sans text-gray-300 mt-1">
+                      <b className="text-cyan-300">⚡ Сейчас:</b>{" "}
+                      {gexReport.pcrOi > 1.15
+                        ? "Рынок перегружен путами (хедж) — прочный пол Put Wall."
+                        : gexReport.pcrOi < 0.85
+                        ? "Перевес коллов — сильное сопротивление у Call Wall."
+                        : "Баланс открытого интереса нейтрален."}
                     </span>
                   </div>
-                  <div className="flex flex-col">
-                    <span className="text-gray-500 text-[10px] uppercase">Put/Call Ratio (По Объему)</span>
-                    <span className={`font-bold text-sm ${(gexReport.pcrVol || 0.94) > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
-                      {(gexReport.pcrVol || 0.94).toFixed(2)} {(gexReport.pcrVol || 0.94) > 1.0 ? "(Давление продаж)" : "(Покупки опционов)"}
+
+                  <div className="flex flex-col justify-between p-2 rounded-lg bg-[#0d111c] border border-gray-800/70">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400 text-[10px] uppercase">Put/Call (Объем торгов)</span>
+                      <span className={`font-bold text-xs ${(gexReport.pcrVol || 0.94) > 1.0 ? "text-rose-400" : "text-emerald-400"}`}>
+                        {(gexReport.pcrVol || 0.94).toFixed(2)}
+                      </span>
+                    </div>
+                    <span className="text-[10.5px] font-sans text-gray-300 mt-1">
+                      <b className="text-cyan-300">⚡ Сейчас:</b>{" "}
+                      {(gexReport.pcrVol || 0.94) > 1.1
+                        ? "Агрессивная покупка Put внутри дня — давление продавцов."
+                        : "Внутридневной поток в пользу Call — спрос на рост."}
                     </span>
                   </div>
-                  <div className="flex flex-col">
-                    <span className="text-gray-500 text-[10px] uppercase">IV vs RV Волатильность</span>
-                    <span className="font-bold text-sm text-amber-300">
-                      IV: {gexReport.impliedVolAvg.toFixed(1)}% • RV: {gexReport.realizedVol30d.toFixed(1)}%
+
+                  <div className="flex flex-col justify-between p-2 rounded-lg bg-[#0d111c] border border-gray-800/70">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400 text-[10px] uppercase">IV vs RV Волатильность</span>
+                      <span className="font-bold text-xs text-amber-300">
+                        IV {gexReport.impliedVolAvg.toFixed(1)}% / RV {gexReport.realizedVol30d.toFixed(1)}%
+                      </span>
+                    </div>
+                    <span className="text-[10.5px] font-sans text-gray-300 mt-1">
+                      <b className="text-amber-300">⚡ Сейчас:</b>{" "}
+                      {gexReport.impliedVolAvg > gexReport.realizedVol30d + 1.5
+                        ? `IV > RV (+${(gexReport.impliedVolAvg - gexReport.realizedVol30d).toFixed(1)}%): опционы дорогие — рынок ждёт импульс или схлопывание IV к Max Pain.`
+                        : gexReport.impliedVolAvg < gexReport.realizedVol30d - 1.0
+                        ? `IV < RV: опционы недооценены — идет активный тренд с расширением диапазона.`
+                        : `IV ≈ RV: волатильность в равновесии, движение в рамках 1σ.`}
                     </span>
                   </div>
-                  <div className="flex flex-col">
-                    <span className="text-gray-500 text-[10px] uppercase">Ожидаемый диапазон 1σ (68%)</span>
-                    <span className="font-bold text-sm text-cyan-300">
-                      ${gexReport.expectedMove68.low} — ${gexReport.expectedMove68.high} (±{gexReport.expectedMove68.rangePct}%)
+
+                  <div className="flex flex-col justify-between p-2 rounded-lg bg-[#0d111c] border border-gray-800/70">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400 text-[10px] uppercase">Коридор 1σ (68% вер.)</span>
+                      <span className="font-bold text-xs text-cyan-300">
+                        ±{gexReport.expectedMove68.rangePct}%
+                      </span>
+                    </div>
+                    <span className="text-[10.5px] font-sans text-gray-300 mt-1">
+                      <b className="text-cyan-300">⚡ Сейчас:</b> Расчетный диапазон сессии{" "}
+                      <b className="text-white font-mono">${gexReport.expectedMove68.low}–${gexReport.expectedMove68.high}</b>.
                     </span>
                   </div>
                 </div>
@@ -7797,98 +7891,110 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     </div>
                   </div>
 
-                  {/* TAB 1: ПРОСТЫМИ СЛОВАМИ ДЛЯ ЧЕЛОВЕКА */}
+                  {/* TAB 1: КОМПАКТНЫЕ КАРТОЧКИ-ШПАРГАЛКИ (С АККОРДЕОНАМИ ВМЕСТО ДЛИННЫХ ТЕКСТОВ) */}
                   {gexExplTab === "simple" && (
-                    <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
-                      <div className="bg-gradient-to-r from-amber-500/10 via-purple-500/10 to-transparent p-4 rounded-xl border border-amber-500/30">
-                        <span className="font-bold text-amber-300 text-sm block mb-1">
-                          💡 В чем главная суть опционной аналитики GEX для простого трейдера?
-                        </span>
-                        <p>
-                          На бирже торгуют не только обычные люди, но и <b>маркетмейкеры (дилеры)</b> — гигантские банки и фонды. Когда толпа покупает опционы, дилеры обязаны продать их и одновременно хеджировать свои риски на спотовом рынке золота/фьючерсов. Из-за формул дельты и гаммы они <b>вынуждены покупать или продавать актив строго на определенных уровнях цен</b>. Зная эти уровни, мы заранее знаем, где рынок встретит железобетонную стену, а где полетит ракетой!
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        
+                    <div className="space-y-3 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                         {/* Level 1: Call Wall */}
-                        <div className="p-4 rounded-xl bg-[#0e121c] border border-emerald-500/30 space-y-2">
+                        <div className="p-3.5 rounded-xl bg-[#0e121c] border border-emerald-500/30 flex flex-col justify-between gap-2">
                           <div className="flex items-center justify-between">
-                            <span className="font-bold text-emerald-400 text-sm flex items-center gap-1.5">
-                              🏰 Потолок (Call Wall) — ${gexReport.callWall}
+                            <span className="font-bold text-emerald-400 text-xs flex items-center gap-1">
+                              🏰 Call Wall — ${gexReport.callWall}
                             </span>
-                            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono font-bold">
-                              Бетонное сопротивление
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Сопротивление
                             </span>
                           </div>
-                          <p>
-                            <b>Что это простыми словами:</b> Это самый высокий «потолок» на графике. Толпа накупила здесь тонны опционов Call, надеясь на рост. Дилеры, чтобы не платить миллионы долларов, обязаны при росте цены к этому уровню продавать физическое золото/фьючерсы, <b>сбивая цену вниз</b>.
-                          </p>
-                          <div className="bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-500/20 text-emerald-200">
-                            <b>Вывод для вас:</b> Покупать вблизи уровня ${gexReport.callWall} категорически нельзя — велик шанс купить на самом пике и получить откат вниз. Здесь нужно фиксировать прибыль по лонгам или искать разворот вниз!
+                          <div className="text-[11px] text-emerald-100 bg-emerald-950/30 px-2.5 py-1.5 rounded-lg border border-emerald-500/20">
+                            <b>⚡ Сейчас:</b> Фиксация лонгов у ${gexReport.callWall}; стопы шортистов стоят выше стены.
                           </div>
+                          <details className="group text-[11px] text-gray-400">
+                            <summary className="cursor-pointer select-none hover:text-white font-mono flex items-center justify-between">
+                              <span>Как работает?</span>
+                              <span className="group-open:rotate-180 transition-transform">▾</span>
+                            </summary>
+                            <p className="mt-1.5 text-gray-300 bg-black/40 p-2 rounded border border-gray-800">
+                              Дилеры продают фьючерс при подходе к ${gexReport.callWall}, гася рост. Пробой стены с объемом запускает Gamma Squeeze вверх.
+                            </p>
+                          </details>
                         </div>
 
                         {/* Level 2: Put Wall */}
-                        <div className="p-4 rounded-xl bg-[#0e121c] border border-rose-500/30 space-y-2">
+                        <div className="p-3.5 rounded-xl bg-[#0e121c] border border-rose-500/30 flex flex-col justify-between gap-2">
                           <div className="flex items-center justify-between">
-                            <span className="font-bold text-rose-400 text-sm flex items-center gap-1.5">
-                              🛡️ Поддержка (Put Wall) — ${gexReport.putWall}
+                            <span className="font-bold text-rose-400 text-xs flex items-center gap-1">
+                              🛡️ Put Wall — ${gexReport.putWall}
                             </span>
-                            <span className="text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-mono font-bold">
-                              Надежный пол
+                            <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Пол рынка
                             </span>
                           </div>
-                          <p>
-                            <b>Что это простыми словами:</b> Это железобетонный «пол» рынка. Здесь скопилось огромное количество страховок от падения (опционов Put). Если цена падает к этому уровню, маркетмейкеры обязаны влить миллиарды долларов на покупку базового актива, чтобы компенсировать риски, <b>толкая цену обратно вверх</b>.
-                          </p>
-                          <div className="bg-rose-950/40 p-2.5 rounded-lg border border-rose-500/20 text-rose-200">
-                            <b>Вывод для вас:</b> Уровень ${gexReport.putWall} — лучшая и самая безопасная зона для покупки (Лонга) с коротким стопом чуть ниже стены.
+                          <div className="text-[11px] text-rose-100 bg-rose-950/30 px-2.5 py-1.5 rounded-lg border border-rose-500/20">
+                            <b>⚡ Сейчас:</b> Зона лимитного откупа от ${gexReport.putWall} со стопом за ATR-буфером.
                           </div>
+                          <details className="group text-[11px] text-gray-400">
+                            <summary className="cursor-pointer select-none hover:text-white font-mono flex items-center justify-between">
+                              <span>Как работает?</span>
+                              <span className="group-open:rotate-180 transition-transform">▾</span>
+                            </summary>
+                            <p className="mt-1.5 text-gray-300 bg-black/40 p-2 rounded border border-gray-800">
+                              На этом страйке сосредоточены путы; дилеры выкупают проливы для закрытия короткой дельты.
+                            </p>
+                          </details>
                         </div>
 
-                        {/* Level 3: Gamma Flip */}
-                        <div className="p-4 rounded-xl bg-[#0e121c] border border-purple-500/30 space-y-2">
+                        {/* Level 3: Zero-Flip */}
+                        <div className="p-3.5 rounded-xl bg-[#0e121c] border border-purple-500/30 flex flex-col justify-between gap-2">
                           <div className="flex items-center justify-between">
-                            <span className="font-bold text-purple-400 text-sm flex items-center gap-1.5">
-                              ⚡ Граница Гаммы (Gamma Flip / Zero Level) — ${gexReport.gammaFlip}
+                            <span className="font-bold text-purple-400 text-xs flex items-center gap-1">
+                              ⚡ Zero-Flip — ${gexReport.gammaFlip}
                             </span>
-                            <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded font-mono font-bold">
-                              Рубильник паники
+                            <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Рубеж режима
                             </span>
                           </div>
-                          <p>
-                            <b>Что это простыми словами:</b> Это граница между спокойным рынком и штормом.
-                          </p>
-                          <ul className="list-disc list-inside space-y-1 text-gray-400 pl-1">
-                            <li><b className="text-white">Пока цена ВЫШЕ ${gexReport.gammaFlip}:</b> Рынок спокойный, любые проливы выкупаются, идеальное время торговать отбой от уровней.</li>
-                            <li><b className="text-white">Если цена упала НИЖЕ ${gexReport.gammaFlip}:</b> Включается режим паники! Дилеры перестают защищать рынок и сами начинают продавать на опережение, ускоряя падение.</li>
-                          </ul>
+                          <div className="text-[11px] text-purple-100 bg-purple-950/30 px-2.5 py-1.5 rounded-lg border border-purple-500/20">
+                            <b>⚡ Сейчас:</b> Выше ${gexReport.gammaFlip} — флэт/возврат, ниже — ускорение тренда.
+                          </div>
+                          <details className="group text-[11px] text-gray-400">
+                            <summary className="cursor-pointer select-none hover:text-white font-mono flex items-center justify-between">
+                              <span>Как работает?</span>
+                              <span className="group-open:rotate-180 transition-transform">▾</span>
+                            </summary>
+                            <p className="mt-1.5 text-gray-300 bg-black/40 p-2 rounded border border-gray-800">
+                              Точка нулевой гаммы, где дилеры меняют алгоритм с контртрендового (гашение) на трендовый (разгон).
+                            </p>
+                          </details>
                         </div>
 
                         {/* Level 4: Max Pain */}
-                        <div className="p-4 rounded-xl bg-[#0e121c] border border-cyan-500/30 space-y-2">
+                        <div className="p-3.5 rounded-xl bg-[#0e121c] border border-cyan-500/30 flex flex-col justify-between gap-2">
                           <div className="flex items-center justify-between">
-                            <span className="font-bold text-cyan-400 text-sm flex items-center gap-1.5">
-                              🎯 Магнит экспирации (Max Pain) — ${gexReport.maxPain}
+                            <span className="font-bold text-cyan-400 text-xs flex items-center gap-1">
+                              🎯 Max Pain — ${gexReport.maxPain}
                             </span>
-                            <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded font-mono font-bold">
-                              Точка максимальной боли
+                            <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Магнит
                             </span>
                           </div>
-                          <p>
-                            <b>Что это простыми словами:</b> Это уровень цены, при котором покупатели опционов (толпа) теряют максимальное количество денег, а маркетмейкеры забирают всю премию себе в карман.
-                          </p>
-                          <div className="bg-cyan-950/40 p-2.5 rounded-lg border border-cyan-500/20 text-cyan-200">
-                            <b>Вывод для вас:</b> Чем ближе экспирация опционов (в четверг-пятницу), тем сильнее цена притягивается к уровню ${gexReport.maxPain} как магнитом!
+                          <div className="text-[11px] text-cyan-100 bg-cyan-950/30 px-2.5 py-1.5 rounded-lg border border-cyan-500/20">
+                            <b>⚡ Сейчас:</b> Точка притяжения цены (${gexReport.maxPain}) внутри коридора.
                           </div>
+                          <details className="group text-[11px] text-gray-400">
+                            <summary className="cursor-pointer select-none hover:text-white font-mono flex items-center justify-between">
+                              <span>Как работает?</span>
+                              <span className="group-open:rotate-180 transition-transform">▾</span>
+                            </summary>
+                            <p className="mt-1.5 text-gray-300 bg-black/40 p-2 rounded border border-gray-800">
+                              Страйк, где суммарные выплаты по Call и Put (с учетом OI и Volume) минимальны к моменту экспирации.
+                            </p>
+                          </details>
                         </div>
-
                       </div>
                     </div>
                   )}
 
-                  {/* TAB 2: КУДА ПОЙДЕТ ЦЕНА? (СЦЕНАРИИ ДВИЖЕНИЯ) */}
+                  {/* TAB 2: ЕДИНЫЙ ДИНАМИЧЕСКИЙ АКТИВНЫЙ СЦЕНАРИЙ (БЕЗ ДУБЛИРОВАНИЯ БЛОКОВ) */}
                   {gexExplTab === "scenarios" && (() => {
                     const spot = gexReport.spotPrice;
                     const cw = gexReport.callWall;
@@ -7897,7 +8003,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     const mp = gexReport.maxPain;
 
                     const nowMsk = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
-                    const dayOfWeek = nowMsk.getDay(); // 0 is Sunday, 6 is Saturday
+                    const dayOfWeek = nowMsk.getDay();
                     const isWeekendNow = dayOfWeek === 0 || dayOfWeek === 6;
                     const isMarketClosed = Boolean(
                       !marketStatus?.isOpen ||
@@ -7908,251 +8014,95 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     const range = Math.max(1, cw - pw);
                     const distToPw = Math.abs(spot - pw);
                     const distToCw = Math.abs(spot - cw);
-                    const proximityThreshold = Math.max(4, range * 0.16); // near wall if within ~16% of range
+                    const proximityThreshold = Math.max(4, range * 0.16);
 
-                    let dynamicType: "AT_PW" | "AT_CW" | "IN_CORRIDOR" | "BREAK_FLIP";
                     let dynamicVerdict = "";
                     let dynamicExplanation = "";
                     let dynamicBadge = "";
                     let dynamicCardBorder = "";
                     let dynamicCardBg = "";
+                    let primaryAction = "";
+                    let targetLevel = "";
+                    let invalidationLevel = "";
 
                     if (spot < flip) {
-                      dynamicType = "BREAK_FLIP";
-                      if (isMarketClosed) {
-                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована под Zero-Flip ($${flip}). В фокусе открытия в Пн: поддержка $${pw}.`;
-                        dynamicExplanation = `Биржевые торги сейчас закрыты (выходной день). В пятницу сессия завершилась на отметке $${spot.toFixed(1)}, оставшись под рубежом Zero-Flip ($${flip}). Активной распродажи и паники в выходные нет — котировки заморожены. К открытию торгов в понедельник ключевой защитной стеной и ориентиром дилеров выступает поддержка Put Wall ($${pw}).`;
-                        dynamicBadge = "💤 Рынок закрыт • В фокусе открытия в Пн";
-                        dynamicCardBorder = "border-amber-500/60 shadow-amber-950/40 shadow-lg";
-                        dynamicCardBg = "bg-amber-950/20";
-                      } else {
-                        dynamicVerdict = "Пробой границы гаммы! Начинается режим паники. Тренд вниз.";
-                        dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) пробила вниз Zero-Flip ($${flip}). Рынок перешел в зону отрицательной гаммы. Дилеры перестали поддерживать рынок и обязаны продавать физический актив, ускоряя падение. Ожидаем быстрое движение вниз прямо к уровню поддержки Put Wall ($${pw}).`;
-                        dynamicBadge = "🚨 Режим паники: Тренд вниз";
-                        dynamicCardBorder = "border-rose-500/80 shadow-rose-950/50 shadow-lg";
-                        dynamicCardBg = "bg-rose-950/20";
-                      }
+                      dynamicVerdict = isMarketClosed
+                        ? `Рынок закрыт под Zero-Flip ($${flip}). В фокусе открытия: реакция на Put Wall $${pw}.`
+                        : `Активен сценарий отрицательной гаммы (-GEX): цена под Zero-Flip ($${flip}), риск ускорения к $${pw}.`;
+                      dynamicExplanation = `Дилеры находятся в зоне отрицательной гаммы и хеджируют дельту продажами по ходу движения. Попытки раннего выкупа без возврата выше $${flip} несут повышенный риск.`;
+                      dynamicBadge = isMarketClosed ? "💤 Закрытие под Flip" : "🚨 Активен: Импульс -GEX";
+                      dynamicCardBorder = "border-rose-500/70";
+                      dynamicCardBg = "bg-rose-950/20";
+                      primaryAction = `Ждать теста Put Wall $${pw} для лимитного лонга либо возврата и закрепления выше Flip $${flip}.`;
+                      targetLevel = `Поддержка $${pw} (при возврате выше $${flip} — цель $${mp})`;
+                      invalidationLevel = `Уход и закрепление ниже $${pw} с объемом (каскад стопов SSL)`;
                     } else if (distToPw <= proximityThreshold || spot <= pw) {
-                      dynamicType = "AT_PW";
-                      if (isMarketClosed) {
-                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована у поддержки Put Wall ($${pw}). В фокусе открытия в Пн: отскок к $${mp}.`;
-                        dynamicExplanation = `Биржевые торги закрыты на выходные. Сессия завершилась вплотную к полу рынка ($${pw}). В понедельник при открытии ожидается реакция покупателей и маркетмейкеров с выталкиванием котировок к балансовому уровню Max Pain ($${mp}).`;
-                        dynamicBadge = "💤 Рынок закрыт • Поддержка Put Wall";
-                        dynamicCardBorder = "border-emerald-500/60 shadow-emerald-950/40 shadow-lg";
-                        dynamicCardBg = "bg-emerald-950/20";
-                      } else {
-                        dynamicVerdict = `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`;
-                        dynamicExplanation = `Цена подошла вплотную к полу рынка (Put Wall $${pw}). Здесь сосредоточена максимальная концентрация страховок от падения. Маркетмейкеры обязаны агрессивно покупать базовый актив для дельта-хеджирования, выталкивая цену обратно вверх к уровню Max Pain ($${mp}).`;
-                        dynamicBadge = "🛡️ Зона покупки: Отскок от поддержки";
-                        dynamicCardBorder = "border-emerald-500/80 shadow-emerald-950/50 shadow-lg";
-                        dynamicCardBg = "bg-emerald-950/20";
-                      }
+                      dynamicVerdict = `Активен сценарий отскока от поддержки Put Wall ($${pw}) к магниту $${mp}.`;
+                      dynamicExplanation = `Цена находится в зоне максимальной концентрации путов ($${pw}). Дилеры закрывают хедж покупками базового актива, формируя институциональный пол.`;
+                      dynamicBadge = "🛡️ Активен: Защита Put Wall";
+                      dynamicCardBorder = "border-emerald-500/70";
+                      dynamicCardBg = "bg-emerald-950/20";
+                      primaryAction = `Поиск Long-сетапа от зоны $${pw} с выносом стопа за динамический ATR-буфер.`;
+                      targetLevel = `TP1: Zero-Flip $${flip} / Магнит $${mp} • TP2: Call Wall $${cw}`;
+                      invalidationLevel = `Пробой и закрытие свечи ниже Put Wall $${pw} за пределами ATR-буфера`;
                     } else if (distToCw <= proximityThreshold || spot >= cw) {
-                      dynamicType = "AT_CW";
-                      if (isMarketClosed) {
-                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована у потолка Call Wall ($${cw}). В фокусе открытия в Пн: откат к $${mp}.`;
-                        dynamicExplanation = `Биржевые торги закрыты на выходные. Сессия завершилась у потолка рынка ($${cw}). К открытию торгов в понедельник следим за возможным откатом к Max Pain ($${mp}) либо пробоем выше при гэпе.`;
-                        dynamicBadge = "💤 Рынок закрыт • Потолок Call Wall";
-                        dynamicCardBorder = "border-amber-500/60 shadow-amber-950/40 shadow-lg";
-                        dynamicCardBg = "bg-amber-950/20";
-                      } else {
-                        dynamicVerdict = "Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз.";
-                        dynamicExplanation = `Цена достигла верхнего потолка рынка (Call Wall $${cw}). Дилеры хеджируют проданные опционы Call массивными продажами базового актива, принудительно гася движение. Покупать на этом уровне крайне опасно. Ждем откат вниз к Магниту ($${mp}) или фиксируем прибыль.`;
-                        dynamicBadge = "🏰 Зона фиксации: Откат от потолка";
-                        dynamicCardBorder = "border-amber-500/80 shadow-amber-950/50 shadow-lg";
-                        dynamicCardBg = "bg-amber-950/20";
-                      }
+                      dynamicVerdict = `Активен сценарий теста потолка Call Wall ($${cw}): фиксация лонгов или ожидание сквиза.`;
+                      dynamicExplanation = `Цена подошла к верхнему барьеру Call Wall ($${cw}), где маркетмейкеры сдерживают рост продажами. При пробое стены с высоким Volume сработают стопы шортистов (BSL).`;
+                      dynamicBadge = "🏰 Активен: Тест Call Wall";
+                      dynamicCardBorder = "border-amber-500/70";
+                      dynamicCardBg = "bg-amber-950/20";
+                      primaryAction = `Фиксировать часть прибыли по лонгам у $${cw}. Новые покупки — только после подтвержденного пробоя $${cw}.`;
+                      targetLevel = `При откате: возврат к Магниту $${mp} • При пробое: сквиз к $${gexReport.sleeperMagnet}`;
+                      invalidationLevel = `Ложный закол $${cw} с возвратом под уровень`;
                     } else {
-                      dynamicType = "IN_CORRIDOR";
-                      if (isMarketClosed) {
-                        dynamicVerdict = `Торги закрыты на выходные. Цена зафиксирована в коридоре ($${pw} — $${cw}). Ожидаем открытие недели.`;
-                        dynamicExplanation = `Биржевые торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)} в нейтральном коридоре между полом $${pw} и потолком $${cw}. Ожидаем открытие недели для определения направления движения.`;
-                        dynamicBadge = "💤 Рынок закрыт • Нейтральный диапазон";
-                        dynamicCardBorder = "border-cyan-500/60 shadow-cyan-950/40 shadow-lg";
-                        dynamicCardBg = "bg-cyan-950/20";
-                      } else {
-                        dynamicVerdict = `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`;
-                        dynamicExplanation = `Текущая цена ($${spot.toFixed(1)}) находится в нейтральной полосе между полом $${pw} и потолком $${cw}. Дилеры сглаживают любые колебания (Штиль). Лучшая тактика — не открывать импульсивных позиций в центре, а дождаться подхода цены к одной из ключевых стен.`;
-                        dynamicBadge = "⚖️ Нейтральная зона: Торговля в диапазоне";
-                        dynamicCardBorder = "border-cyan-500/80 shadow-cyan-950/50 shadow-lg";
-                        dynamicCardBg = "bg-cyan-950/20";
-                      }
+                      dynamicVerdict = `Активен коридорный сценарий (+GEX Штиль): баланс между $${pw} и $${cw} с тягой к $${mp}.`;
+                      dynamicExplanation = `Цена (${spot.toFixed(1)}) находится выше Zero-Flip ($${flip}) внутри положительной гаммы. Дилеры гасят импульсы и возвращают котировки к равновесному страйку Max Pain ($${mp}).`;
+                      dynamicBadge = "⚖️ Активен: Коридор +GEX";
+                      dynamicCardBorder = "border-cyan-500/70";
+                      dynamicCardBg = "bg-cyan-950/20";
+                      primaryAction = `Работа от границ диапазона: лимитный Long у $${pw}, фиксация/Short у $${cw}.`;
+                      targetLevel = `Магнит экспирации Max Pain $${mp} и границы $${pw} / $${cw}`;
+                      invalidationLevel = `Пробой рубежа Zero-Flip $${flip} вниз (переход в режим -GEX)`;
                     }
 
                     return (
-                      <div className="space-y-4 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
-                        {/* Dynamic Live Status Alert Banner */}
-                        <div className={`p-4 rounded-xl border ${dynamicCardBorder} ${dynamicCardBg} flex flex-col md:flex-row items-start md:items-center justify-between gap-3`}>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-mono font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-black/50 border border-gray-700 text-white">
-                                {isMarketClosed ? "💤 БАЗОВЫЙ РАСКЛАД К ОТКРЫТИЮ В ПОНЕДЕЛЬНИК" : "🎯 ТЕКУЩИЙ АКТИВНЫЙ СЦЕНАРИЙ"}
+                      <div className="space-y-3 text-xs leading-relaxed text-gray-300 animate-in fade-in duration-150">
+                        <div className={`p-4 rounded-xl border ${dynamicCardBorder} ${dynamicCardBg} space-y-3`}>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-2.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[11px] font-mono font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded bg-black/60 border border-gray-700 text-white">
+                                🎯 ЕДИНЫЙ АКТИВНЫЙ СЦЕНАРИЙ СЕЙЧАС
                               </span>
-                              <span className="text-[11px] font-mono text-gray-400">
-                                {isMarketClosed ? "Фиксация закрытия:" : "Спот:"} <b className="text-white">${spot.toFixed(1)}</b> • Flip: <b className="text-purple-400">${flip}</b>
+                              <span className="text-[11px] font-mono text-gray-300">
+                                Спот: <b className="text-white">${spot.toFixed(1)}</b> • Flip: <b className="text-purple-300">${flip}</b> • Max Pain: <b className="text-cyan-300">${mp}</b>
                               </span>
                             </div>
-                            <div className="text-sm font-bold text-white pt-0.5">
-                              {dynamicVerdict}
-                            </div>
-                            <p className="text-gray-300 text-[11px] leading-relaxed max-w-3xl">
-                              {dynamicExplanation}
-                            </p>
-                          </div>
-                          <div className="shrink-0 px-3 py-2 rounded-xl bg-black/60 border border-gray-700 text-right">
-                            <span className="text-[10px] text-gray-400 block uppercase font-mono">
-                              {isMarketClosed ? "Статус биржи:" : "Статус дилеров:"}
-                            </span>
-                            <span className={`font-bold text-xs block ${isMarketClosed ? "text-amber-300" : "text-cyan-300"}`}>
+                            <span className="font-mono font-bold text-xs px-2.5 py-1 rounded-lg bg-black/50 border border-white/15 text-amber-300">
                               {dynamicBadge}
                             </span>
                           </div>
-                        </div>
 
-                        {/* 3 Scenarios Cards with Dynamic Active Tag */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          
-                          {/* Scenario 1: Range Trading (Main) */}
-                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
-                            dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW"
-                              ? isMarketClosed
-                                ? "bg-[#0d141e] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
-                                : "bg-[#0d141e] border-2 border-emerald-500 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-500/40"
-                              : "bg-[#0e121c] border border-gray-800 opacity-80"
-                          }`}>
-                            <div className="flex items-center justify-between">
-                              <span className="font-extrabold text-emerald-400 text-sm flex items-center gap-1.5">
-                                📈 Сценарий 1 (Коридор / Отскок)
-                              </span>
-                              {dynamicType === "IN_CORRIDOR" || dynamicType === "AT_PW" ? (
-                                isMarketClosed ? (
-                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
-                                    В ФОКУСЕ НА ПН
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] bg-emerald-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                    АКТИВЕН СЕЙЧАС
-                                  </span>
-                                )
-                              ) : (
-                                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded">
-                                  Вероятность 70%
-                                </span>
-                              )}
+                          <div className="text-sm font-bold text-white">
+                            {dynamicVerdict}
+                          </div>
+                          <p className="text-gray-200 text-xs leading-relaxed">
+                            {dynamicExplanation}
+                          </p>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
+                            <div className="p-2.5 rounded-lg bg-black/45 border border-gray-800">
+                              <span className="text-[10px] font-mono uppercase text-emerald-400 block font-bold">👉 Действие трейдера</span>
+                              <span className="text-gray-200 text-[11.5px] font-medium">{primaryAction}</span>
                             </div>
-                            <h5 className="font-bold text-white text-xs">
-                              {dynamicType === "AT_PW"
-                                ? `Отскок от пола Put Wall ($${pw}) к центру`
-                                : `Коридорное движение между $${pw} и $${cw}`}
-                            </h5>
-                            <p>
-                              {isMarketClosed
-                                ? `Торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)}. В понедельник ключевым диапазоном остается интервал $${pw} — $${cw}.`
-                                : dynamicType === "AT_PW"
-                                ? `Цена у нижней границы. Высокая вероятность отскока вверх к центру (Магниту). Покупаем от $${pw} со стопом ниже.`
-                                : `Цена в коридоре. Ждем подхода к границам ($${pw} или $${cw}) для входа.`}
-                            </p>
-                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
-                              <div><b>Цель движения вверх:</b> Потолок ${cw} или Магнит ${mp}.</div>
-                              <div><b>Цель движения вниз:</b> Поддержка ${pw} (зона надежного выкупа).</div>
-                              <div className="text-emerald-300 font-semibold pt-1 border-t border-gray-800">
-                                👉 <b>Торговый план:</b> Покупать у ${pw}, продавать у ${cw}.
-                              </div>
+                            <div className="p-2.5 rounded-lg bg-black/45 border border-gray-800">
+                              <span className="text-[10px] font-mono uppercase text-cyan-400 block font-bold">🎯 Целевые ориентиры</span>
+                              <span className="text-gray-200 text-[11.5px] font-medium">{targetLevel}</span>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-black/45 border border-gray-800">
+                              <span className="text-[10px] font-mono uppercase text-rose-400 block font-bold">⚠️ Условие отмены / Риск</span>
+                              <span className="text-gray-200 text-[11.5px] font-medium">{invalidationLevel}</span>
                             </div>
                           </div>
-
-                          {/* Scenario 2: Call Wall Ceiling / Squeeze */}
-                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
-                            dynamicType === "AT_CW"
-                              ? isMarketClosed
-                                ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
-                                : "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500/40"
-                              : "bg-[#0e121c] border border-gray-800 opacity-80"
-                          }`}>
-                            <div className="flex items-center justify-between">
-                              <span className="font-extrabold text-amber-400 text-sm flex items-center gap-1.5">
-                                🏰 Сценарий 2 (Потолок Call Wall)
-                              </span>
-                              {dynamicType === "AT_CW" ? (
-                                isMarketClosed ? (
-                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
-                                    В ФОКУСЕ НА ПН
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                    АКТИВЕН СЕЙЧАС
-                                  </span>
-                                )
-                              ) : (
-                                <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded">
-                                  Вероятность 15%
-                                </span>
-                              )}
-                            </div>
-                            <h5 className="font-bold text-white text-xs">
-                              Откат вниз от потолка либо гамма-сквиз
-                            </h5>
-                            <p>
-                              {isMarketClosed
-                                ? `В понедельник при подходе к ${cw} дилеры будут защищать потолок. При закреплении H1 выше ${cw} вероятен шорт-сквиз.`
-                                : `Цена уперлась в потолок. Дилеры будут продавать. Ждем откат вниз. Если свеча H1 пробьет ${cw} — начнется шорт-сквиз.`}
-                            </p>
-                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
-                              <div><b>Основной исход:</b> Откат вниз к Магниту ${mp}.</div>
-                              <div><b>Сквиз-триггер:</b> Закрепление H1 выше ${cw} (+20-40$ ракетой).</div>
-                              <div className="text-amber-300 font-semibold pt-1 border-t border-gray-800">
-                                👉 <b>Торговый план:</b> Фиксировать покупки у ${cw}, не шортить вслепую.
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Scenario 3: Waterfall Dump / Flip Breakdown */}
-                          <div className={`p-4 rounded-xl space-y-2.5 relative transition-all ${
-                            dynamicType === "BREAK_FLIP"
-                              ? isMarketClosed
-                                ? "bg-[#181308] border-2 border-amber-500 shadow-lg shadow-amber-950/40"
-                                : "bg-[#180a0e] border-2 border-rose-500 shadow-lg shadow-rose-950/50 ring-1 ring-rose-500/40"
-                              : "bg-[#0e121c] border border-gray-800 opacity-80"
-                          }`}>
-                            <div className="flex items-center justify-between">
-                              <span className="font-extrabold text-rose-400 text-sm flex items-center gap-1.5">
-                                🩸 Сценарий 3 ({isMarketClosed ? "Рубеж Zero-Flip" : "Срыв под Zero-Flip"})
-                              </span>
-                              {dynamicType === "BREAK_FLIP" ? (
-                                isMarketClosed ? (
-                                  <span className="text-[10px] bg-amber-500 text-black font-extrabold px-2 py-0.5 rounded shadow-sm">
-                                    В ФОКУСЕ НА ПН
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] bg-rose-500 text-white font-extrabold px-2 py-0.5 rounded shadow-sm animate-pulse">
-                                    АКТИВЕН СЕЙЧАС
-                                  </span>
-                                )
-                              ) : (
-                                <span className="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-1.5 py-0.5 rounded">
-                                  Вероятность 15%
-                                </span>
-                              )}
-                            </div>
-                            <h5 className="font-bold text-white text-xs">
-                              {isMarketClosed ? "Фиксация под Zero-Flip перед выходными" : "Пробой границы гаммы (Паника дилеров)"}
-                            </h5>
-                            <p>
-                              {isMarketClosed
-                                ? `Торги закрыты на выходные. Цена зафиксирована на $${spot.toFixed(1)} ниже Zero-Flip ($${flip}). В понедельник следим за реакцией на Put Wall ($${pw}).`
-                                : `Пробой границы гаммы! Начинается режим паники. Тренд вниз. Дилеры сбрасывают лонги и усиливают падение.`}
-                            </p>
-                            <div className="space-y-1.5 bg-black/40 p-2.5 rounded-lg border border-gray-800 text-[11px]">
-                              <div><b>Триггер активации:</b> Цена ниже ${flip}.</div>
-                              <div><b>Ориентир поддержки:</b> Стена Put Wall ${pw}.</div>
-                              <div className="text-amber-300 font-semibold pt-1 border-t border-gray-800">
-                                {isMarketClosed
-                                  ? `👉 Торговый план: В выходные торгов нет. На открытии в Пн: покупки только при подтвержденном тесте Put Wall $${pw}.`
-                                  : `👉 Торговый план: Не ловить ножи! Лонги только после теста $${pw}.`}
-                              </div>
-                            </div>
-                          </div>
-
                         </div>
                       </div>
                     );

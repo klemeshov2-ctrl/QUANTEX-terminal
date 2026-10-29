@@ -14,7 +14,12 @@ import {
   Info,
   CheckCircle2,
   History,
-  Repeat
+  Repeat,
+  Send,
+  Bell,
+  Crosshair,
+  ChevronDown,
+  Zap
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData, getHorizonExpirationDateString } from "../../server/gexEngine";
 import { auditSingleGexLevel, detectMarketRangeMode, RangeDetectionResult } from "../lib/pineSuperIndicatorEngine";
@@ -576,21 +581,58 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         isTested,
         isStrong,
         simpleVerdict,
-        touchTol: currentAudit.touchTol || (activeAsset.includes("BTC") ? 220 : 3.5),
-        breakTol: currentAudit.breakTol || (activeAsset.includes("BTC") ? 320 : 4.8),
+        touchTol: currentAudit.touchTol || dynamicAtrMetrics.touchTol,
+        breakTol: currentAudit.breakTol || dynamicAtrMetrics.breakTol,
         strike: lvl.price
       };
     });
   };
 
+  // True 14-period ATR & dynamic buffer calculation (replaces static ±$3.5)
+  const dynamicAtrMetrics = useMemo(() => {
+    const fallbackPrice = gexReport.spotPrice || (activeAsset.includes("BTC") ? 85000 : 3000);
+    if (!candles || candles.length < 2) {
+      const estAtr = fallbackPrice * 0.0022;
+      return {
+        atr14: Math.round(estAtr * 100) / 100,
+        touchTol: Math.round(estAtr * 0.55 * 10) / 10,
+        breakTol: Math.round(estAtr * 0.8 * 10) / 10
+      };
+    }
+    const period = Math.min(14, candles.length);
+    const slice = candles.slice(-period);
+    let trSum = 0;
+    for (let i = 0; i < slice.length; i++) {
+      const c = slice[i];
+      const prevClose = i > 0 ? slice[i - 1].close : c.open;
+      const tr = Math.max(
+        c.high - c.low,
+        Math.abs(c.high - prevClose),
+        Math.abs(c.low - prevClose)
+      );
+      trSum += tr;
+    }
+    const atr14 = Math.max(fallbackPrice * 0.0005, trSum / slice.length);
+    const touchTol = Math.max(
+      fallbackPrice * 0.0005,
+      Math.min(fallbackPrice * 0.0045, atr14 * 0.55)
+    );
+    const breakTol = touchTol * 1.45;
+    return {
+      atr14: Math.round(atr14 * 100) / 100,
+      touchTol: Math.round(touchTol * 10) / 10,
+      breakTol: Math.round(breakTol * 10) / 10
+    };
+  }, [candles, gexReport.spotPrice, activeAsset]);
+
   const hitRateStatsDay = useMemo(() => {
     return computeHitRateForCandles(candles, 86400, "day");
-  }, [candles, gexReport, activeAsset, migrationLogs]);
+  }, [candles, gexReport, activeAsset, migrationLogs, dynamicAtrMetrics]);
 
   const hitRateStatsWeek = useMemo(() => {
     const src = weekCandles.length >= 20 ? weekCandles : candles;
     return computeHitRateForCandles(src, 7 * 86400, "week");
-  }, [weekCandles, candles, gexReport, activeAsset, migrationLogs]);
+  }, [weekCandles, candles, gexReport, activeAsset, migrationLogs, dynamicAtrMetrics]);
 
   const activeHitRateStats = hitRatePeriod === "WEEK" ? hitRateStatsWeek : hitRateStatsDay;
 
@@ -1032,9 +1074,45 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       ctx.fillText(isMobile ? `MP $${gexReport.maxPain}` : `Pain $${gexReport.maxPain}`, w - padRight + 6, mpY);
     }
 
-    // 4. Current Spot Price - Желтая пунктирная линия
+    // 4. Current Spot Price - Желтая пунктирная горизонтальная + вертикальная проекция Spot GEX
     const curY = getY(currentPrice);
     if (curY >= padTop && curY <= h - padBottom) {
+      // Find nearest strike to spot to project vertical Spot GEX crosshair
+      const nearestSpotStrike = sortedStrikes.reduce((prev, curr) =>
+        Math.abs(curr.strike - currentPrice) < Math.abs(prev.strike - currentPrice) ? curr : prev
+      );
+      const spotBarLen = Math.max(12, (Math.abs(nearestSpotStrike.netGex) / maxAbsGex) * (chartW * 0.72));
+      const spotX = padLeft + spotBarLen;
+
+      // Vertical dashed Spot line (проекция текущей цены и баланса гаммы на ось X)
+      ctx.strokeStyle = "rgba(250, 204, 21, 0.65)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(spotX, padTop);
+      ctx.lineTo(spotX, h - padBottom);
+      ctx.stroke();
+
+      // Top badge for Vertical Spot Line
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#422006";
+      const topTagW = isMobile ? 86 : 112;
+      const topTagX = Math.max(padLeft, Math.min(w - padRight - topTagW, spotX - topTagW / 2));
+      ctx.fillRect(topTagX, 6, topTagW, 16);
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(topTagX, 6, topTagW, 16);
+      ctx.fillStyle = "#fef08a";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(
+        isMobile ? `Spot $${Math.round(currentPrice)}` : `▼ Spot $${currentPrice.toFixed(1)}`,
+        topTagX + topTagW / 2,
+        14
+      );
+
+      // Horizontal Spot Price line
       ctx.strokeStyle = "#facc15";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]);
@@ -1043,8 +1121,17 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       ctx.lineTo(w - padRight, curY);
       ctx.stroke();
 
-      // Right edge pill badge
+      // Crosshair intersection glowing node
       ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(spotX, curY, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#facc15";
+      ctx.fill();
+      ctx.strokeStyle = "#090d16";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Right edge pill badge
       ctx.fillStyle = "#422006";
       ctx.fillRect(w - padRight + 3, curY - 8, isMobile ? 62 : 76, 16);
       ctx.strokeStyle = "#facc15";
@@ -1118,6 +1205,163 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   const isSyntheticModel = Boolean(
     gexReport.source && gexReport.source.includes("Синтетическая модель")
   );
+
+  // ============================================================================
+  // 🎯 NEW QUANT MODULE A: LIQUIDITY MAP (STOP HUNT ZONES / КАРТА ЛИКВИДНОСТИ)
+  // ============================================================================
+  const liquidityStopZones = useMemo(() => {
+    const cw = gexReport.callWall;
+    const pw = gexReport.putWall;
+    const flip = gexReport.gammaFlip;
+    const atr = dynamicAtrMetrics.atr14;
+    const touchBuf = dynamicAtrMetrics.touchTol;
+    const breakBuf = dynamicAtrMetrics.breakTol;
+
+    // Buy-Side Liquidity (Short Stops & Breakout Triggers above Call Wall)
+    const bslLow = Math.round((cw + touchBuf * 0.4) * 10) / 10;
+    const bslHigh = Math.round((cw + atr * 1.35) * 10) / 10;
+
+    // Sell-Side Liquidity (Long Stops & Panic Triggers below Put Wall)
+    const sslHigh = Math.round((pw - touchBuf * 0.4) * 10) / 10;
+    const sslLow = Math.round((pw - atr * 1.35) * 10) / 10;
+
+    // Intraday Zero-Flip Stop Cluster
+    const flipZoneLow = Math.round((flip - touchBuf) * 10) / 10;
+    const flipZoneHigh = Math.round((flip + touchBuf) * 10) / 10;
+
+    const distToBsl = Math.round((bslLow - currentPrice) * 10) / 10;
+    const distToSsl = Math.round((currentPrice - sslHigh) * 10) / 10;
+
+    return {
+      bslLow,
+      bslHigh,
+      sslLow,
+      sslHigh,
+      flipZoneLow,
+      flipZoneHigh,
+      distToBsl,
+      distToSsl,
+      atr,
+      touchBuf,
+      breakBuf
+    };
+  }, [gexReport.callWall, gexReport.putWall, gexReport.gammaFlip, currentPrice, dynamicAtrMetrics]);
+
+  // ============================================================================
+  // 📊 NEW QUANT MODULE B: PRICE VS GEX DIVERGENCE (ДИВЕРГЕНЦИЯ ЦЕНЫ И GEX)
+  // ============================================================================
+  const priceGexDivergence = useMemo(() => {
+    const netGex = gexReport.netGexTotal;
+    const pcrVol = gexReport.pcrVol || 1;
+    const pcrOi = gexReport.pcrOi || 1;
+    const chgPct = thermometerData.recentChangePct || 0;
+    const isAboveFlip = currentPrice >= gexReport.gammaFlip;
+
+    // Case 1: Bearish Divergence (Цена растет, но GEX отрицательный или Put Volume резко доминирует)
+    if (chgPct > 0.08 && (netGex < 0 || pcrVol > 1.25 || !isAboveFlip)) {
+      return {
+        type: "BEARISH_DIV" as const,
+        badge: "🔴 Медвежья дивергенция (Скрытый сброс)",
+        colorClass: "bg-rose-500/10 border-rose-500/40 text-rose-300",
+        summary: `Цена растёт (+${chgPct.toFixed(2)}%), но опционный поток медвежий (Net GEX ${netGex.toFixed(1)}M, PCR Vol ${pcrVol.toFixed(2)}).`,
+        actionNow: "⚡ Сейчас для цены: Рост не подтверждён гаммой дилеров — высокий риск ложного выноса (Bull Trap) и возврата под Zero-Flip."
+      };
+    }
+
+    // Case 2: Bullish Divergence (Цена падает, но Net GEX положительный и Call Volume удерживает стену)
+    if (chgPct < -0.08 && (netGex > 0 && pcrVol < 0.95 && isAboveFlip)) {
+      return {
+        type: "BULLISH_DIV" as const,
+        badge: "🟢 Бычья дивергенция (Скрытый выкуп)",
+        colorClass: "bg-emerald-500/10 border-emerald-500/40 text-emerald-300",
+        summary: `Цена снижается (${chgPct.toFixed(2)}%), но дилеры удерживают положительную гамму (+${netGex.toFixed(1)}M, PCR Vol ${pcrVol.toFixed(2)}).`,
+        actionNow: "⚡ Сейчас для цены: Падение гасится лимитными покупками маркет-мейкеров — высокая вероятность выкупа (Bear Trap) от поддержки."
+      };
+    }
+
+    // Case 3: Synchronized Flow (Конвергенция цены и GEX)
+    return {
+      type: "CONVERGENCE" as const,
+      badge: "⚖️ Синхронный поток (Дивергенции нет)",
+      colorClass: "bg-cyan-500/10 border-cyan-500/35 text-cyan-300",
+      summary: `Движение цены (${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(2)}%) полностью согласовано с балансом Net GEX (${netGex >= 0 ? "+" : ""}${netGex.toFixed(1)}M, PCR OI ${pcrOi.toFixed(2)}).`,
+      actionNow: isAboveFlip
+        ? `⚡ Сейчас для цены: Плавное движение внутри канала $${gexReport.putWall} – $${gexReport.callWall} с притяжением к Max Pain $${gexReport.maxPain}.`
+        : `⚡ Сейчас для цены: Ускоренное трендовое движение в зоне отрицательной гаммы ниже Zero-Flip $${gexReport.gammaFlip}.`
+    };
+  }, [gexReport, currentPrice, thermometerData.recentChangePct]);
+
+  // ============================================================================
+  // 📲 NEW QUANT MODULE C: TELEGRAM ALERT DISPATCHER & AUTO-BREAKOUT MONITOR
+  // ============================================================================
+  const [tgAlertState, setTgAlertState] = useState<{
+    sending: boolean;
+    autoBreakoutEnabled: boolean;
+    statusText: string | null;
+    lastSentLevelKey: string | null;
+  }>({
+    sending: false,
+    autoBreakoutEnabled: true,
+    statusText: null,
+    lastSentLevelKey: null
+  });
+
+  const sendGexTelegramNotification = async (eventLabel: string) => {
+    try {
+      setTgAlertState((prev) => ({ ...prev, sending: true, statusText: "Отправка алерта в Telegram..." }));
+      const res = await fetch("/api/gex/telegram-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          asset: activeAsset,
+          eventType: eventLabel,
+          spotPrice: currentPrice,
+          callWall: gexReport.callWall,
+          putWall: gexReport.putWall,
+          gammaFlip: gexReport.gammaFlip,
+          netGexTotal: gexReport.netGexTotal,
+          atrBuffer: dynamicAtrMetrics.touchTol,
+          divergenceStatus: `${priceGexDivergence.badge} — ${priceGexDivergence.summary}`
+        })
+      });
+      const data = await res.json();
+      setTgAlertState((prev) => ({
+        ...prev,
+        sending: false,
+        statusText: data.message || "Оповещение отправлено"
+      }));
+    } catch (err: any) {
+      setTgAlertState((prev) => ({
+        ...prev,
+        sending: false,
+        statusText: `Ошибка отправки: ${err.message}`
+      }));
+    }
+  };
+
+  // Auto-trigger Telegram alert on confirmed breakout of Call Wall, Put Wall, or Zero-Flip
+  useEffect(() => {
+    if (!tgAlertState.autoBreakoutEnabled || !currentPrice) return;
+    const tol = dynamicAtrMetrics.touchTol;
+    let breakoutKey: string | null = null;
+    let eventName = "";
+
+    if (currentPrice >= gexReport.callWall + tol * 0.5) {
+      breakoutKey = `CW_BREAK_${gexReport.callWall}`;
+      eventName = `🚀 ПРОБОЙ CALL WALL $${gexReport.callWall} (Gamma Squeeze Up)`;
+    } else if (currentPrice <= gexReport.putWall - tol * 0.5) {
+      breakoutKey = `PW_BREAK_${gexReport.putWall}`;
+      eventName = `🩸 ПРОБОЙ PUT WALL $${gexReport.putWall} (Liquidation Cascade)`;
+    } else if (Math.abs(currentPrice - gexReport.gammaFlip) <= tol * 0.45) {
+      breakoutKey = `FLIP_TEST_${gexReport.gammaFlip}`;
+      eventName = `⚡ ТЕСТ / ПРОБОЙ ZERO-FLIP $${gexReport.gammaFlip} (Смена гамма-режима)`;
+    }
+
+    if (breakoutKey && breakoutKey !== tgAlertState.lastSentLevelKey) {
+      setTgAlertState((prev) => ({ ...prev, lastSentLevelKey: breakoutKey }));
+      sendGexTelegramNotification(eventName);
+    }
+  }, [currentPrice, gexReport.callWall, gexReport.putWall, gexReport.gammaFlip, dynamicAtrMetrics.touchTol, tgAlertState.autoBreakoutEnabled]);
 
   return (
     <div className="space-y-6 pt-2">
@@ -1325,9 +1569,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                     </span>
                   </h4>
                   <p className="text-[11px] text-gray-400">
-                    {hitRatePeriod === "WEEK"
-                      ? "Подсчет касаний цены (±0.12%), отскоков и пробоев уровней за 7 торговых дней"
-                      : "Подсчет касаний цены (±0.12%), отскоков и пробоев за последние 24 часа"}
+                    Динамический ATR-буфер уровня: <b className="text-cyan-300 font-mono">±${dynamicAtrMetrics.touchTol}</b> (ATR-14: <b className="text-gray-200 font-mono">${dynamicAtrMetrics.atr14}</b>, пробой &gt; <b className="text-amber-300 font-mono">${dynamicAtrMetrics.breakTol}</b>)
                   </p>
                 </div>
               </div>
@@ -1739,31 +1981,190 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
           </table>
         </div>
 
-        {/* Текст вывода */}
-        <div className="p-3.5 rounded-xl bg-[#0f1420] border border-amber-500/30 text-xs text-amber-200/90 leading-relaxed">
-          <span className="font-bold text-amber-300 block mb-1">💡 Краткий вывод для трейдера:</span>
-          {isMarketClosed || dayOfWeekInfo.isWeekend ? (
-            <p>
-              Сегодня <b>выходной ({dayOfWeekInfo.name})</b> — биржевые торги закрыты. 
-              Котировка <b>${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}</b> зафиксирована по закрытию сессии в пятницу. 
-              Ближайшая экспирация 0DTE состоится <b>в понедельник в 18:45 МСК</b>. 
-              До открытия торгов в понедельник ориентируйтесь на рубеж Zero-Flip <b>${gexReport.gammaFlip}</b>, 
-              а точкой притяжения к экспирации выступает магнит Max Pain <b>${gexReport.maxPain}</b>.
-            </p>
-          ) : dayOfWeekInfo.isFriday ? (
-            <p>
-              Сегодня пятница — <b>день недельной экспирации опционов</b>. Большинство внутридневных и недельных уровней
-              исчезнет вечером после 18:00 МСК. Если цена пробьет стену{" "}
-              <b className="text-white">${gexReport.callWall}</b> или поддержку{" "}
-              <b className="text-white">${gexReport.putWall}</b> до 18:00 — начнется сильный тренд (сквиз).
-            </p>
-          ) : (
-            <p>
-              Сегодня <b>{dayOfWeekInfo.name}</b>. Ближайшие дневные уровни действуют до вечера, а недельные сохраняют силу
-              до пятницы. Если пробьем <b>${gexReport.callWall}</b> до конца недели — начнется сильный разгон тренда вверх, а
-              пока цена внутри диапазона — рынок стремится к магниту <b>${gexReport.maxPain}</b>.
-            </p>
-          )}
+        {/* Компактный сворачиваемый вывод по экспирациям + мгновенный инсайт */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#0f1420] border border-amber-500/30 text-xs">
+          <div className="flex items-center gap-2 text-amber-200 font-medium">
+            <Zap className="h-4 w-4 text-amber-400 shrink-0" />
+            <span>
+              <b>⚡ Сейчас для цены:</b>{" "}
+              {isMarketClosed || dayOfWeekInfo.isWeekend
+                ? `Торги закрыты (${dayOfWeekInfo.name}). На открытии ориентир — Zero-Flip $${gexReport.gammaFlip} и магнит Max Pain $${gexReport.maxPain}.`
+                : dayOfWeekInfo.isFriday
+                ? `Пятничная экспирация: удержание в коридоре $${gexReport.putWall}–$${gexReport.callWall} с тягой к Max Pain $${gexReport.maxPain} до 18:00 МСК.`
+                : `Рабочий коридор $${gexReport.putWall}–$${gexReport.callWall}. Пробой $${gexReport.callWall} с объемом запустит сквиз, внутри коридора тяга к $${gexReport.maxPain}.`}
+            </span>
+          </div>
+          <details className="group text-[11px] text-gray-400 shrink-0">
+            <summary className="cursor-pointer select-none text-amber-300 hover:text-amber-200 font-mono flex items-center gap-1">
+              <span>Подробнее о датах</span>
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-2 p-2.5 rounded-lg bg-[#090d16] border border-gray-800 text-gray-300 max-w-md">
+              0DTE уровни действуют внутри текущей сессии, недельные — базовый свинг-коридор до пятницы, месячные — институциональные барьеры крупных хеджеров.
+            </div>
+          </details>
+        </div>
+      </div>
+
+      {/* ====================================================================== */}
+      {/* МОДУЛЬ 2.5. КАРТА ЛИКВИДНОСТИ (STOP HUNT ZONES) + ДИВЕРГЕНЦИЯ + TG     */}
+      {/* ====================================================================== */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        {/* Блок А: Карта ликвидности (Зоны стопов за Call/Put Wall) (7 cols) */}
+        <div className="lg:col-span-7 bg-[#0b0e17] border border-gray-800 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-800/80 pb-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-gradient-to-tr from-rose-600 to-amber-600 text-white shadow-sm">
+                <Crosshair className="h-4 w-4" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-white flex items-center gap-2 flex-wrap">
+                  <span>Карта ликвидности (Зоны стопов / Stop Hunt Zones)</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                    ATR-14 ±${liquidityStopZones.touchBuf}
+                  </span>
+                </h4>
+                <p className="text-[11px] text-gray-400">
+                  Где сосредоточены стоп-ордера участников и триггеры принудительного хеджирования дилеров
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            {/* BSL Above Call Wall */}
+            <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-500/30 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-bold">
+                  BSL (Стопы шортистов)
+                </span>
+                <span className="text-[10px] font-mono text-gray-400">
+                  За Call Wall ${gexReport.callWall}
+                </span>
+              </div>
+              <div className="font-mono text-sm font-black text-white">
+                ${liquidityStopZones.bslLow} – ${liquidityStopZones.bslHigh}
+              </div>
+              <p className="text-[11px] text-gray-300 leading-snug">
+                Дистанция: <b className="text-emerald-300 font-mono">{liquidityStopZones.distToBsl > 0 ? `+$${liquidityStopZones.distToBsl}` : "В зоне!"}</b>. Снос этой зоны вынуждает дилеров скупать фьючерс по рынку (Gamma Squeeze).
+              </p>
+            </div>
+
+            {/* Zero-Flip Stop Cluster */}
+            <div className="p-3 rounded-xl bg-purple-950/20 border border-purple-500/30 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-purple-300 font-bold">
+                  Кластер Zero-Flip
+                </span>
+                <span className="text-[10px] font-mono text-gray-400">
+                  Центр ${gexReport.gammaFlip}
+                </span>
+              </div>
+              <div className="font-mono text-sm font-black text-white">
+                ${liquidityStopZones.flipZoneLow} – ${liquidityStopZones.flipZoneHigh}
+              </div>
+              <p className="text-[11px] text-gray-300 leading-snug">
+                Буфер смены знака гаммы (±${liquidityStopZones.touchBuf}). Здесь срабатывают внутридневные стопы и алгоритмы перекладки дельты.
+              </p>
+            </div>
+
+            {/* SSL Below Put Wall */}
+            <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-rose-400 font-bold">
+                  SSL (Стопы лонгистов)
+                </span>
+                <span className="text-[10px] font-mono text-gray-400">
+                  Под Put Wall ${gexReport.putWall}
+                </span>
+              </div>
+              <div className="font-mono text-sm font-black text-white">
+                ${liquidityStopZones.sslLow} – ${liquidityStopZones.sslHigh}
+              </div>
+              <p className="text-[11px] text-gray-300 leading-snug">
+                Дистанция: <b className="text-rose-300 font-mono">{liquidityStopZones.distToSsl > 0 ? `-$${liquidityStopZones.distToSsl}` : "В зоне!"}</b>. Пробой ниже ${liquidityStopZones.sslHigh} запускает каскадную ликвидацию лонгов.
+              </p>
+            </div>
+          </div>
+
+          <div className="px-3 py-2 rounded-xl bg-[#0f1422] border border-gray-800 text-[11.5px] text-gray-200 flex items-center gap-2">
+            <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+            <span>
+              <b>⚡ Сейчас для цены:</b> Не ставьте стоп-лосс вплотную за ${gexReport.putWall} или ${gexReport.callWall} — выносите стоп за пределы ATR-буфера (<b>±${liquidityStopZones.breakBuf}</b>), чтобы избежать охоты за ликвидностью.
+            </span>
+          </div>
+        </div>
+
+        {/* Блок Б: Дивергенция цены и GEX + Telegram-оповещения (5 cols) */}
+        <div className="lg:col-span-5 bg-[#0b0e17] border border-gray-800 rounded-2xl p-4 sm:p-5 flex flex-col justify-between gap-3.5 shadow-xl">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-gray-800/80 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-gradient-to-tr from-cyan-600 to-indigo-600 text-white shadow-sm">
+                  <TrendingUp className="h-4 w-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-white">Дивергенция цены и GEX + Telegram</h4>
+                  <p className="text-[11px] text-gray-400">Сверка направления цены с реальным потоком OI и Volume</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Карточка статуса дивергенции */}
+            <div className={`p-3.5 rounded-xl border space-y-1.5 ${priceGexDivergence.colorClass}`}>
+              <div className="font-bold text-xs sm:text-sm flex items-center justify-between gap-2">
+                <span>{priceGexDivergence.badge}</span>
+                <span className="font-mono text-[11px] opacity-90">PCR Vol: {gexReport.pcrVol}</span>
+              </div>
+              <p className="text-xs text-gray-200 leading-relaxed">{priceGexDivergence.summary}</p>
+              <div className="pt-1.5 border-t border-white/10 text-[11.5px] font-semibold text-white">
+                {priceGexDivergence.actionNow}
+              </div>
+            </div>
+          </div>
+
+          {/* Панель отправки и авто-алертов в Telegram */}
+          <div className="p-3.5 rounded-xl bg-[#0e1320] border border-indigo-500/30 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-indigo-300">
+                <Bell className="h-4 w-4 text-indigo-400" />
+                <span>Telegram-оповещения при пробое GEX</span>
+              </div>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer text-[11px] text-gray-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={tgAlertState.autoBreakoutEnabled}
+                  onChange={(e) =>
+                    setTgAlertState((prev) => ({ ...prev, autoBreakoutEnabled: e.target.checked }))
+                  }
+                  className="rounded border-gray-700 bg-gray-900 text-indigo-500 focus:ring-0"
+                />
+                <span>Авто-алерт (Flip / Wall)</span>
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={tgAlertState.sending}
+                onClick={() =>
+                  sendGexTelegramNotification(
+                    `📊 Срез GEX уровней (${activeAsset}): Spot $${currentPrice.toFixed(1)}, Flip $${gexReport.gammaFlip}`
+                  )
+                }
+                className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+              >
+                <Send className="h-3.5 w-3.5" />
+                <span>{tgAlertState.sending ? "Отправка..." : "📲 Отправить уровни и алерт в Telegram"}</span>
+              </button>
+            </div>
+
+            {tgAlertState.statusText && (
+              <div className="text-[11px] font-mono text-cyan-300 bg-cyan-950/30 border border-cyan-500/30 rounded-lg px-2.5 py-1.5">
+                {tgAlertState.statusText}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1780,11 +2181,11 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               <h4 className="font-bold text-sm text-white flex items-center gap-2">
                 <span>Гамма-Профиль (Горизонтальная гистограмма по цене)</span>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold">
-                  Volume Profile Style
+                  Volume + OI Profile
                 </span>
               </h4>
               <p className="text-[11px] text-gray-400">
-                Ось Y — шкала цен и страйков, ось X — суммарный объем гаммы дилеров
+                Ось Y — страйки, ось X — баланс гаммы (OI + Volume), вертикальный пунктир — проекция текущей цены Spot
               </p>
             </div>
           </div>
@@ -1821,14 +2222,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span> -GEX (Разгон)
             </span>
             <span className="hidden sm:inline-block text-gray-600">|</span>
-            <span className="text-gray-400 font-medium hidden sm:inline-block">Линии:</span>
-            <span className="hidden sm:inline-flex items-center gap-1 text-cyan-300 font-mono">
-              <span className="w-2.5 border-b-2 border-dashed border-cyan-400 inline-block"></span> Max Pain
+            <span className="flex items-center gap-1 text-amber-300 font-mono">
+              <span className="w-2.5 border-b-2 border-dashed border-amber-400 inline-block"></span> Вертикаль и горизонталь Spot
             </span>
           </div>
           {hoveredStrike && (
             <div className="bg-[#121829] border border-cyan-500/50 px-2 py-0.5 rounded text-[11px] font-mono text-cyan-300">
-              Страйк: <b>${hoveredStrike.strike}</b> (Net GEX: <b>{hoveredStrike.netGex > 0 ? `+${hoveredStrike.netGex}` : hoveredStrike.netGex}M</b>)
+              Страйк: <b>${hoveredStrike.strike}</b> (Net GEX: <b>{hoveredStrike.netGex > 0 ? `+${hoveredStrike.netGex}` : hoveredStrike.netGex}M</b> | Vol: <b>{hoveredStrike.callVolume + hoveredStrike.putVolume}</b>)
             </div>
           )}
         </div>
@@ -1843,31 +2243,34 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
           />
         </div>
 
-        {/* Понятное и 100% точное руководство под графиком */}
-        <div className="p-3.5 rounded-xl bg-[#0e121d] border border-gray-800 text-xs text-gray-300 space-y-2">
-          <div className="font-bold text-white flex items-center gap-2">
-            <Info className="h-4 w-4 text-cyan-400" />
-            <span>Как правильно читать гистограмму Гамма-Профиля:</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11.5px] leading-relaxed">
+        {/* Компактная сворачиваемая подсказка вместо громоздкого текста */}
+        <details className="group rounded-xl bg-[#0e121d] border border-gray-800 px-3.5 py-2.5 text-xs text-gray-300">
+          <summary className="cursor-pointer select-none font-bold text-white flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Info className="h-4 w-4 text-cyan-400" />
+              <span>Шпаргалка по чтению Гамма-Профиля (нажмите, чтобы развернуть)</span>
+            </span>
+            <ChevronDown className="h-4 w-4 text-gray-400 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11.5px] leading-relaxed pt-2 border-t border-gray-800/80">
             <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
               <span className="text-emerald-400 font-bold block mb-0.5">🟢 Зеленые столбики (+GEX):</span>
-              Зоны торможения цены и флэта. <b>Самый длинный зеленый столбик</b> — это <span className="text-emerald-300 font-bold">Потолок (Call Wall ${gexReport.callWall})</span>, где дилеры сдерживают рост.
+              Зоны гашения волатильности. Пик сверху — <b>Call Wall ${gexReport.callWall}</b> (потолок сопротивления).
             </div>
             <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
               <span className="text-rose-400 font-bold block mb-0.5">🔴 Красные столбики (-GEX):</span>
-              Зоны ускорения цены и тренда. <b>Самый длинный красный столбик</b> — это <span className="text-rose-300 font-bold">Поддержка (Put Wall ${gexReport.putWall})</span>, где сосредоточена защита от падения.
+              Зоны ускорения тренда. Пик снизу — <b>Put Wall ${gexReport.putWall}</b> (главная защита от обвала).
             </div>
             <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
-              <span className="text-cyan-300 font-bold block mb-0.5">🎯 Голубая линия — Магнит (Max Pain ${gexReport.maxPain}):</span>
-              Страйк наименьших выплат опционов. Цена стремится к этой линии ближе к экспирации («эффект магнита»).
+              <span className="text-cyan-300 font-bold block mb-0.5">🎯 Голубая линия — Max Pain ${gexReport.maxPain}:</span>
+              Балансный страйк экспирации, куда стремится цена при отсутствии внешних шоков.
             </div>
             <div className="p-2 rounded-lg bg-[#121624] border border-gray-800/80">
-              <span className="text-amber-300 font-bold block mb-0.5">🟡 Желтая линия — Спот цена (${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}):</span>
-              Текущее положение цены относительно стен и магнита.
+              <span className="text-amber-300 font-bold block mb-0.5">🟡 Перекрестие Spot (${typeof currentPrice === "number" ? currentPrice.toFixed(1) : currentPrice}):</span>
+              Горизонтальная и вертикальная пунктирные линии показывают точное положение цены и текущий объем гаммы на споте.
             </div>
           </div>
-        </div>
+        </details>
       </div>
     </div>
   );

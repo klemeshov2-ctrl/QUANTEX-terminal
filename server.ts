@@ -3990,6 +3990,73 @@ app.post("/api/gex/migration-log", async (req, res) => {
   }
 });
 
+// 1.4.1 Telegram Alert Endpoint for GEX Breakouts (Zero-Flip / Call Wall / Put Wall / Divergence)
+app.post("/api/gex/telegram-alert", async (req, res) => {
+  try {
+    const {
+      asset = "XAUUSD",
+      eventType = "GEX_BREAKOUT",
+      spotPrice,
+      callWall,
+      putWall,
+      gammaFlip,
+      netGexTotal,
+      atrBuffer,
+      divergenceStatus,
+      customMessage
+    } = req.body || {};
+
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+
+    const textMessage =
+      customMessage ||
+      `🚨 <b>GEX QUANT ALERT: ${asset}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `📌 <b>Событие:</b> ${eventType}\n` +
+      `💵 <b>Spot Цена:</b> $${Number(spotPrice || 0).toFixed(2)}\n` +
+      `⚖️ <b>Zero-Flip:</b> $${gammaFlip} | <b>Net GEX:</b> ${Number(netGexTotal) >= 0 ? "+" : ""}${Number(netGexTotal || 0).toFixed(1)}M\n` +
+      `🧱 <b>Call Wall:</b> $${callWall} | <b>Put Wall:</b> $${putWall}\n` +
+      `📐 <b>Динамический буфер ATR:</b> ±$${Number(atrBuffer || 0).toFixed(2)}\n` +
+      (divergenceStatus ? `📊 <b>Дивергенция:</b> ${divergenceStatus}\n` : "") +
+      `🕒 <b>Время UTC:</b> ${new Date().toISOString().replace("T", " ").slice(0, 19)}`;
+
+    if (botToken && chatId) {
+      const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: textMessage,
+          parse_mode: "HTML",
+          disable_web_page_preview: true
+        })
+      });
+      const tgData = await tgRes.json().catch(() => ({}));
+      if (tgRes.ok && tgData.ok) {
+        return res.json({
+          success: true,
+          deliveredToTelegram: true,
+          message: "Оповещение по уровням GEX успешно доставлено в Telegram!"
+        });
+      }
+      return res.json({
+        success: true,
+        deliveredToTelegram: false,
+        message: `Событие GEX зафиксировано в терминале (Telegram API: ${tgData.description || "проверьте TELEGRAM_CHAT_ID"})`
+      });
+    }
+
+    return res.json({
+      success: true,
+      deliveredToTelegram: false,
+      message: "Алерт GEX активирован и записан в журнал терминала (для отправки в мессенджер укажите TELEGRAM_BOT_TOKEN в .env)"
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 1.5 Full QUANTEX Premium v8 Pine Script v6 Code Reader & Writer
 app.get("/api/indicator/st-premium-code", (req, res) => {
   try {

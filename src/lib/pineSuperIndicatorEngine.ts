@@ -117,28 +117,39 @@ export function auditSingleGexLevel(
   const filtered = windowSec > 0 ? candles.filter((c) => c.time >= latestTime - windowSec) : candles;
   const activeCandles = filtered.length >= 6 ? filtered : candles;
 
-  const avgRange =
-    activeCandles.reduce((acc, c) => acc + Math.max(0.0001, c.high - c.low), 0) /
-    Math.max(1, activeCandles.length);
+  // True 14-period ATR calculation (accounting for high-low and inter-candle gaps)
+  const atrSlice = activeCandles.slice(-Math.min(20, activeCandles.length));
+  let trSum = 0;
+  for (let idx = 0; idx < atrSlice.length; idx++) {
+    const cur = atrSlice[idx];
+    const prevClose = idx > 0 ? atrSlice[idx - 1].close : cur.open;
+    const tr = Math.max(
+      cur.high - cur.low,
+      Math.abs(cur.high - prevClose),
+      Math.abs(cur.low - prevClose),
+      0.0001
+    );
+    trSum += tr;
+  }
+  const atr14 = trSum / Math.max(1, atrSlice.length);
 
-  // Dynamic touch tolerance buffer (Tolerance Buffer) based on asset and ATR / volatility
-  // User requirement: For gold (price ~1500-6000), buffer is $3-$5 depending on volatility.
-  // E.g. touch at 4068 or 4072 counts as touch of strike 4070.
+  // Dynamic touch tolerance buffer (Tolerance Buffer) strictly bound to live ATR-14
+  // Expands automatically during strong trend / news impulses so wicks don't trigger false breakouts
   let touchTol: number;
   let breakTol: number;
 
-  if (levelPrice >= 1500 && levelPrice <= 6000) {
-    // Gold / Precious metals: dynamic buffer $2.5 - $5.0 (scaled with avgRange)
-    touchTol = Math.max(2.5, Math.min(5.0, avgRange * 0.45));
-    breakTol = touchTol * 1.35;
+  if (levelPrice >= 1500 && levelPrice <= 6500) {
+    // Gold (XAUUSD / GD): 0.55x ATR14 (dynamically scales from ~$1.8 in calm flat up to ~$10.5 in high volatility)
+    touchTol = Math.round(Math.max(1.8, Math.min(11.5, atr14 * 0.55)) * 10) / 10;
+    breakTol = Math.round(touchTol * 1.45 * 10) / 10;
   } else if (levelPrice > 10000) {
-    // BTC / High value crypto: dynamic buffer $120 - $380
-    touchTol = Math.max(120, Math.min(380, avgRange * 0.45));
-    breakTol = touchTol * 1.35;
+    // BTC / High-value indices: 0.55x ATR14
+    touchTol = Math.round(Math.max(85, Math.min(550, atr14 * 0.55)));
+    breakTol = Math.round(touchTol * 1.45);
   } else {
-    // General assets (FX, lower priced crypto): 0.10% - 0.25% or 0.45 avgRange
-    touchTol = Math.max(levelPrice * 0.0009, Math.min(levelPrice * 0.0028, avgRange * 0.45));
-    breakTol = touchTol * 1.35;
+    // General assets (FX, ETH, SOL, MOEX): 0.55x ATR14
+    touchTol = Math.round(Math.max(levelPrice * 0.0007, Math.min(levelPrice * 0.0045, atr14 * 0.55)) * 100) / 100;
+    breakTol = Math.round(touchTol * 1.45 * 100) / 100;
   }
 
   let touches = 0;
