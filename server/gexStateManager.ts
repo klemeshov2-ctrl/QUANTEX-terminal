@@ -149,36 +149,70 @@ export async function getStabilizedGexReport(
   const newCwOi = newCwStrike ? newCwStrike.callOi : 0;
   const newPwOi = newPwStrike ? newPwStrike.putOi : 0;
 
+  const spot = spotPrice || freshReport.spotPrice;
+
+  // 1. Физический пробой уровней ценой (Breach Detection):
+  // Если цена пробила Call Wall вверх (spot > currentCw + 0.5), старый уровень стал поддержкой,
+  // и Call Wall обязан мигрировать к следующему верхнему сопротивлению.
+  const isCwBreached = spot > currentCw + 0.5;
+  // Если цена пробила Put Wall вниз (spot < currentPw - 0.5), старый уровень стал сопротивлением,
+  // и Put Wall обязан мигрировать к следующей нижней поддержке.
+  const isPwBreached = spot < currentPw - 0.5;
+
+  // 2. Смена клиринговой сессии (EOD Roll):
+  const lastDateStr = new Date(cached.lastUpdatedAt).toISOString().slice(0, 10);
+  const nowDateStr = new Date(now).toISOString().slice(0, 10);
+  const isNewDaySession = nowDateStr !== lastDateStr;
+
   let stabilizedCw = currentCw;
   let stabilizedPw = currentPw;
   let stabilizedFlip = currentFlip;
   let stabilizedPain = currentPain;
 
-  // 1a. Гистерезис для Call Wall: меняется если прошел кулдаун ИЛИ новый OI > старого на 25-30%
+  // 1a. Стабилизация Call Wall (Потолок):
+  // Миграция разрешена ТОЛЬКО если:
+  // - Уровень физически пробит ценой (isCwBreached)
+  // - Наступила новая торговая сессия / клиринг (isNewDaySession)
+  // - Новый страйк накопил НА 25-30% БОЛЬШЕ открытого интереса, чем текущий (newCwOi >= cached.callWallOi * (1 + HYSTERESIS_THRESHOLD))
+  // В остальных случаях уровень удерживается железобетонно, не дергаясь за спотом!
   if (newCw !== currentCw) {
-    const oiSurge = cached.callWallOi > 0 ? (newCwOi - cached.callWallOi) / cached.callWallOi : 1.0;
-    if (isCooldownPassed || oiSurge >= HYSTERESIS_THRESHOLD) {
+    const isNewCwStronger = newCwOi >= cached.callWallOi * (1 + HYSTERESIS_THRESHOLD);
+    const shouldMigrateCw = isCwBreached || isNewDaySession || (isCooldownPassed && isNewCwStronger);
+    if (shouldMigrateCw) {
       stabilizedCw = newCw;
       cached.callWallOi = newCwOi;
       cached.lastUpdatedAt = now;
     }
   }
 
-  // 1b. Гистерезис для Put Wall: меняется если прошел кулдаун ИЛИ новый OI > старого на 25-30%
+  // 1b. Стабилизация Put Wall (Пол):
   if (newPw !== currentPw) {
-    const oiSurge = cached.putWallOi > 0 ? (newPwOi - cached.putWallOi) / cached.putWallOi : 1.0;
-    if (isCooldownPassed || oiSurge >= HYSTERESIS_THRESHOLD) {
+    const isNewPwStronger = newPwOi >= cached.putWallOi * (1 + HYSTERESIS_THRESHOLD);
+    const shouldMigratePw = isPwBreached || isNewDaySession || (isCooldownPassed && isNewPwStronger);
+    if (shouldMigratePw) {
       stabilizedPw = newPw;
       cached.putWallOi = newPwOi;
       cached.lastUpdatedAt = now;
     }
   }
 
-  // 1c. Гистерезис для Zero Flip и Max Pain (смена только если прошел кулдаун или сдвиг > 1.5 ATR)
-  if (isCooldownPassed) {
-    stabilizedFlip = newFlip;
-    stabilizedPain = newPain;
-    cached.lastUpdatedAt = now;
+  // 1c. Стабилизация Zero Flip и Max Pain (Магнит):
+  if (newFlip !== currentFlip) {
+    const flipShiftPts = Math.abs(newFlip - currentFlip);
+    const isSignificantFlipShift = flipShiftPts >= 20 || Math.abs(spot - currentFlip) > 30;
+    if (isNewDaySession || (isCooldownPassed && isSignificantFlipShift)) {
+      stabilizedFlip = newFlip;
+      cached.lastUpdatedAt = now;
+    }
+  }
+
+  if (newPain !== currentPain) {
+    const painShiftPts = Math.abs(newPain - currentPain);
+    const isSignificantPainShift = painShiftPts >= 20;
+    if (isNewDaySession || (isCooldownPassed && isSignificantPainShift)) {
+      stabilizedPain = newPain;
+      cached.lastUpdatedAt = now;
+    }
   }
 
   // Формируем результирующий отчет: обновляем живой спот, греки, страйки и дельту,

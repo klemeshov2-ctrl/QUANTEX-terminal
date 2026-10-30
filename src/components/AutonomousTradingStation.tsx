@@ -3576,9 +3576,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
 
     try {
-      rsi6Series.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "90,0" });
-      rsi6Series.createPriceLine({ price: 50, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "50,0" });
-      rsi6Series.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.15)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "10,0" });
+      rsi6Series.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.18)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      rsi6Series.createPriceLine({ price: 50, color: "rgba(255, 255, 255, 0.18)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      rsi6Series.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.12)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
     } catch {}
 
     rsiChartInstanceRef.current = rsiChart;
@@ -3718,9 +3718,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     });
 
     try {
-      kSeries.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "90,0" });
-      kSeries.createPriceLine({ price: 40, color: "rgba(255, 255, 255, 0.25)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "40,0" });
-      kSeries.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.15)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "10,0" });
+      kSeries.createPriceLine({ price: 90, color: "rgba(255, 255, 255, 0.18)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      kSeries.createPriceLine({ price: 40, color: "rgba(255, 255, 255, 0.18)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
+      kSeries.createPriceLine({ price: 10, color: "rgba(255, 255, 255, 0.12)", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false });
     } catch {}
 
     stochChartInstanceRef.current = stochChart;
@@ -4760,6 +4760,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       : null;
 
     if (useGex && effectiveGex) {
+      const effHorizon = (effectiveGex as any).horizon || gexHorizon || "DAY";
+      const effExpiry = getExpirySuffix(effHorizon);
+      const spot = lastCandle?.close || (effectiveGex as any).spotPrice || 4000;
+      const cwInfo = getLevelRole("CALL_WALL", effectiveGex.callWall, spot, effHorizon);
+      const pwInfo = getLevelRole("PUT_WALL", effectiveGex.putWall, spot, effHorizon);
+      const flipInfo = getLevelRole("GAMMA_FLIP", effectiveGex.gammaFlip, spot, effHorizon);
+      const painInfo = getLevelRole("MAX_PAIN", effectiveGex.maxPain, spot, effHorizon);
+
       if (showGexWalls) {
         boundedLines.push({
           id: "cw_line",
@@ -4771,7 +4779,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#10b981",
           lineWidth: 1,
           lineStyle: "solid",
-          label: `🏰 Потолок CW: ${effectiveGex.callWall}`,
+          label: (effectiveGex as any).cwLabel ? `🏰 ${(effectiveGex as any).cwLabel}` : `🏰 ${cwInfo.fullName}${cwInfo.isBroken ? ` [${cwInfo.role}]` : ""}`,
           labelBg: "rgba(6, 24, 16, 0.98)",
           labelBorderColor: "#34d399",
           labelTextColor: "#d1fae5"
@@ -4787,7 +4795,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#ef4444",
           lineWidth: 1,
           lineStyle: "solid",
-          label: `🛡️ Поддержка PW: ${effectiveGex.putWall}`,
+          label: (effectiveGex as any).pwLabel ? `🛡️ ${(effectiveGex as any).pwLabel}` : `🛡️ ${pwInfo.fullName}${pwInfo.isBroken ? ` [${pwInfo.role}]` : ""}`,
           labelBg: "rgba(30, 9, 13, 0.98)",
           labelBorderColor: "#f87171",
           labelTextColor: "#fecdd3"
@@ -4805,7 +4813,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#a855f7",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: `⚡ Граница Гаммы: ${effectiveGex.gammaFlip}`,
+          label: (effectiveGex as any).flipLabel ? `⚡ ${(effectiveGex as any).flipLabel}` : `⚡ ${flipInfo.fullName}`,
           labelBg: "rgba(22, 10, 36, 0.98)",
           labelBorderColor: "#c084fc",
           labelTextColor: "#f3e8ff"
@@ -4823,7 +4831,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#06b6d4",
           lineWidth: 1,
           lineStyle: "dotted",
-          label: `🎯 Магнит дня: ${effectiveGex.maxPain}`,
+          label: (effectiveGex as any).painLabel ? `🎯 ${(effectiveGex as any).painLabel}` : `🎯 ${painInfo.fullName}`,
           labelBg: "rgba(8, 22, 28, 0.98)",
           labelBorderColor: "#22d3ee",
           labelTextColor: "#cffafe"
@@ -6989,7 +6997,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           style={{ color: indicatorOutput?.hud.dayTargetCol || "#10b981" }}
                         >
                           {indicatorOutput?.hud.dayTargetStr ||
-                            `🏰 Потолок ${dayGexReport?.callWall || gexReport?.callWall || 4200} | 🎯 Магнит ${dayGexReport?.maxPain || gexReport?.maxPain || 4150} | 🛡️ ${dayGexReport?.putWall || gexReport?.putWall || 4100}`}
+                            `🏰 Потолок (${getExpirySuffix(gexReport?.horizon || gexHorizon)}) ${gexReport?.callWall || 4200} | 🎯 Магнит (${getExpirySuffix(gexReport?.horizon || gexHorizon)}) ${gexReport?.maxPain || 4150} | 🛡️ Пол (${getExpirySuffix(gexReport?.horizon || gexHorizon)}) ${gexReport?.putWall || 4100}`}
                         </span>
                       </div>
 
@@ -7453,8 +7461,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
                   {/* Card 4: Флип (Flip) & Магнит */}
                   {(() => {
-                    const flipRoleInfo = getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, gexReport.spotPrice, gexReport.horizon);
-                    const painRoleInfo = getLevelRole("MAX_PAIN", gexReport.maxPain, gexReport.spotPrice, "MONTH");
+                    const flipRoleInfo = getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, gexReport.spotPrice, gexReport.horizon || gexHorizon);
+                    const painRoleInfo = getLevelRole("MAX_PAIN", gexReport.maxPain, gexReport.spotPrice, gexReport.horizon || gexHorizon);
+                    const expSuffix = getExpirySuffix(gexReport.horizon || gexHorizon);
                     return (
                       <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
                         <div className="space-y-1">
@@ -7463,7 +7472,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                               ⚡ {flipRoleInfo.baseName} &amp; {painRoleInfo.baseName}
                             </span>
                             <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                              Магнит: ${gexReport.maxPain}
+                              Магнит ({expSuffix}): ${gexReport.maxPain}
                             </span>
                           </div>
                           <div className="flex items-baseline justify-between">

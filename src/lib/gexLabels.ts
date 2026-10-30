@@ -102,7 +102,10 @@ export function getLevelRole(
   }
 
   const priceStr = levelPrice >= 1000 ? levelPrice.toFixed(1) : levelPrice.toFixed(2);
-  const fullName = `${baseName.replace(/\)$/, `, ${expiry}`)}): ${priceStr}`;
+  const titleWithExpiry = baseName.includes("(")
+    ? baseName.replace(/\)$/, `, ${expiry})`)
+    : `${baseName} (${expiry})`;
+  const fullName = `${titleWithExpiry}: ${priceStr}`;
 
   return {
     baseName,
@@ -149,13 +152,16 @@ export function formatGexLevelLabel(
   const base = getBaseLevelName(type);
   const exp = getExpirySuffix(horizon);
   const pStr = price >= 1000 ? price.toFixed(1) : price.toFixed(2);
+  const titleWithExpiry = base.includes("(")
+    ? base.replace(/\)$/, `, ${exp})`)
+    : `${base} (${exp})`;
 
   if (typeof spotPrice === "number" && spotPrice > 0) {
     const roleInfo = getLevelRole(type, price, spotPrice, horizon);
     if (roleInfo.isBroken) {
-      return `${base.replace(/\)$/, `, ${exp}`)}): ${pStr} [${roleInfo.role}]`;
+      return `${titleWithExpiry}: ${pStr} [${roleInfo.role}]`;
     }
   }
 
-  return `${base.replace(/\)$/, `, ${exp}`)}): ${pStr}`;
+  return `${titleWithExpiry}: ${pStr}`;
 }

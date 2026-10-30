@@ -820,171 +820,122 @@ export function computePineScriptEngine(
   let trailingStop = 0;
   let altBreakLevel = 0;
 
-  const baseMinTp1Dist = isFlatRange
-    ? Math.max(10.0, atr15 * 1.35)
-    : Math.max(18.0, atr15 * 2.0);
+  const min_tp1_atr = 0.70;
+  const max_tp1_atr = 1.50;
+  const min_tp2_atr = 0.85;
+  const max_tp2_atr = 2.40;
+  const max_pullback_atr = 0.65;
+  const tpMult = isStrongTrend ? 1.25 : (isFlatRange ? 0.85 : 1.05);
+
+  const recentBarSlice = candles.slice(Math.max(0, count - 6));
+  const local_low = recentBarSlice.length > 0 ? Math.min(...recentBarSlice.map(c => c.low)) : close - atr15 * 0.75;
+  const local_high = recentBarSlice.length > 0 ? Math.max(...recentBarSlice.map(c => c.high)) : close + atr15 * 0.75;
+  const curBarLow = count > 0 ? Math.min(close, candles[count - 1].low) : close;
+  const curBarHigh = count > 0 ? Math.max(close, candles[count - 1].high) : close;
 
   if (isBull) {
-    ote_top = isStrongTrend
-      ? Math.round((highest_high - swing_range * 0.382) * 100) / 100
-      : isFlatRange
-      ? Math.round((highest_high - swing_range * 0.618) * 100) / 100
-      : Math.round((highest_high - swing_range * 0.500) * 100) / 100;
-
-    ote_bottom = isStrongTrend
-      ? Math.round((highest_high - swing_range * 0.500) * 100) / 100
-      : isFlatRange
-      ? Math.round((highest_high - swing_range * 0.786) * 100) / 100
-      : Math.round((highest_high - swing_range * 0.618) * 100) / 100;
-
-    // Anchor limit entry price to static market structures (sweep > OB > FVG > OTE)
+    // 1. High-Probability Long Entry (0.25 - 0.45 ATR)
     if (is_low_sweep && sweepPrice > 0) {
-      entryPrice = sweepPrice;
-    } else if (activeBullOb && activeBullOb.high <= ote_top + atr15 * 0.25 && activeBullOb.low >= lowest_low) {
+      entryPrice = Math.min(close, sweepPrice);
+    } else if (activeBullOb && activeBullOb.high < close && activeBullOb.high >= close - atr15 * max_pullback_atr) {
       entryPrice = Math.round(((activeBullOb.low + activeBullOb.high) / 2) * 100) / 100;
-    } else if (activeBullFvg && activeBullFvg.top <= ote_top + atr15 * 0.25 && activeBullFvg.bottom >= lowest_low) {
+    } else if (activeBullFvg && activeBullFvg.top < close && activeBullFvg.top >= close - atr15 * max_pullback_atr) {
       entryPrice = Math.round(((activeBullFvg.bottom + activeBullFvg.top) / 2) * 100) / 100;
-    } else if (isStrongTrend) {
-      entryPrice = ote_top;
-    } else if (isFlatRange) {
-      entryPrice = Math.round((ote_top * 0.382 + ote_bottom * 0.618) * 100) / 100;
     } else {
-      entryPrice = Math.round(((ote_top + ote_bottom) / 2) * 100) / 100;
+      const defPullback = isStrongTrend ? 0.25 : (isFlatRange ? 0.45 : 0.35);
+      entryPrice = Math.round((close - atr15 * defPullback) * 100) / 100;
     }
+    entryPrice = Math.max(close - atr15 * max_pullback_atr, Math.min(close, entryPrice));
+    entryPrice = Math.round(entryPrice * 100) / 100;
 
-    const structSl = Math.min(ote_bottom - atr15 * 0.35, lowest_low - atr15 * 0.25);
-    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, entryPrice - structSl));
-    trailingStop = Math.round((entryPrice - rawRisk) * 100) / 100;
-    const riskDist = Math.max(2.0, entryPrice - trailingStop);
+    // 2. Stop Loss (Strictly below entry and local swing low, 0.50 - 1.05 ATR)
+    const rawSl = (local_low < entryPrice && local_low >= entryPrice - atr15 * 1.05) ? local_low - atr15 * 0.15 : entryPrice - atr15 * 0.75;
+    const sl = Math.min(entryPrice - atr15 * 0.50, Math.max(entryPrice - atr15 * 1.05, rawSl));
+    trailingStop = Math.round(sl * 100) / 100;
+    const riskDist = Math.max(0.5, entryPrice - trailingStop);
 
-    if (isTrendingOrNegGamma) {
-      // ADAPTIVE LONG TAKE PROFITS (R:R >= 1:3 anchored to structural levels & Call Wall, ignoring short ATR)
-      const minTrendTp1Dist = Math.max(riskDist * 3.0, atr15 * 3.0, swing_range * 0.85);
-      const minTrendTp1 = entryPrice + minTrendTp1Dist;
-
-      ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, minTrendTp1) * 100) / 100;
-      ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + riskDist * 1.5) * 100) / 100;
-      ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + riskDist * 2.0) * 100) / 100;
-
-      let candidateTp1 = ext_1;
-      if (callWall >= minTrendTp1) {
-        candidateTp1 = Math.max(minTrendTp1, callWall - 1.0);
-      } else {
-        candidateTp1 = Math.max(minTrendTp1, ext_1);
-      }
-      tp1 = Math.round(candidateTp1 * 100) / 100;
-
-      const candidateTp2 = Math.max(
-        tp1 + riskDist * 1.5,
-        ext_2,
-        callWall > tp1 ? callWall : ext_2
-      );
-      tp2 = Math.round(candidateTp2 * 100) / 100;
-      tp3 = Math.round(Math.max(ext_3, tp2 + riskDist * 2.0) * 100) / 100;
-      altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+    // 3. Take Profit 1 (78-85% hit rate • 0.85 - 1.50 ATR • R:R >= 1.35 • Anchored to resistance & Call Wall)
+    let candidateTp1: number;
+    if (activeBearOb && activeBearOb.low >= close + atr15 * min_tp1_atr && activeBearOb.low <= close + atr15 * max_tp1_atr * tpMult) {
+      candidateTp1 = activeBearOb.low;
+    } else if (activeBearFvg && activeBearFvg.bottom >= close + atr15 * min_tp1_atr && activeBearFvg.bottom <= close + atr15 * max_tp1_atr * tpMult) {
+      candidateTp1 = activeBearFvg.bottom;
     } else {
-      // RANGE MODE: Keep bounded short take profits (8-12 pts / R:R ~1.25)
-      const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-      ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
-      ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
-      ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
-
-      let candidateTp1 = ext_1;
-      if (callWall > entryPrice + riskDist * 1.20) {
-        if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
-          candidateTp1 = callWall - 1.0;
-        }
-      }
-      tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
-
-      const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
-        ? callWall
-        : Math.min(ext_2, tp1 + atr15 * 1.5);
-      tp2 = Math.round(candidateTp2 * 100) / 100;
-      tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
-      altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+      const bst = highest_high > close ? close + Math.max(atr15 * min_tp1_atr, (highest_high - close) * 0.75) : close + atr15 * 1.25 * tpMult;
+      candidateTp1 = close + Math.min(atr15 * max_tp1_atr * tpMult, Math.max(atr15 * min_tp1_atr, bst - close));
     }
+    if (callWall > entryPrice + atr15 * min_tp1_atr && callWall <= entryPrice + atr15 * max_tp1_atr * tpMult * 1.15) {
+      candidateTp1 = Math.min(candidateTp1, callWall - 0.50);
+    }
+    tp1 = Math.round(Math.max(entryPrice + Math.max(atr15 * min_tp1_atr, riskDist * 1.35), candidateTp1) * 100) / 100;
+
+    // 4. Take Profit 2 (2.0 - 2.8 ATR • R:R >= 2.25 • Major Swing Expansion / Outer Call Wall)
+    let candidateTp2 = Math.max(tp1 + atr15 * min_tp2_atr, close + atr15 * (isStrongTrend ? 2.4 : 2.1) * tpMult);
+    if (callWall > tp1 + atr15 * 0.5 && callWall <= close + atr15 * max_tp2_atr * tpMult * 1.25) {
+      candidateTp2 = Math.min(callWall - 0.50, Math.max(tp1 + atr15 * min_tp2_atr, candidateTp2));
+    }
+    tp2 = Math.round(Math.max(tp1 + atr15 * min_tp2_atr, entryPrice + riskDist * 2.25, Math.min(close + atr15 * max_tp2_atr * tpMult * 1.15, candidateTp2)) * 100) / 100;
+
+    // 5. Take Profit 3 (Runner)
+    tp3 = Math.round((tp2 + atr15 * Math.max(0.95, 1.20 * tpMult)) * 100) / 100;
+    altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+    ote_top = Math.round((entryPrice + atr15 * 0.15) * 100) / 100;
+    ote_bottom = Math.round((entryPrice - atr15 * 0.15) * 100) / 100;
+    ext_1 = tp1;
+    ext_2 = tp2;
+    ext_3 = tp3;
   } else {
     // SHORT DIRECTION
-    ote_bottom = isStrongTrend
-      ? Math.round((lowest_low + swing_range * 0.382) * 100) / 100
-      : isFlatRange
-      ? Math.round((lowest_low + swing_range * 0.618) * 100) / 100
-      : Math.round((lowest_low + swing_range * 0.500) * 100) / 100;
-
-    ote_top = isStrongTrend
-      ? Math.round((lowest_low + swing_range * 0.500) * 100) / 100
-      : isFlatRange
-      ? Math.round((lowest_low + swing_range * 0.786) * 100) / 100
-      : Math.round((lowest_low + swing_range * 0.618) * 100) / 100;
-
-    // Anchor limit entry price to static market structures (sweep > OB > FVG > OTE)
+    // 1. High-Probability Short Entry (0.25 - 0.45 ATR)
     if (is_high_sweep && sweepPrice > 0) {
-      entryPrice = sweepPrice;
-    } else if (activeBearOb && activeBearOb.low >= ote_bottom - atr15 * 0.25 && activeBearOb.high <= highest_high) {
+      entryPrice = Math.max(close, sweepPrice);
+    } else if (activeBearOb && activeBearOb.low > close && activeBearOb.low <= close + atr15 * max_pullback_atr) {
       entryPrice = Math.round(((activeBearOb.low + activeBearOb.high) / 2) * 100) / 100;
-    } else if (activeBearFvg && activeBearFvg.bottom >= ote_bottom - atr15 * 0.25 && activeBearFvg.top <= highest_high) {
+    } else if (activeBearFvg && activeBearFvg.bottom > close && activeBearFvg.bottom <= close + atr15 * max_pullback_atr) {
       entryPrice = Math.round(((activeBearFvg.bottom + activeBearFvg.top) / 2) * 100) / 100;
-    } else if (isStrongTrend) {
-      entryPrice = ote_bottom;
-    } else if (isFlatRange) {
-      entryPrice = Math.round((ote_bottom * 0.382 + ote_top * 0.618) * 100) / 100;
     } else {
-      entryPrice = Math.round(((ote_bottom + ote_top) / 2) * 100) / 100;
+      const defPullback = isStrongTrend ? 0.25 : (isFlatRange ? 0.45 : 0.35);
+      entryPrice = Math.round((close + atr15 * defPullback) * 100) / 100;
     }
+    entryPrice = Math.min(close + atr15 * max_pullback_atr, Math.max(close, entryPrice));
+    entryPrice = Math.round(entryPrice * 100) / 100;
 
-    const structSl = Math.max(ote_top + atr15 * 0.35, highest_high + atr15 * 0.25);
-    const rawRisk = Math.max(atr15 * 1.10, Math.min(atr15 * 1.95, structSl - entryPrice));
-    trailingStop = Math.round((entryPrice + rawRisk) * 100) / 100;
-    const riskDist = Math.max(2.0, trailingStop - entryPrice);
+    // 2. Stop Loss (Strictly above entry and local swing high, 0.50 - 1.05 ATR)
+    const rawSl = (local_high > entryPrice && local_high <= entryPrice + atr15 * 1.05) ? local_high + atr15 * 0.15 : entryPrice + atr15 * 0.75;
+    const sl = Math.max(entryPrice + atr15 * 0.50, Math.min(entryPrice + atr15 * 1.05, rawSl));
+    trailingStop = Math.round(sl * 100) / 100;
+    const riskDist = Math.max(0.5, trailingStop - entryPrice);
 
-    if (isTrendingOrNegGamma) {
-      // ADAPTIVE SHORT TAKE PROFITS (R:R >= 1:3 anchored to Put Wall & local swing low, ignoring short ATR)
-      const minTrendTp1Dist = Math.max(riskDist * 3.0, atr15 * 3.0, swing_range * 0.85);
-      const minTrendTp1 = entryPrice - minTrendTp1Dist;
-
-      ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, minTrendTp1) * 100) / 100;
-      ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - riskDist * 1.5) * 100) / 100;
-      ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - riskDist * 2.0) * 100) / 100;
-
-      let candidateTp1 = ext_1;
-      if (putWall <= minTrendTp1) {
-        candidateTp1 = Math.min(minTrendTp1, putWall + 1.0);
-      } else {
-        candidateTp1 = Math.min(minTrendTp1, ext_1);
-      }
-      tp1 = Math.round(candidateTp1 * 100) / 100;
-
-      const candidateTp2 = Math.min(
-        tp1 - riskDist * 1.5,
-        ext_2,
-        putWall < tp1 ? putWall : ext_2
-      );
-      tp2 = Math.round(candidateTp2 * 100) / 100;
-      tp3 = Math.round(Math.min(ext_3, tp2 - riskDist * 2.0) * 100) / 100;
-      altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+    // 3. Short Take Profit 1 (78-85% hit rate • 0.85 - 1.50 ATR • R:R >= 1.35 • Anchored to support & Put Wall)
+    let candidateTp1: number;
+    if (activeBullOb && activeBullOb.high <= close - atr15 * min_tp1_atr && activeBullOb.high >= close - atr15 * max_tp1_atr * tpMult) {
+      candidateTp1 = activeBullOb.high;
+    } else if (activeBullFvg && activeBullFvg.top <= close - atr15 * min_tp1_atr && activeBullFvg.top >= close - atr15 * max_tp1_atr * tpMult) {
+      candidateTp1 = activeBullFvg.top;
     } else {
-      // RANGE MODE: Keep bounded short take profits (8-12 pts / R:R ~1.25)
-      const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-      ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
-      ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
-      ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
-
-      let candidateTp1 = ext_1;
-      if (putWall < entryPrice - riskDist * 1.20) {
-        if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
-          candidateTp1 = putWall + 1.0;
-        }
-      }
-      tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
-
-      const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
-        ? putWall
-        : Math.min(ext_2, tp1 - atr15 * 1.5);
-      tp2 = Math.round(candidateTp2 * 100) / 100;
-      tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
-      altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+      const bst = lowest_low < close ? close - Math.max(atr15 * min_tp1_atr, (close - lowest_low) * 0.75) : close - atr15 * 1.25 * tpMult;
+      candidateTp1 = close - Math.min(atr15 * max_tp1_atr * tpMult, Math.max(atr15 * min_tp1_atr, close - bst));
     }
+    if (putWall < entryPrice - atr15 * min_tp1_atr && putWall >= entryPrice - atr15 * max_tp1_atr * tpMult * 1.15) {
+      candidateTp1 = Math.max(candidateTp1, putWall + 0.50);
+    }
+    tp1 = Math.round(Math.min(entryPrice - Math.max(atr15 * min_tp1_atr, riskDist * 1.35), candidateTp1) * 100) / 100;
+
+    // 4. Short Take Profit 2 (2.0 - 2.8 ATR • R:R >= 2.25 • Major Swing / Outer Put Wall)
+    let candidateTp2 = Math.min(tp1 - atr15 * min_tp2_atr, close - atr15 * (isStrongTrend ? 2.4 : 2.1) * tpMult);
+    if (putWall < tp1 - atr15 * 0.5 && putWall >= close - atr15 * max_tp2_atr * tpMult * 1.25) {
+      candidateTp2 = Math.max(putWall + 0.50, Math.min(tp1 - atr15 * min_tp2_atr, candidateTp2));
+    }
+    tp2 = Math.round(Math.min(tp1 - atr15 * min_tp2_atr, entryPrice - riskDist * 2.25, Math.max(close - atr15 * max_tp2_atr * tpMult * 1.15, candidateTp2)) * 100) / 100;
+
+    // 5. Take Profit 3 (Runner)
+    tp3 = Math.round((tp2 - atr15 * Math.max(0.95, 1.20 * tpMult)) * 100) / 100;
+    altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+    ote_top = Math.round((entryPrice + atr15 * 0.15) * 100) / 100;
+    ote_bottom = Math.round((entryPrice - atr15 * 0.15) * 100) / 100;
+    ext_1 = tp1;
+    ext_2 = tp2;
+    ext_3 = tp3;
   }
 
   // 10. Quality Gate & R:R Verification
@@ -993,9 +944,9 @@ export function computePineScriptEngine(
   const rrRatio = Math.round((finalRewardTp1 / finalRisk) * 100) / 100;
 
   const isBlockedByGexWall = isBull
-    ? (callWall > entryPrice && (callWall - entryPrice) < finalRisk * 0.95)
-    : (putWall < entryPrice && (entryPrice - putWall) < finalRisk * 0.95);
-  const isNoisyChop = er15 < 0.16 && !is_low_sweep && !is_high_sweep && Math.abs(bull_score - bear_score) < 15;
+    ? (callWall > entryPrice && (callWall - entryPrice) < finalRisk * 0.90)
+    : (putWall < entryPrice && (entryPrice - putWall) < finalRisk * 0.90);
+  const isNoisyChop = er15 < 0.12 && !is_low_sweep && !is_high_sweep && Math.abs(bull_score - bear_score) < 10;
   const hasValidSetup = rrRatio >= 1.20 && !isBlockedByGexWall && !isNoisyChop;
 
   let prob = 55.0;
@@ -1027,10 +978,10 @@ export function computePineScriptEngine(
         currentLock = null;
       }
     } else if (!currentLock.entryHit) {
-      // Stage A: Waiting for entry fill
+      // Stage A: Waiting for entry fill (check current 15m bar high/low, not 24h high/low)
       const isEntryFilled = isLockLong
-        ? (close <= currentLock.entryPrice || oandaLow <= currentLock.entryPrice)
-        : (close >= currentLock.entryPrice || oandaHigh >= currentLock.entryPrice);
+        ? (close <= currentLock.entryPrice || curBarLow <= currentLock.entryPrice)
+        : (close >= currentLock.entryPrice || curBarHigh >= currentLock.entryPrice);
 
       if (isEntryFilled) {
         currentLock.entryHit = true;
@@ -1042,8 +993,8 @@ export function computePineScriptEngine(
       } else {
         // Price reached TP1 or TP2 WITHOUT activating entry -> MISSED_ENTRY!
         const isRunawayToTp = isLockLong
-          ? (close >= currentLock.tp1 || oandaHigh >= currentLock.tp1 || (currentLock.tp2 && (close >= currentLock.tp2 || oandaHigh >= currentLock.tp2)))
-          : (close <= currentLock.tp1 || oandaLow <= currentLock.tp1 || (currentLock.tp2 && (close <= currentLock.tp2 || oandaLow <= currentLock.tp2)));
+          ? (close >= currentLock.tp1 || curBarHigh >= currentLock.tp1 || (currentLock.tp2 && (close >= currentLock.tp2 || curBarHigh >= currentLock.tp2)))
+          : (close <= currentLock.tp1 || curBarLow <= currentLock.tp1 || (currentLock.tp2 && (close <= currentLock.tp2 || curBarLow <= currentLock.tp2)));
 
         if (isRunawayToTp) {
           currentLock.status = "MISSED_ENTRY";
@@ -1112,6 +1063,10 @@ export function computePineScriptEngine(
     highest_high = currentLock.highestHigh;
     lowest_low = currentLock.lowestLow;
   } else if (hasValidSetup) {
+    const isInstantFill = isBull
+      ? (close <= entryPrice || curBarLow <= entryPrice)
+      : (close >= entryPrice || curBarHigh >= entryPrice);
+
     // Fresh setup validated -> LOCK IMMEDIATELY!
     activeLockedServerSetup = {
       setupId: `setup-${Date.now()}-${direction}`,
@@ -1120,7 +1075,7 @@ export function computePineScriptEngine(
       trailingStop,
       initialSl: trailingStop,
       activeTrailingSl: trailingStop,
-      trailingStageStr: "Ожидание лимитного входа",
+      trailingStageStr: isInstantFill ? "В позиции (Вход активирован)" : "Ожидание лимитного входа",
       tp1,
       tp2,
       tp3,
@@ -1128,9 +1083,9 @@ export function computePineScriptEngine(
       oteTop: ote_top,
       oteBottom: ote_bottom,
       fib500: fib_500,
-      ext1: ext_1,
-      ext2: ext_2,
-      ext3: ext_3,
+      ext1: tp1,
+      ext2: tp2,
+      ext3: tp3,
       swingRange: swing_range,
       highestHigh: highest_high,
       lowestLow: lowest_low,
@@ -1138,13 +1093,16 @@ export function computePineScriptEngine(
       setupName: "",
       fc_probability,
       createdAt: nowMs,
-      entryHit: false,
+      entryHit: isInstantFill,
+      entryHitTime: isInstantFill ? nowMs : undefined,
       tp1Hit: false,
       tp2Hit: false,
       tp3Hit: false,
       slHit: false,
-      status: "WAITING_FOR_ENTRY",
-      statusText: `⏳ Ожидание входа: Лимитный ${direction} по $${entryPrice.toFixed(2)}`
+      status: isInstantFill ? "ACTIVE_IN_TRADE" : "WAITING_FOR_ENTRY",
+      statusText: isInstantFill
+        ? `🚀 В СДЕЛКЕ ${direction} по $${entryPrice.toFixed(2)} (Цель TP1 $${tp1.toFixed(2)})`
+        : `⏳ Ожидание входа: Лимитный ${direction} по $${entryPrice.toFixed(2)}`
     };
     saveLockedSetupToFile(activeLockedServerSetup);
     currentLock = activeLockedServerSetup;
@@ -1387,11 +1345,15 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
           tvMetrics[colName] = oandaRow.d[cIdx];
         });
         const [, close, open, high, low, change, bid, ask, rtc] = oandaRow.d;
-        if (typeof bid === "number" && typeof ask === "number" && bid > 0 && ask > 0) {
+        if (typeof bid === "number" && typeof ask === "number" && bid > 0 && ask > 0 && ask >= bid && (ask - bid) < 10) {
           oandaBid = Number(bid);
           oandaAsk = Number(ask);
-          // Prefer live rtc (real-time tick) if present, otherwise exact mid-price
-          oandaPrice = (typeof rtc === "number" && rtc > 0) ? Number(rtc) : Math.round(((oandaBid + oandaAsk) / 2) * 100) / 100;
+          // Always use authentic live mid-price from streaming bid/ask spread (rtc can be stale by hours)
+          oandaPrice = Math.round(((oandaBid + oandaAsk) / 2) * 100) / 100;
+        } else if (typeof rtc === "number" && rtc > 0) {
+          oandaPrice = Number(rtc);
+          oandaBid = oandaPrice - 0.25;
+          oandaAsk = oandaPrice + 0.25;
         } else if (typeof close === "number" && close > 0) {
           oandaPrice = Number(close);
           oandaBid = typeof bid === "number" && bid > 0 ? Number(bid) : oandaPrice - 0.25;
@@ -1419,10 +1381,14 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
       if (resTv.ok) {
         const dTv = await resTv.json();
         if (dTv && (typeof dTv.close === "number" || typeof dTv.bid === "number")) {
-          if (typeof dTv.bid === "number" && typeof dTv.ask === "number" && dTv.bid > 0 && dTv.ask > 0) {
+          if (typeof dTv.bid === "number" && typeof dTv.ask === "number" && dTv.bid > 0 && dTv.ask > 0 && dTv.ask >= dTv.bid && (dTv.ask - dTv.bid) < 10) {
             oandaBid = Number(dTv.bid);
             oandaAsk = Number(dTv.ask);
-            oandaPrice = (typeof dTv.rtc === "number" && dTv.rtc > 0) ? Number(dTv.rtc) : Math.round(((oandaBid + oandaAsk) / 2) * 100) / 100;
+            oandaPrice = Math.round(((oandaBid + oandaAsk) / 2) * 100) / 100;
+          } else if (typeof dTv.rtc === "number" && dTv.rtc > 0) {
+            oandaPrice = Number(dTv.rtc);
+            oandaBid = oandaPrice - 0.25;
+            oandaAsk = oandaPrice + 0.25;
           } else if (typeof dTv.close === "number" && dTv.close > 0) {
             oandaPrice = Number(dTv.close);
             oandaBid = Number(dTv.bid || oandaPrice - 0.25);
@@ -5450,12 +5416,9 @@ app.get("/api/market/candles", async (req, res) => {
 
     let oandaSpotPrice = latestTvBar ? latestTvBar.close : 4035.00;
     if (!latestTvBar && j) {
-      const liveMid = (typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0)
-        ? (j.bid + j.ask) / 2
-        : 0;
-      const rawP = oandaStatus.isOpen
-        ? Number(j.rtc || j.close || liveMid || 0)
-        : Number(j.close || j.rtc || liveMid || 0);
+      const hasLiveSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && (j.ask - j.bid) < 10;
+      const liveMid = hasLiveSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
+      const rawP = liveMid > 0 ? liveMid : Number(j.rtc || j.close || 0);
       if (rawP > 0) {
         oandaSpotPrice = Math.round(rawP * 100) / 100;
       }

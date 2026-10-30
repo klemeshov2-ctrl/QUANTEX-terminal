@@ -223,6 +223,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   // Active level reference for detecting shifts and tracking active duration
   const activeLevelsRef = useRef<{
     asset: string;
+    horizon: string;
     callWall: number;
     putWall: number;
     gammaFlip: number;
@@ -231,6 +232,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     flipStartTime: number;
   }>({
     asset: activeAsset,
+    horizon: gexReport.horizon || "WEEK",
     callWall: gexReport.callWall,
     putWall: gexReport.putWall,
     gammaFlip: gexReport.gammaFlip,
@@ -284,8 +286,12 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   // 2. Track GEX migrations whenever levels shift and sync with server
   useEffect(() => {
     const curRef = activeLevelsRef.current;
-    if (curRef.asset !== activeAsset) {
+    const reportHorizon = gexReport.horizon || "WEEK";
+
+    // When asset or horizon changes, update reference state WITHOUT triggering false cross-horizon migrations!
+    if (curRef.asset !== activeAsset || curRef.horizon !== reportHorizon) {
       curRef.asset = activeAsset;
+      curRef.horizon = reportHorizon;
       curRef.callWall = gexReport.callWall;
       curRef.putWall = gexReport.putWall;
       curRef.gammaFlip = gexReport.gammaFlip;
@@ -296,6 +302,10 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     }
 
     const now = Date.now();
+    const expSuffix = getExpirySuffix(reportHorizon);
+    const minShift = activeAsset.includes("XAU") || activeAsset.includes("GOLD") ? 4.0 : Math.max(1, curRef.callWall * 0.002);
+    const minActiveTimeMs = 3 * 60 * 1000; // Level must have been active for at least 3 minutes to avoid transient boot noise
+
     const timeMsk = new Intl.DateTimeFormat("ru-RU", {
       timeZone: "Europe/Moscow",
       hour: "2-digit",
@@ -312,15 +322,15 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
     const newEntries: GexMigrationLogEntry[] = [];
 
-    // Check Call Wall shift
-    if (gexReport.callWall && Math.abs(gexReport.callWall - curRef.callWall) >= 1) {
+    // Check Call Wall shift (genuine shift on same horizon with minimum duration)
+    if (gexReport.callWall && Math.abs(gexReport.callWall - curRef.callWall) >= minShift && (now - curRef.cwStartTime) >= minActiveTimeMs) {
       const prevCw = curRef.callWall;
       const oldAudit = auditSingleGexLevel(candles, prevCw, "RESISTANCE", 86400);
       const durationText = formatDuration(now - curRef.cwStartTime);
       newEntries.push({
         id: `mig_cw_${now}`,
         levelType: "call_wall",
-        levelName: "Потолок (Call Wall)",
+        levelName: `Потолок (CW, ${expSuffix})`,
         prevPrice: prevCw,
         newPrice: gexReport.callWall,
         shiftDelta: gexReport.callWall - prevCw,
@@ -337,15 +347,15 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       curRef.cwStartTime = now;
     }
 
-    // Check Put Wall shift
-    if (gexReport.putWall && Math.abs(gexReport.putWall - curRef.putWall) >= 1) {
+    // Check Put Wall shift (genuine shift on same horizon with minimum duration)
+    if (gexReport.putWall && Math.abs(gexReport.putWall - curRef.putWall) >= minShift && (now - curRef.pwStartTime) >= minActiveTimeMs) {
       const prevPw = curRef.putWall;
       const oldAudit = auditSingleGexLevel(candles, prevPw, "SUPPORT", 86400);
       const durationText = formatDuration(now - curRef.pwStartTime);
       newEntries.push({
         id: `mig_pw_${now}`,
         levelType: "put_wall",
-        levelName: "Поддержка (Put Wall)",
+        levelName: `Пол (PW, ${expSuffix})`,
         prevPrice: prevPw,
         newPrice: gexReport.putWall,
         shiftDelta: gexReport.putWall - prevPw,
@@ -362,15 +372,15 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       curRef.pwStartTime = now;
     }
 
-    // Check Gamma Flip shift
-    if (gexReport.gammaFlip && Math.abs(gexReport.gammaFlip - curRef.gammaFlip) >= 1) {
+    // Check Gamma Flip shift (genuine shift on same horizon with minimum duration)
+    if (gexReport.gammaFlip && Math.abs(gexReport.gammaFlip - curRef.gammaFlip) >= minShift && (now - curRef.flipStartTime) >= minActiveTimeMs) {
       const prevFlip = curRef.gammaFlip;
       const oldAudit = auditSingleGexLevel(candles, prevFlip, "FLIP", 86400);
       const durationText = formatDuration(now - curRef.flipStartTime);
       newEntries.push({
         id: `mig_flip_${now}`,
         levelType: "gamma_flip",
-        levelName: "Рубеж (Zero-Flip)",
+        levelName: `Флип (Flip, ${expSuffix})`,
         prevPrice: prevFlip,
         newPrice: gexReport.gammaFlip,
         shiftDelta: gexReport.gammaFlip - prevFlip,
@@ -383,8 +393,6 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
         hitRatePct: oldAudit.hitRatePct,
         timeMsk
       });
-      curRef.gammaFlip = gexReport.gammaFlip;
-      curRef.flipStartTime = now;
     }
 
     if (newEntries.length > 0) {

@@ -898,69 +898,99 @@ async function fetchCboeGoldOptionChain(
     const dates = Array.from(expSet).sort();
     if (dates.length === 0) return null;
 
-    const now = new Date();
-    const todayStr =
-      String(now.getFullYear()).slice(2) +
-      String(now.getMonth() + 1).padStart(2, "0") +
-      String(now.getDate()).padStart(2, "0");
+    const parseExpDate = (yymmdd: string) => {
+      const y = 2000 + parseInt(yymmdd.slice(0, 2), 10);
+      const m = parseInt(yymmdd.slice(2, 4), 10) - 1;
+      const d = parseInt(yymmdd.slice(4, 6), 10);
+      return new Date(Date.UTC(y, m, d, 20, 0, 0));
+    };
 
-    // Filter dates that have not expired yet
-    const validDates = dates.filter(d => d >= todayStr);
-    const candidateDates = validDates.length > 0 ? validDates : dates;
+    // Compute total Open Interest per expiration date so we select true high-liquidity institutional series
+    const expOiMap = new Map<string, number>();
+    for (const o of options) {
+      const m = o.option?.match(/GLD(\d{6})/);
+      if (m) {
+        expOiMap.set(m[1], (expOiMap.get(m[1]) || 0) + (Number(o.open_interest) || 0));
+      }
+    }
+
+    // Filter out tiny/expired tail series and sort chronologically
+    const activeDates = dates.filter(d => (expOiMap.get(d) || 0) >= 5000);
+    const candidateDates = activeDates.length > 0 ? activeDates : dates;
+
+    // Anchor relative days to the front active expiration (immune to any server clock drift)
+    const frontDate = candidateDates.find(d => (expOiMap.get(d) || 0) >= 50000) || candidateDates[0];
+    const baseDateObj = parseExpDate(frontDate);
+    const getDiffDaysFromFront = (yymmdd: string) =>
+      Math.round((parseExpDate(yymmdd).getTime() - baseDateObj.getTime()) / 86400000);
 
     // Map horizon to institutional expiration series
-    let targetYYMMDD = candidateDates[0];
+    let targetYYMMDD = frontDate;
     let horizonTag = "0DTE";
 
     if (horizon === "DAY") {
-      targetYYMMDD = candidateDates[0];
+      targetYYMMDD = frontDate;
       horizonTag = "0DTE";
     } else if (horizon === "WEEK") {
-      // Find Friday weekly expiration (within next 2 to 9 days)
-      const weekly = candidateDates.find(d => {
-        const y = 2000 + parseInt(d.slice(0, 2), 10);
-        const m = parseInt(d.slice(2, 4), 10) - 1;
-        const day = parseInt(d.slice(4, 6), 10);
-        const dt = new Date(y, m, day);
-        const diffDays = (dt.getTime() - now.getTime()) / 86400000;
-        return diffDays >= 1 && diffDays <= 9;
+      // Find the Friday weekly expiration (4 to 10 days out) with the highest Open Interest
+      const weeklyCandidates = candidateDates.filter(d => {
+        const diff = getDiffDaysFromFront(d);
+        return diff >= 4 && diff <= 11;
       });
-      targetYYMMDD = weekly || candidateDates[Math.min(2, candidateDates.length - 1)];
+      weeklyCandidates.sort((a, b) => (expOiMap.get(b) || 0) - (expOiMap.get(a) || 0));
+      targetYYMMDD = weeklyCandidates[0] || candidateDates[Math.min(2, candidateDates.length - 1)];
       horizonTag = "Неделя";
     } else if (horizon === "MONTH") {
-      // Monthly expiration (typically 3rd Friday of the month, ~16 to 45 days away)
-      const monthly = candidateDates.find(d => {
-        const y = 2000 + parseInt(d.slice(0, 2), 10);
-        const m = parseInt(d.slice(2, 4), 10) - 1;
-        const day = parseInt(d.slice(4, 6), 10);
-        const dt = new Date(y, m, day);
-        const diffDays = (dt.getTime() - now.getTime()) / 86400000;
-        return diffDays >= 16 && diffDays <= 45;
+      // Find the Major Monthly OpEx (15 to 45 days out, 3rd Friday) with the highest Open Interest
+      const monthlyCandidates = candidateDates.filter(d => {
+        const diff = getDiffDaysFromFront(d);
+        return diff >= 15 && diff <= 45;
       });
-      targetYYMMDD = monthly || candidateDates[Math.min(6, candidateDates.length - 1)];
+      monthlyCandidates.sort((a, b) => (expOiMap.get(b) || 0) - (expOiMap.get(a) || 0));
+      targetYYMMDD = monthlyCandidates[0] || candidateDates[Math.min(6, candidateDates.length - 1)];
       horizonTag = "Месяц";
     } else {
-      // ALL / Total GEX: select largest monthly series
-      targetYYMMDD = candidateDates[Math.min(4, candidateDates.length - 1)];
+      // ALL / Total GEX: aggregate across all active expirations within 60 days
+      targetYYMMDD = "ALL_SERIES";
       horizonTag = "Все экспирации";
     }
 
-    // Filter options for target expiration
-    const seriesOptions = options.filter(o => o.option?.startsWith(`GLD${targetYYMMDD}`));
+    const allowedAllDates = new Set(
+      candidateDates.filter(d => {
+        const diff = getDiffDaysFromFront(d);
+        return diff >= 0 && diff <= 65;
+      })
+    );
+
+    // Filter options for target expiration (or all active series up to 65 days for ALL)
+    const seriesOptions =
+      targetYYMMDD === "ALL_SERIES"
+        ? options.filter(o => {
+            const m = o.option?.match(/GLD(\d{6})/);
+            return m && allowedAllDates.has(m[1]);
+          })
+        : options.filter(o => o.option?.startsWith(`GLD${targetYYMMDD}`));
     if (seriesOptions.length === 0) return null;
 
     // Parse target date to timestamp
-    const expYear = 2000 + parseInt(targetYYMMDD.slice(0, 2), 10);
-    const expMonth = parseInt(targetYYMMDD.slice(2, 4), 10) - 1;
-    const expDay = parseInt(targetYYMMDD.slice(4, 6), 10);
-    const expDateObj = new Date(Date.UTC(expYear, expMonth, expDay, 20, 0, 0));
-    const nowSec = Math.floor(Date.now() / 1000);
-    const expSec = Math.floor(expDateObj.getTime() / 1000);
-    const tYears = Math.max((expSec - nowSec) / (365 * 86400), 1 / 365);
+    const refExpCode =
+      targetYYMMDD === "ALL_SERIES"
+        ? candidateDates.find(d => getDiffDaysFromFront(d) >= 15) || frontDate
+        : targetYYMMDD;
+    const expDateObj = parseExpDate(refExpCode);
+    const diffDaysTarget = Math.max(1, getDiffDaysFromFront(refExpCode));
+    const tYears =
+      horizon === "DAY"
+        ? 1 / 365
+        : horizon === "WEEK"
+        ? Math.max(5, diffDaysTarget) / 365
+        : Math.max(21, diffDaysTarget) / 365;
 
     const expirationDateStr =
-      expDateObj.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) +
-      `, 18:45 MSK (${horizonTag})`;
+      targetYYMMDD === "ALL_SERIES"
+        ? `Суммарный профиль CME/CBOE (${horizonTag})`
+        : expDateObj.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) +
+          `, 18:45 MSK (${horizonTag})`;
 
     // Group real contracts into strike map, strictly anchored around spotPrice (+- 5.5%)
     const strikeMap = new Map<
@@ -1027,6 +1057,8 @@ async function fetchCboeGoldOptionChain(
 
     const defaultIv = 0.185;
     const strikes: GexStrikeData[] = [];
+    // Use $10 grid-stabilized reference spot for Greek calculation so $1 spot ticks don't jitter Gamma rankings
+    const refSpotForGreeks = Math.round(spotPrice / 10) * 10;
 
     for (const [strike, d] of strikeMap.entries()) {
       // Filter strikes where total OI is below 10 to eliminate noise
@@ -1039,14 +1071,14 @@ async function fetchCboeGoldOptionChain(
       // Real GEX Formula (OI + Intraday Volume Flow):
       // Gamma * (Open Interest + 0.35 * Intraday Volume) * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
       const contractMultiplier = 100; // CME / COMEX Gold Futures Standard: 100 troy oz
-      const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
-      const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
+      const { gamma: callGamma } = calculateOptionGreeks(refSpotForGreeks, strike, tYears, avgCallIv, true);
+      const { gamma: putGamma } = calculateOptionGreeks(refSpotForGreeks, strike, tYears, avgPutIv, false);
 
       const effectiveCallContracts = d.callOi + d.callVol * 0.35;
       const effectivePutContracts = d.putOi + d.putVol * 0.35;
 
-      const callGex = (callGamma * effectiveCallContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
-      const putGex = -(putGamma * effectivePutContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+      const callGex = (callGamma * effectiveCallContracts * contractMultiplier * refSpotForGreeks * refSpotForGreeks * 0.01) / 1_000_000;
+      const putGex = -(putGamma * effectivePutContracts * contractMultiplier * refSpotForGreeks * refSpotForGreeks * 0.01) / 1_000_000;
       const netGex = callGex + putGex;
 
       strikes.push({
@@ -1718,7 +1750,9 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     );
     if (resOanda.ok) {
       const j = await resOanda.json();
-      const livePrice = Number(j.rtc || j.close || (j.bid && j.ask ? (j.bid + j.ask) / 2 : 0));
+      const hasLiveSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && (j.ask - j.bid) < 10;
+      const liveMid = hasLiveSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
+      const livePrice = liveMid > 0 ? liveMid : Number(j.rtc || j.close || 0);
       if (livePrice > 0) {
         spotPrice = Math.round(livePrice * 100) / 100;
         oandaOpen = Number(j.open) || spotPrice;
@@ -1783,41 +1817,89 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   // Process real strikes
   const strikes = realData.strikes;
 
-  // STRICT WALL DETECTION (Weighted by both GEX and Intraday Option Volume Flow):
-  // Call Wall MUST be strictly > spotPrice
-  const callsAboveSpot = strikes
-    .filter(s => s.strike > spotPrice && s.callGex > 0)
-    .sort((a, b) => {
-      const scoreA = a.callGex * (1 + Math.min(0.65, a.callVolume / Math.max(100, a.callOi)));
-      const scoreB = b.callGex * (1 + Math.min(0.65, b.callVolume / Math.max(100, b.callOi)));
-      return scoreB - scoreA;
-    });
-  const callWall = callsAboveSpot.length > 0
-    ? callsAboveSpot[0].strike
-    : Math.ceil((spotPrice + 20) / 10) * 10;
+  // HORIZON-SPECIFIC ACTIVE GAMMA CORRIDORS (1.5σ - 2.0σ Expected Move Window):
+  // Prevents dead, far-OTM strikes ($170 away with zero 0DTE Gamma) from being mistaken for active intraday walls!
+  // - DAY (0DTE/1DTE): Intraday dealer gamma hedging range is +-$10 to +-$45 (~0.25% to 1.15% of spot)
+  // - WEEK (5D OpEx): Weekly dealer gamma hedging range is +-$20 to +-$80 (~0.50% to 2.00% of spot)
+  // - MONTH (21D OpEx): Monthly institutional range is +-$40 to +-$175 (~1.00% to 4.40% of spot)
+  // - ALL (Total GEX): Full book institutional range is +-$30 to +-$200
+  const corridorBounds =
+    horizon === "DAY"
+      ? { minDist: 10, maxDist: 45, defDist: 25 }
+      : horizon === "WEEK"
+      ? { minDist: 20, maxDist: 80, defDist: 45 }
+      : horizon === "MONTH"
+      ? { minDist: 40, maxDist: 175, defDist: 85 }
+      : { minDist: 30, maxDist: 200, defDist: 95 };
 
-  // Put Wall MUST be strictly < spotPrice
-  const putsBelowSpot = strikes
-    .filter(s => s.strike < spotPrice && s.putGex < 0)
-    .sort((a, b) => {
-      const scoreA = Math.abs(a.putGex) * (1 + Math.min(0.65, a.putVolume / Math.max(100, a.putOi)));
-      const scoreB = Math.abs(b.putGex) * (1 + Math.min(0.65, b.putVolume / Math.max(100, b.putOi)));
-      return scoreB - scoreA;
-    });
-  const putWall = putsBelowSpot.length > 0
-    ? putsBelowSpot[0].strike
-    : Math.floor((spotPrice - 20) / 10) * 10;
+  let callCandidates = strikes.filter(
+    s =>
+      s.strike >= spotPrice + corridorBounds.minDist &&
+      s.strike <= spotPrice + corridorBounds.maxDist &&
+      (s.callOi > 0 || s.callGex > 0)
+  );
+  if (callCandidates.length === 0) {
+    callCandidates = strikes.filter(s => s.strike > spotPrice && (s.callOi > 0 || s.callGex > 0));
+  }
 
-  // Gamma Flip: search zero-crossing ONLY within +-2.5% of spotPrice
-  const sortedAsc = strikes.slice().sort((a, b) => a.strike - b.strike);
+  let putCandidates = strikes.filter(
+    s =>
+      s.strike <= spotPrice - corridorBounds.minDist &&
+      s.strike >= spotPrice - corridorBounds.maxDist &&
+      (s.putOi > 0 || s.putGex < 0)
+  );
+  if (putCandidates.length === 0) {
+    putCandidates = strikes.filter(s => s.strike < spotPrice && (s.putOi > 0 || s.putGex < 0));
+  }
+
+  // Normalize OI and GEX strictly within the active horizon corridor
+  const maxCallOi = Math.max(1, ...callCandidates.map(s => s.callOi));
+  const maxCallGex = Math.max(0.01, ...callCandidates.map(s => Math.max(0, s.callGex)));
+  const maxPutOi = Math.max(1, ...putCandidates.map(s => s.putOi));
+  const maxPutGex = Math.max(0.01, ...putCandidates.map(s => Math.abs(s.putGex)));
+
+  const getCallScore = (s: GexStrikeData) => {
+    const normOi = s.callOi / maxCallOi;
+    const normGex = Math.max(0, s.callGex) / maxCallGex;
+    const flowBonus = Math.min(0.20, (s.callVolume / Math.max(100, s.callOi)) * 0.15);
+    return (normGex * 0.50 + normOi * 0.50) * (1 + flowBonus);
+  };
+
+  const getPutScore = (s: GexStrikeData) => {
+    const normOi = s.putOi / maxPutOi;
+    const normGex = Math.abs(s.putGex) / maxPutGex;
+    const flowBonus = Math.min(0.20, (s.putVolume / Math.max(100, s.putOi)) * 0.15);
+    return (normGex * 0.50 + normOi * 0.50) * (1 + flowBonus);
+  };
+
+  callCandidates.sort((a, b) => getCallScore(b) - getCallScore(a));
+  const callWall =
+    callCandidates.length > 0
+      ? callCandidates[0].strike
+      : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
+
+  putCandidates.sort((a, b) => getPutScore(b) - getPutScore(a));
+  const putWall =
+    putCandidates.length > 0
+      ? putCandidates[0].strike
+      : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
+
+  // MASTER WALL INVARIANTS:
+  // 1. Call Wall strictly > spotPrice
+  const finalCallWall = callWall > spotPrice ? callWall : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
+  // 2. Put Wall strictly < spotPrice
+  const finalPutWall = putWall < spotPrice ? putWall : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
+
+  // 3. Gamma Flip: search zero-crossing strictly INSIDE [finalPutWall, finalCallWall]
+  const activeCorridorStrikes = strikes
+    .filter(s => s.strike >= finalPutWall && s.strike <= finalCallWall)
+    .sort((a, b) => a.strike - b.strike);
   let gammaFlip = Math.round(spotPrice / 10) * 10;
   let foundFlip = false;
 
-  for (let i = 0; i < sortedAsc.length - 1; i++) {
-    const s1 = sortedAsc[i];
-    const s2 = sortedAsc[i + 1];
-    // Check if within +-2.5% of spotPrice
-    if (Math.abs(s1.strike - spotPrice) > spotPrice * 0.025) continue;
+  for (let i = 0; i < activeCorridorStrikes.length - 1; i++) {
+    const s1 = activeCorridorStrikes[i];
+    const s2 = activeCorridorStrikes[i + 1];
 
     if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
       const denom = s2.netGex - s1.netGex;
@@ -1832,19 +1914,32 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
   }
 
   if (!foundFlip) {
-    const nearStrikes = strikes.filter(s => Math.abs(s.strike - spotPrice) <= spotPrice * 0.02);
-    if (nearStrikes.length > 0) {
-      const minNet = nearStrikes.sort((a, b) => Math.abs(a.netGex) - Math.abs(b.netGex))[0];
+    if (activeCorridorStrikes.length > 0) {
+      const minNet = activeCorridorStrikes.slice().sort((a, b) => Math.abs(a.netGex) - Math.abs(b.netGex))[0];
       gammaFlip = minNet.strike;
     } else {
-      gammaFlip = Math.round(spotPrice / 10) * 10;
+      gammaFlip = Math.round(((finalPutWall + finalCallWall) / 2) / 10) * 10;
     }
   }
 
-  // Max Pain: strictly evaluate across strikes in range [putWall, callWall], weighting OI + 25% Intraday Volume
+  // Clamp Gamma Flip strictly inside [finalPutWall + 5, finalCallWall - 5]
+  const finalFlip = Math.max(finalPutWall + 5, Math.min(finalCallWall - 5, gammaFlip));
+
+  // 4. Max Pain (Магнит): evaluate interior strikes strictly between (finalPutWall, finalCallWall)
+  // against the full option chain so Magnet is a true interior equilibrium and never collides with CW/PW
   let minPainCost = Infinity;
   let calculatedMaxPain = Math.round(spotPrice / 10) * 10;
-  const painGrid = strikes.filter(s => s.strike >= putWall - 30 && s.strike <= callWall + 30);
+  const maxPainRadius = horizon === "DAY" ? 30 : horizon === "WEEK" ? 50 : 90;
+  const interiorCandidates = strikes.filter(
+    s =>
+      s.strike >= finalPutWall + 10 &&
+      s.strike <= finalCallWall - 10 &&
+      Math.abs(s.strike - spotPrice) <= maxPainRadius
+  );
+  const painGrid =
+    interiorCandidates.length > 0
+      ? interiorCandidates
+      : activeCorridorStrikes.filter(s => s.strike > finalPutWall && s.strike < finalCallWall);
 
   for (const testStrike of painGrid) {
     let pain = 0;
@@ -1860,19 +1955,7 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     }
   }
 
-  // MASTER INVARIANTS (Enforced on all results):
-  // 1. Call Wall strictly > spotPrice
-  let finalCallWall = callWall > spotPrice ? callWall : Math.ceil((spotPrice + 20) / 10) * 10;
-  // 2. Put Wall strictly < spotPrice
-  let finalPutWall = putWall < spotPrice ? putWall : Math.floor((spotPrice - 20) / 10) * 10;
-  // 3. Gamma Flip strictly in [spotPrice * 0.98, spotPrice * 1.02]
-  let finalFlip = (gammaFlip >= spotPrice * 0.98 && gammaFlip <= spotPrice * 1.02)
-    ? gammaFlip
-    : Math.round(spotPrice / 10) * 10;
-  // 4. Max Pain strictly in [spotPrice * 0.96, spotPrice * 1.04]
-  let finalMaxPain = (calculatedMaxPain >= spotPrice * 0.96 && calculatedMaxPain <= spotPrice * 1.04)
-    ? calculatedMaxPain
-    : Math.round(spotPrice / 10) * 10;
+  const finalMaxPain = Math.max(finalPutWall + 10, Math.min(finalCallWall - 10, calculatedMaxPain));
 
   const totalCallOi = strikes.reduce((sum, s) => sum + s.callOi, 0);
   const totalPutOi = strikes.reduce((sum, s) => sum + s.putOi, 0);
