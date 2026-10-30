@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData, getHorizonExpirationDateString } from "../../server/gexEngine";
 import { auditSingleGexLevel, detectMarketRangeMode, RangeDetectionResult } from "../lib/pineSuperIndicatorEngine";
+import { getLevelRole, getExpirySuffix, getBaseLevelName } from "../lib/gexLabels";
 
 export interface GexMigrationLogEntry {
   id: string;
@@ -427,42 +428,52 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     const levelsToAudit: Array<{
       id: "call_wall" | "put_wall" | "gamma_flip" | "max_pain";
       name: string;
+      fullName: string;
       price: number;
       type: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET";
       role: string;
       activeSinceMs: number;
+      isBroken: boolean;
     }> = [
       {
         id: "call_wall",
-        name: "Потолок (Call Wall)",
+        name: `Потолок (CW, ${getExpirySuffix(gexReport.horizon)})`,
+        fullName: getLevelRole("CALL_WALL", gexReport.callWall, currentPrice, gexReport.horizon).fullName,
         price: gexReport.callWall,
         type: "RESISTANCE",
-        role: "Стена покупателей опционов",
-        activeSinceMs: activeLevelsRef.current.cwStartTime
+        role: getLevelRole("CALL_WALL", gexReport.callWall, currentPrice, gexReport.horizon).role,
+        activeSinceMs: activeLevelsRef.current.cwStartTime,
+        isBroken: getLevelRole("CALL_WALL", gexReport.callWall, currentPrice, gexReport.horizon).isBroken
       },
       {
         id: "put_wall",
-        name: "Поддержка (Put Wall)",
+        name: `Пол (PW, ${getExpirySuffix(gexReport.horizon)})`,
+        fullName: getLevelRole("PUT_WALL", gexReport.putWall, currentPrice, gexReport.horizon).fullName,
         price: gexReport.putWall,
         type: "SUPPORT",
-        role: "Пол продавцов опционов",
-        activeSinceMs: activeLevelsRef.current.pwStartTime
+        role: getLevelRole("PUT_WALL", gexReport.putWall, currentPrice, gexReport.horizon).role,
+        activeSinceMs: activeLevelsRef.current.pwStartTime,
+        isBroken: getLevelRole("PUT_WALL", gexReport.putWall, currentPrice, gexReport.horizon).isBroken
       },
       {
         id: "gamma_flip",
-        name: "Рубеж (Zero-Flip)",
+        name: `Флип (Flip, ${getExpirySuffix(gexReport.horizon)})`,
+        fullName: getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, currentPrice, gexReport.horizon).fullName,
         price: gexReport.gammaFlip,
         type: "FLIP",
-        role: "Граница смены режима",
-        activeSinceMs: activeLevelsRef.current.flipStartTime
+        role: getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, currentPrice, gexReport.horizon).role,
+        activeSinceMs: activeLevelsRef.current.flipStartTime,
+        isBroken: false
       },
       {
         id: "max_pain",
-        name: "Магнит (Max Pain)",
+        name: `Магнит (${getExpirySuffix("MONTH")})`,
+        fullName: getLevelRole("MAX_PAIN", gexReport.maxPain, currentPrice, "MONTH").fullName,
         price: gexReport.maxPain,
         type: "MAGNET",
-        role: "Точка притяжения экспирации",
-        activeSinceMs: activeLevelsRef.current.cwStartTime
+        role: getLevelRole("MAX_PAIN", gexReport.maxPain, currentPrice, "MONTH").role,
+        activeSinceMs: activeLevelsRef.current.cwStartTime,
+        isBroken: false
       }
     ];
 
@@ -1690,6 +1701,17 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                           <span className="inline-flex items-center gap-1 text-[11px] font-mono text-gray-300">
                             <Clock className="h-3 w-3 text-cyan-400" />
                             <span>В строю: <strong className="text-white">{stat.currentActiveDurationText}</strong></span>
+                          </span>
+                          <span className="text-gray-600" aria-hidden="true">·</span>
+                          <span
+                            className={`text-[11px] font-mono px-2 py-0.5 rounded font-bold ${
+                              stat.isBroken
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                : "bg-blue-500/15 text-blue-300 border border-blue-500/30"
+                            }`}
+                            title={stat.role}
+                          >
+                            {stat.role}
                           </span>
                           <span className="text-gray-600" aria-hidden="true">·</span>
                           <span

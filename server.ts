@@ -9,6 +9,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import WebSocket from "ws";
 import { getGexReportForAsset, fetchMoexFrontQuarterlyContracts, fetchMoexWithRetry } from "./server/gexEngine";
+import { getStabilizedGexReport, registerActiveTradeChecker } from "./server/gexStateManager";
+import { formatGexLevelLabel, getLevelRole } from "./src/lib/gexLabels";
 import {
   recordAiForecast,
   evaluateForecastOutcomes,
@@ -444,8 +446,9 @@ export interface LockedPineSignal {
   tp2Hit: boolean;
   tp3Hit: boolean;
   slHit: boolean;
-  status: "WAITING_FOR_ENTRY" | "ACTIVE_IN_TRADE";
+  status: "WAITING_FOR_ENTRY" | "ACTIVE_IN_TRADE" | "MISSED_ENTRY";
   statusText: string;
+  missedAt?: number;
 }
 
 const LOCKED_SETUPS_FILE = path.join(process.cwd(), "data", "locked-setups.json");
@@ -503,6 +506,12 @@ export function resetPineScriptEngineLock() {
 export function getActiveLockedPineSignal(): LockedPineSignal | null {
   return activeLockedServerSetup;
 }
+
+// 1. Обязательное условие: регистрация проверки активной сделки для заморозки GEX-уровней
+registerActiveTradeChecker(() => {
+  const current = getActiveLockedPineSignal();
+  return Boolean(current && (current.status === "ACTIVE_IN_TRADE" || current.status === "WAITING_FOR_ENTRY"));
+});
 
 export function computePineScriptEngine(
   oandaPrice: number,
@@ -792,6 +801,12 @@ export function computePineScriptEngine(
   const maxPain = liveGexReport?.maxPain || Math.round(fib_500 / 10) * 10;
   const zeroFlip = liveGexReport?.gammaFlip || Math.round(fib_500 * 10) / 10;
 
+  // Check Negative Gamma: spot below Zero-Flip OR explicit NEGATIVE regime from options report
+  const isNegativeGamma = close < zeroFlip || Boolean(
+    liveGexReport && typeof (liveGexReport as any).regime === "string" && (liveGexReport as any).regime.includes("NEGATIVE")
+  );
+  const isTrendingOrNegGamma = isStrongTrend || isNegativeGamma;
+
   // 9. Pure Static Structural Calculation (Zero 'close' in formulas to prevent repainting!)
   let ote_top = 0;
   let ote_bottom = 0;
@@ -842,26 +857,55 @@ export function computePineScriptEngine(
     trailingStop = Math.round((entryPrice - rawRisk) * 100) / 100;
     const riskDist = Math.max(2.0, entryPrice - trailingStop);
 
-    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-    ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
-    ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
-    ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
+    if (isTrendingOrNegGamma) {
+      // ADAPTIVE LONG TAKE PROFITS (R:R >= 1:3 anchored to structural levels & Call Wall, ignoring short ATR)
+      const minTrendTp1Dist = Math.max(riskDist * 3.0, atr15 * 3.0, swing_range * 0.85);
+      const minTrendTp1 = entryPrice + minTrendTp1Dist;
 
-    let candidateTp1 = ext_1;
-    if (callWall > entryPrice + riskDist * 1.20) {
-      if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
-        candidateTp1 = callWall - 1.0;
+      ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, minTrendTp1) * 100) / 100;
+      ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + riskDist * 1.5) * 100) / 100;
+      ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + riskDist * 2.0) * 100) / 100;
+
+      let candidateTp1 = ext_1;
+      if (callWall >= minTrendTp1) {
+        candidateTp1 = Math.max(minTrendTp1, callWall - 1.0);
+      } else {
+        candidateTp1 = Math.max(minTrendTp1, ext_1);
       }
-    }
-    tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
+      tp1 = Math.round(candidateTp1 * 100) / 100;
 
-    const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
-      ? callWall
-      : Math.max(ext_2, tp1 + atr15 * 1.5);
-    tp2 = Math.round(candidateTp2 * 100) / 100;
-    tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
-    altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+      const candidateTp2 = Math.max(
+        tp1 + riskDist * 1.5,
+        ext_2,
+        callWall > tp1 ? callWall : ext_2
+      );
+      tp2 = Math.round(candidateTp2 * 100) / 100;
+      tp3 = Math.round(Math.max(ext_3, tp2 + riskDist * 2.0) * 100) / 100;
+      altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+    } else {
+      // RANGE MODE: Keep bounded short take profits (8-12 pts / R:R ~1.25)
+      const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+      ext_1 = Math.round(Math.max(highest_high + swing_range * 0.272, entryPrice + minTp1Dist) * 100) / 100;
+      ext_2 = Math.round(Math.max(highest_high + swing_range * 0.618, ext_1 + atr15 * 1.6) * 100) / 100;
+      ext_3 = Math.round(Math.max(highest_high + swing_range * 1.272, ext_2 + atr15 * 2.2) * 100) / 100;
+
+      let candidateTp1 = ext_1;
+      if (callWall > entryPrice + riskDist * 1.20) {
+        if (Math.abs(candidateTp1 - callWall) <= atr15 * 1.2 || (candidateTp1 > callWall && callWall - entryPrice >= riskDist * 1.20)) {
+          candidateTp1 = callWall - 1.0;
+        }
+      }
+      tp1 = Math.round(Math.max(entryPrice + riskDist * 1.20, candidateTp1) * 100) / 100;
+
+      const candidateTp2 = (callWall > tp1 + atr15 * 0.8 && callWall <= ext_2 + atr15)
+        ? callWall
+        : Math.min(ext_2, tp1 + atr15 * 1.5);
+      tp2 = Math.round(candidateTp2 * 100) / 100;
+      tp3 = Math.round(Math.max(ext_3, tp2 + atr15 * 2.0) * 100) / 100;
+      altBreakLevel = Math.round((lowest_low - swing_range * 0.25) * 100) / 100;
+    }
   } else {
+    // SHORT DIRECTION
     ote_bottom = isStrongTrend
       ? Math.round((lowest_low + swing_range * 0.382) * 100) / 100
       : isFlatRange
@@ -894,25 +938,53 @@ export function computePineScriptEngine(
     trailingStop = Math.round((entryPrice + rawRisk) * 100) / 100;
     const riskDist = Math.max(2.0, trailingStop - entryPrice);
 
-    const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
-    ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
-    ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
-    ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
+    if (isTrendingOrNegGamma) {
+      // ADAPTIVE SHORT TAKE PROFITS (R:R >= 1:3 anchored to Put Wall & local swing low, ignoring short ATR)
+      const minTrendTp1Dist = Math.max(riskDist * 3.0, atr15 * 3.0, swing_range * 0.85);
+      const minTrendTp1 = entryPrice - minTrendTp1Dist;
 
-    let candidateTp1 = ext_1;
-    if (putWall < entryPrice - riskDist * 1.20) {
-      if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
-        candidateTp1 = putWall + 1.0;
+      ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, minTrendTp1) * 100) / 100;
+      ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - riskDist * 1.5) * 100) / 100;
+      ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - riskDist * 2.0) * 100) / 100;
+
+      let candidateTp1 = ext_1;
+      if (putWall <= minTrendTp1) {
+        candidateTp1 = Math.min(minTrendTp1, putWall + 1.0);
+      } else {
+        candidateTp1 = Math.min(minTrendTp1, ext_1);
       }
-    }
-    tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
+      tp1 = Math.round(candidateTp1 * 100) / 100;
 
-    const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
-      ? putWall
-      : Math.min(ext_2, tp1 - atr15 * 1.5);
-    tp2 = Math.round(candidateTp2 * 100) / 100;
-    tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
-    altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+      const candidateTp2 = Math.min(
+        tp1 - riskDist * 1.5,
+        ext_2,
+        putWall < tp1 ? putWall : ext_2
+      );
+      tp2 = Math.round(candidateTp2 * 100) / 100;
+      tp3 = Math.round(Math.min(ext_3, tp2 - riskDist * 2.0) * 100) / 100;
+      altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+    } else {
+      // RANGE MODE: Keep bounded short take profits (8-12 pts / R:R ~1.25)
+      const minTp1Dist = Math.max(baseMinTp1Dist, riskDist * 1.25);
+      ext_1 = Math.round(Math.min(lowest_low - swing_range * 0.272, entryPrice - minTp1Dist) * 100) / 100;
+      ext_2 = Math.round(Math.min(lowest_low - swing_range * 0.618, ext_1 - atr15 * 1.6) * 100) / 100;
+      ext_3 = Math.round(Math.min(lowest_low - swing_range * 1.272, ext_2 - atr15 * 2.2) * 100) / 100;
+
+      let candidateTp1 = ext_1;
+      if (putWall < entryPrice - riskDist * 1.20) {
+        if (Math.abs(candidateTp1 - putWall) <= atr15 * 1.2 || (candidateTp1 < putWall && entryPrice - putWall >= riskDist * 1.20)) {
+          candidateTp1 = putWall + 1.0;
+        }
+      }
+      tp1 = Math.round(Math.min(entryPrice - riskDist * 1.20, candidateTp1) * 100) / 100;
+
+      const candidateTp2 = (putWall < tp1 - atr15 * 0.8 && putWall >= ext_2 - atr15)
+        ? putWall
+        : Math.min(ext_2, tp1 - atr15 * 1.5);
+      tp2 = Math.round(candidateTp2 * 100) / 100;
+      tp3 = Math.round(Math.min(ext_3, tp2 - atr15 * 2.0) * 100) / 100;
+      altBreakLevel = Math.round((highest_high + swing_range * 0.25) * 100) / 100;
+    }
   }
 
   // 10. Quality Gate & R:R Verification
@@ -944,7 +1016,17 @@ export function computePineScriptEngine(
     const lockAgeMs = nowMs - currentLock.createdAt;
     const isTimeout = lockAgeMs > 3.5 * 3600 * 1000;
 
-    if (!currentLock.entryHit) {
+    if (currentLock.status === "MISSED_ENTRY") {
+      // In missed entry state: keep it visible with strikethrough/gray lines,
+      // and retire it after 20 minutes or timeout or when a strong reversal signal occurs
+      const missedAgeMs = nowMs - (currentLock.missedAt || currentLock.createdAt);
+      if (missedAgeMs > 20 * 60 * 1000 || isTimeout) {
+        console.log(`[Pine Engine LOCK] 🔄 Retiring MISSED_ENTRY setup ${currentLock.setupId} after grace period.`);
+        activeLockedServerSetup = null;
+        saveLockedSetupToFile(null);
+        currentLock = null;
+      }
+    } else if (!currentLock.entryHit) {
       // Stage A: Waiting for entry fill
       const isEntryFilled = isLockLong
         ? (close <= currentLock.entryPrice || oandaLow <= currentLock.entryPrice)
@@ -958,17 +1040,29 @@ export function computePineScriptEngine(
         saveLockedSetupToFile(currentLock);
         console.log(`[Pine Engine LOCK] ⚡ ENTRY FILLED! ${currentLock.direction} @ $${currentLock.entryPrice.toFixed(2)}, current live spot: $${close}`);
       } else {
-        // Invalidation triggers before entry fill
-        const isRunaway = isLockLong ? (close >= currentLock.tp1) : (close <= currentLock.tp1);
-        const isSlBroken = isLockLong ? (close <= currentLock.trailingStop) : (close >= currentLock.trailingStop);
-        const isDirectionReversed = (isLockLong && !isBull && Math.abs(bull_score - bear_score) >= 25) ||
-                                    (!isLockLong && isBull && Math.abs(bull_score - bear_score) >= 25);
+        // Price reached TP1 or TP2 WITHOUT activating entry -> MISSED_ENTRY!
+        const isRunawayToTp = isLockLong
+          ? (close >= currentLock.tp1 || oandaHigh >= currentLock.tp1 || (currentLock.tp2 && (close >= currentLock.tp2 || oandaHigh >= currentLock.tp2)))
+          : (close <= currentLock.tp1 || oandaLow <= currentLock.tp1 || (currentLock.tp2 && (close <= currentLock.tp2 || oandaLow <= currentLock.tp2)));
 
-        if (isRunaway || isSlBroken || isDirectionReversed || isTimeout) {
-          console.log(`[Pine Engine LOCK] 🔄 Setup ${currentLock.setupId} invalidated (runaway=${isRunaway}, slBroken=${isSlBroken}, dirRev=${isDirectionReversed}, timeout=${isTimeout}). Resetting lock.`);
-          activeLockedServerSetup = null;
-          saveLockedSetupToFile(null);
-          currentLock = null;
+        if (isRunawayToTp) {
+          currentLock.status = "MISSED_ENTRY";
+          currentLock.missedAt = nowMs;
+          currentLock.statusText = `🚫 НЕДОХОД (MISSED ENTRY): Цена ушла к TP ($${currentLock.tp1.toFixed(2)}) без активации лимита $${currentLock.entryPrice.toFixed(2)}`;
+          saveLockedSetupToFile(currentLock);
+          console.log(`[Pine Engine LOCK] 🚫 MISSED ENTRY on ${currentLock.setupId}: reached TP ($${close}) without triggering limit $${currentLock.entryPrice.toFixed(2)}.`);
+        } else {
+          // Invalidation triggers before entry fill (e.g. SL broken before entry, strong reversal, timeout)
+          const isSlBroken = isLockLong ? (close <= currentLock.trailingStop) : (close >= currentLock.trailingStop);
+          const isDirectionReversed = (isLockLong && !isBull && Math.abs(bull_score - bear_score) >= 25) ||
+                                      (!isLockLong && isBull && Math.abs(bull_score - bear_score) >= 25);
+
+          if (isSlBroken || isDirectionReversed || isTimeout) {
+            console.log(`[Pine Engine LOCK] 🔄 Setup ${currentLock.setupId} invalidated (slBroken=${isSlBroken}, dirRev=${isDirectionReversed}, timeout=${isTimeout}). Resetting lock.`);
+            activeLockedServerSetup = null;
+            saveLockedSetupToFile(null);
+            currentLock = null;
+          }
         }
       }
     } else {
@@ -1068,7 +1162,15 @@ export function computePineScriptEngine(
   let mlSignal = "";
   let setupName = "";
 
-  if (currentLock && currentLock.entryHit) {
+  if (currentLock && currentLock.status === "MISSED_ENTRY") {
+    mlSignal = `⚪ НЕДОХОД (MISSED ENTRY) [Лимит $${entryPrice.toFixed(2)} отменен • Цель взята]`;
+    setupName = `🚫 НЕДОХОД: Цена ушла к TP1 ($${tp1.toFixed(2)}) без активации лимита $${entryPrice.toFixed(2)}`;
+    if (!currentLock.mlSignal || currentLock.mlSignal !== mlSignal) {
+      currentLock.mlSignal = mlSignal;
+      currentLock.setupName = setupName;
+      saveLockedSetupToFile(currentLock);
+    }
+  } else if (currentLock && currentLock.entryHit) {
     mlSignal = isBull
       ? `🚀 В СДЕЛКЕ LONG (Вход $${entryPrice.toFixed(2)} • SL $${trailingStop.toFixed(2)})`
       : `🚀 В СДЕЛКЕ SHORT (Вход $${entryPrice.toFixed(2)} • SL $${trailingStop.toFixed(2)})`;
@@ -1156,7 +1258,10 @@ export function computePineScriptEngine(
     bearishOb,
     fvgZone,
     isFrozen: !!currentLock,
+    status: currentLock ? currentLock.status : (hasValidSetup ? "WAITING_FOR_ENTRY" : "NO_SETUP"),
     executionStatus: currentLock?.status || "NO_SETUP",
+    isMissedEntry: currentLock?.status === "MISSED_ENTRY",
+    isTrendingOrNegGamma,
     entryHit: !!currentLock?.entryHit,
     tp1Hit: !!currentLock?.tp1Hit,
     statusText: currentLock?.statusText || (hasValidSetup ? `Сетап сформирован` : "Ожидание сетапа"),
@@ -1437,7 +1542,7 @@ export async function fetchDualGoldMarketData(forceFresh = false): Promise<DualM
   // 4. Run QUANTEX Pine Script Ultimate Super Indicator Engine on calibrated live candles + GEX barriers
   const [liveCandles, liveGexReport] = await Promise.all([
     fetchCalibratedPineCandles(oandaPrice),
-    getGexReportForAsset("XAUUSD", "DAY").catch(() => null)
+    getStabilizedGexReport("XAUUSD", "DAY", oandaPrice).catch(() => null)
   ]);
   const scriptIndicators = computePineScriptEngine(
     oandaPrice,
@@ -1526,11 +1631,17 @@ function calculateStandaloneIndicatorState(pair: string, currentLivePrice?: numb
 // Option 2: Generate an SVG chart snapshot for Standalone Engine
 // Option 2: Generate an SVG chart snapshot for Standalone Engine matching TradingView QUANTEX Super Indicator
 function generateStandaloneChartSvg(pair: string, state: ReturnType<typeof calculateStandaloneIndicatorState>): string {
+  const isMissed = (state as any).status === "MISSED_ENTRY" || Boolean((state as any).isMissedEntry);
   const isShort = state.direction === "SHORT";
-  const mainColor = isShort ? "#ef4444" : "#10b981";
-  const bgBadge = isShort ? "#450a0a" : "#064e3b";
-  const textBadge = isShort ? "#fecaca" : "#a7f3d0";
-  const signalText = state.mlSignal;
+  const mainColor = isMissed ? "#9ca3af" : (isShort ? "#ef4444" : "#10b981");
+  const bgBadge = isMissed ? "#1f2937" : (isShort ? "#450a0a" : "#064e3b");
+  const textBadge = isMissed ? "#e5e7eb" : (isShort ? "#fecaca" : "#a7f3d0");
+  const signalText = isMissed ? "🚫 НЕДОХОД (MISSED ENTRY)" : state.mlSignal;
+
+  const tp1LineColor = isMissed ? "#6b7280" : "#38bdf8";
+  const tp2LineColor = isMissed ? "#4b5563" : "#eab308";
+  const textDecor = isMissed ? 'text-decoration="line-through"' : "";
+  const waveOpacity = isMissed ? 'opacity="0.45"' : "";
 
   const pfc = state.pineScriptForecast;
   const oteTop = pfc?.oteTop ?? (isShort ? state.entryPrice + 5 : state.entryPrice + 3);
@@ -1552,18 +1663,18 @@ function generateStandaloneChartSvg(pair: string, state: ReturnType<typeof calcu
     <!-- Top Header Bar -->
     <rect x="15" y="10" width="910" height="46" rx="6" fill="#111827" stroke="#374151" stroke-width="1"/>
     <text x="30" y="28" fill="#f59e0b" font-size="12" font-weight="bold">★ QUANTEX Premium Ultimate Super Indicator [TradingView QUANTEX SuperFusion v6] ★</text>
-    <text x="30" y="46" fill="#9ca3af" font-size="10" font-family="monospace">${pair} • 15m Оптимальный • Консенсус: ${state.consensusSummary} | План: ${state.direction}</text>
+    <text x="30" y="46" fill="#9ca3af" font-size="10" font-family="monospace">${pair} • 15m Оптимальный • Консенсус: ${state.consensusSummary} | План: ${state.direction}${isMissed ? " [🚫 НЕДОХОД]" : ""}</text>
     
-    <rect x="680" y="18" width="235" height="30" rx="4" fill="${bgBadge}" stroke="${mainColor}" stroke-width="1.2"/>
-    <text x="692" y="37" fill="${textBadge}" font-size="11" font-weight="bold">${signalText} (${state.mlConfidence}%)</text>
+    <rect x="650" y="18" width="265" height="30" rx="4" fill="${bgBadge}" stroke="${mainColor}" stroke-width="1.2"/>
+    <text x="660" y="37" fill="${textBadge}" font-size="10.5" font-weight="bold">${signalText}</text>
 
     <!-- 0.50 EQ (Equilibrium / Равновесие) -->
     <line x1="20" y1="230" x2="920" y2="230" stroke="#6b7280" stroke-dasharray="4 4" stroke-width="1"/>
     <text x="760" y="225" fill="#9ca3af" font-size="9" font-family="monospace">0.50 EQ Равновесие: $${fib500.toFixed(2)}</text>
 
     <!-- OTE Retracement Zone (62% - 79%) -->
-    <rect x="250" y="${isShort ? 140 : 250}" width="420" height="50" rx="3" fill="${isShort ? "#ef4444" : "#10b981"}" fill-opacity="0.12" stroke="${mainColor}" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="260" y="${isShort ? 158 : 268}" fill="${mainColor}" font-size="10" font-weight="bold">IT OTE 62-79% [${isShort ? "Сопротивление / Вход в ШОРТ" : "Поддержка / Вход в ЛОНГ"}]: $${oteBottom.toFixed(2)} – $${oteTop.toFixed(2)}</text>
+    <rect x="250" y="${isShort ? 140 : 250}" width="420" height="50" rx="3" fill="${isMissed ? "#4b5563" : (isShort ? "#ef4444" : "#10b981")}" fill-opacity="${isMissed ? "0.06" : "0.12"}" stroke="${isMissed ? "#6b7280" : mainColor}" stroke-width="1" stroke-dasharray="3 3"/>
+    <text x="260" y="${isShort ? 158 : 268}" fill="${isMissed ? "#9ca3af" : mainColor}" font-size="10" font-weight="bold" ${textDecor}>IT OTE 62-79% [${isShort ? "Сопротивление / Вход в ШОРТ" : "Поддержка / Вход в ЛОНГ"}]: $${oteBottom.toFixed(2)} – $${oteTop.toFixed(2)}${isMissed ? " (НЕДОХОД)" : ""}</text>
 
     <!-- GEX Institutional Levels -->
     <line x1="20" y1="90" x2="920" y2="90" stroke="#10b981" stroke-width="1.6"/>
@@ -1573,62 +1684,58 @@ function generateStandaloneChartSvg(pair: string, state: ReturnType<typeof calcu
     <text x="30" y="344" fill="#f87171" font-size="9" font-weight="bold">🛡️ CME GEX PUT WALL (Институциональный пол): $${state.gex.putWall.toFixed(2)}</text>
 
     <!-- Stop Loss Line (SL / Invalidation) -->
-    <line x1="220" y1="${isShort ? 110 : 375}" x2="920" y2="${isShort ? 110 : 375}" stroke="${isShort ? "#ef4444" : "#f43f5e"}" stroke-width="2"/>
-    <text x="700" y="${isShort ? 104 : 370}" fill="#fda4af" font-size="9" font-weight="bold">🛑 СТОП-ЛОСС (SL / Отмена): $${state.trailingStop.toFixed(2)}</text>
+    <line x1="220" y1="${isShort ? 110 : 375}" x2="920" y2="${isShort ? 110 : 375}" stroke="${isMissed ? "#6b7280" : (isShort ? "#ef4444" : "#f43f5e")}" stroke-width="2"/>
+    <text x="700" y="${isShort ? 104 : 370}" fill="${isMissed ? "#9ca3af" : "#fda4af"}" font-size="9" font-weight="bold">🛑 СТОП-ЛОСС (SL / Отмена): $${state.trailingStop.toFixed(2)}</text>
 
     <!-- TP1 & TP2 Lines -->
-    <line x1="220" y1="${isShort ? 280 : 170}" x2="920" y2="${isShort ? 280 : 170}" stroke="#38bdf8" stroke-dasharray="3 3" stroke-width="1.5"/>
-    <text x="700" y="${isShort ? 275 : 165}" fill="#38bdf8" font-size="9" font-weight="bold">🏁 TP1 1.272 Fib (Импульс): $${state.tp1.toFixed(2)}</text>
+    <line x1="220" y1="${isShort ? 280 : 170}" x2="920" y2="${isShort ? 280 : 170}" stroke="${tp1LineColor}" stroke-dasharray="3 3" stroke-width="1.5"/>
+    <text x="700" y="${isShort ? 275 : 165}" fill="${tp1LineColor}" font-size="9" font-weight="bold" ${textDecor}>🏁 TP1: $${state.tp1.toFixed(2)}${isMissed ? " [ВЗЯТ БЕЗ ВХОДА]" : ""}</text>
 
-    <line x1="220" y1="${isShort ? 330 : 120}" x2="920" y2="${isShort ? 330 : 120}" stroke="#eab308" stroke-width="2"/>
-    <text x="700" y="${isShort ? 325 : 115}" fill="#fde047" font-size="9" font-weight="bold">🎯 TP2 1.618 Fib Target: $${state.tp2.toFixed(2)}</text>
+    <line x1="220" y1="${isShort ? 330 : 120}" x2="920" y2="${isShort ? 330 : 120}" stroke="${tp2LineColor}" stroke-width="2"/>
+    <text x="700" y="${isShort ? 325 : 115}" fill="${isMissed ? "#9ca3af" : "#fde047"}" font-size="9" font-weight="bold" ${textDecor}>🎯 TP2 (Структура / Стены): $${state.tp2.toFixed(2)}</text>
 
     <!-- Left HUD Box: Setup summary -->
-    <rect x="25" y="110" width="215" height="110" fill="#1e1b4b" fill-opacity="0.4" stroke="#6366f1" stroke-width="1" rx="4"/>
-    <text x="35" y="128" fill="#a5b4fc" font-size="10" font-weight="bold">🎯 Сетап: ${state.setupName}</text>
-    <text x="35" y="146" fill="#e0e7ff" font-size="9" font-family="monospace">Вход OTE: $${state.entryPrice.toFixed(2)}</text>
-    <text x="35" y="164" fill="#fda4af" font-size="9" font-family="monospace">Stop Loss: $${state.trailingStop.toFixed(2)}</text>
-    <text x="35" y="182" fill="#38bdf8" font-size="9" font-family="monospace">TP1: $${state.tp1.toFixed(2)} | TP2: $${state.tp2.toFixed(2)}</text>
-    <text x="35" y="200" fill="#f59e0b" font-size="9" font-family="monospace">TP3 Target: $${state.tp3.toFixed(2)}</text>
+    <rect x="25" y="110" width="215" height="110" fill="#1e1b4b" fill-opacity="${isMissed ? "0.25" : "0.4"}" stroke="${isMissed ? "#6b7280" : "#6366f1"}" stroke-width="1" rx="4"/>
+    <text x="35" y="128" fill="${isMissed ? "#9ca3af" : "#a5b4fc"}" font-size="10" font-weight="bold">🎯 Сетап: ${state.setupName}</text>
+    <text x="35" y="146" fill="${isMissed ? "#9ca3af" : "#e0e7ff"}" font-size="9" font-family="monospace" ${textDecor}>Вход: $${state.entryPrice.toFixed(2)}${isMissed ? " (НЕ ВЗЯТ)" : ""}</text>
+    <text x="35" y="164" fill="${isMissed ? "#9ca3af" : "#fda4af"}" font-size="9" font-family="monospace">Stop Loss: $${state.trailingStop.toFixed(2)}</text>
+    <text x="35" y="182" fill="${tp1LineColor}" font-size="9" font-family="monospace" ${textDecor}>TP1: $${state.tp1.toFixed(2)} | TP2: $${state.tp2.toFixed(2)}</text>
+    <text x="35" y="200" fill="${isMissed ? "#9ca3af" : "#f59e0b"}" font-size="9" font-family="monospace">TP3 Target: $${state.tp3.toFixed(2)}</text>
     <text x="35" y="214" fill="#c084fc" font-size="8">Слом SL: $${altLevel.toFixed(2)}</text>
 
     <!-- TradingView Pine Script Wave Forecast Path -->
     ${isShort ? `
       <!-- SHORT 4-Leg Forecast Waves (y0 -> y1 Entry -> y2 TP1 -> y3 TP2 -> y4 TP3) -->
-      <polyline points="300,180 380,165 480,280 600,330 700,360" fill="none" stroke="#ef4444" stroke-width="3" stroke-dasharray="5 3"/>
-      <polygon points="700,360 690,350 698,345" fill="#ef4444"/>
-      
-      <!-- Nodes -->
-      <circle cx="380" cy="165" r="5" fill="#fb7185"/>
-      <text x="388" y="160" fill="#fda4af" font-size="9" font-weight="bold">📍 ВХОД $${state.entryPrice.toFixed(2)} ↘</text>
-      
-      <circle cx="480" cy="280" r="5" fill="#38bdf8"/>
-      <text x="488" y="275" fill="#38bdf8" font-size="9" font-weight="bold">🏁 TP1 $${state.tp1.toFixed(2)}</text>
-      
-      <circle cx="600" cy="330" r="6" fill="#eab308"/>
-      <text x="608" y="325" fill="#fde047" font-size="9" font-weight="bold">🎯 TP2 $${state.tp2.toFixed(2)}</text>
-
-      <!-- Alternative Wave Path if SL breached -->
-      <polyline points="380,165 450,110 550,75" fill="none" stroke="#10b981" stroke-width="1.8" stroke-dasharray="2 3"/>
-      <text x="460" y="98" fill="#34d399" font-size="8">💥 АЛЬТЕРНАТИВА (Памп при сломе SL: $${altLevel.toFixed(2)})</text>
+      <g ${waveOpacity}>
+        <polyline points="300,180 380,165 480,280 600,330 700,360" fill="none" stroke="${isMissed ? "#6b7280" : "#ef4444"}" stroke-width="3" stroke-dasharray="${isMissed ? "3 3" : "5 3"}"/>
+        <polygon points="700,360 690,350 698,345" fill="${isMissed ? "#6b7280" : "#ef4444"}"/>
+        
+        <!-- Nodes -->
+        <circle cx="380" cy="165" r="5" fill="${isMissed ? "#6b7280" : "#fb7185"}"/>
+        <text x="388" y="160" fill="${isMissed ? "#9ca3af" : "#fda4af"}" font-size="9" font-weight="bold" ${textDecor}>📍 ВХОД $${state.entryPrice.toFixed(2)} ${isMissed ? "🚫" : "↘"}</text>
+        
+        <circle cx="480" cy="280" r="5" fill="${tp1LineColor}"/>
+        <text x="488" y="275" fill="${tp1LineColor}" font-size="9" font-weight="bold" ${textDecor}>🏁 TP1 $${state.tp1.toFixed(2)}</text>
+        
+        <circle cx="600" cy="330" r="6" fill="${tp2LineColor}"/>
+        <text x="608" y="325" fill="${isMissed ? "#9ca3af" : "#fde047"}" font-size="9" font-weight="bold" ${textDecor}>🎯 TP2 $${state.tp2.toFixed(2)}</text>
+      </g>
     ` : `
       <!-- LONG 4-Leg Forecast Waves (y0 -> y1 Entry -> y2 TP1 -> y3 TP2 -> y4 TP3) -->
-      <polyline points="300,240 380,270 480,170 600,120 700,85" fill="none" stroke="#10b981" stroke-width="3" stroke-dasharray="5 3"/>
-      <polygon points="700,85 690,95 698,100" fill="#10b981"/>
-      
-      <!-- Nodes -->
-      <circle cx="380" cy="270" r="5" fill="#34d399"/>
-      <text x="388" y="285" fill="#34d399" font-size="9" font-weight="bold">📍 ВХОД $${state.entryPrice.toFixed(2)} ↗</text>
-      
-      <circle cx="480" cy="170" r="5" fill="#38bdf8"/>
-      <text x="488" y="165" fill="#38bdf8" font-size="9" font-weight="bold">🏁 TP1 $${state.tp1.toFixed(2)}</text>
-      
-      <circle cx="600" cy="120" r="6" fill="#eab308"/>
-      <text x="608" y="115" fill="#fde047" font-size="9" font-weight="bold">🎯 TP2 $${state.tp2.toFixed(2)}</text>
-
-      <!-- Alternative Wave Path if SL breached -->
-      <polyline points="380,270 450,375 550,410" fill="none" stroke="#ef4444" stroke-width="1.8" stroke-dasharray="2 3"/>
-      <text x="460" y="390" fill="#f87171" font-size="8">💥 АЛЬТЕРНАТИВА (Дамп при сломе SL: $${altLevel.toFixed(2)})</text>
+      <g ${waveOpacity}>
+        <polyline points="300,240 380,270 480,170 600,120 700,85" fill="none" stroke="${isMissed ? "#6b7280" : "#10b981"}" stroke-width="3" stroke-dasharray="${isMissed ? "3 3" : "5 3"}"/>
+        <polygon points="700,85 690,95 698,100" fill="${isMissed ? "#6b7280" : "#10b981"}"/>
+        
+        <!-- Nodes -->
+        <circle cx="380" cy="270" r="5" fill="${isMissed ? "#6b7280" : "#34d399"}"/>
+        <text x="388" y="285" fill="${isMissed ? "#9ca3af" : "#34d399"}" font-size="9" font-weight="bold" ${textDecor}>📍 ВХОД $${state.entryPrice.toFixed(2)} ${isMissed ? "🚫" : "↗"}</text>
+        
+        <circle cx="480" cy="170" r="5" fill="${tp1LineColor}"/>
+        <text x="488" y="165" fill="${tp1LineColor}" font-size="9" font-weight="bold" ${textDecor}>🏁 TP1 $${state.tp1.toFixed(2)}</text>
+        
+        <circle cx="600" cy="120" r="6" fill="${tp2LineColor}"/>
+        <text x="608" y="115" fill="${isMissed ? "#9ca3af" : "#fde047"}" font-size="9" font-weight="bold" ${textDecor}>🎯 TP2 $${state.tp2.toFixed(2)}</text>
+      </g>
     `}
 
     <!-- TradingView Compact Multi-TF Dashboard Table in Bottom-Left -->
@@ -1703,15 +1810,20 @@ let goldScheduleConfig: GoldScheduleConfig = {
   • Точки входа:
     - Агрессивный вход (по текущей цене / на первом тесте уровня)
     - Консервативный вход (в зоне OTE 0.618–0.786 / подтверждение отката)
-  • Стоп-лосс (SL): точный уровень, обязательно привязанный к опционным уровням GEX (Call Wall / Put Wall)
+  • Стоп-лосс (SL): точный уровень, обязательно привязанный к опционным уровням GEX: Потолок (CW) / Пол (PW) с указанием горизонта (Дневной/Недельный/Месячный)
   • Тейк-профиты:
     - TP1: первичная фиксация 50% объема и перевод стопа в безубыток
-    - TP2: основная цель
+    - TP2: основная цель (уровень Магнит или Потолок/Пол)
     - TP3: максимальный импульс
 - Альтернативный сценарий: условия при которых он сработает (пробой экстремума / противоположный уровень)
 - Важно: Ключевой уровень отмены (инвалидации) текущего сценария
 
-Связь с GEX: Уровни Call Wall, Put Wall, Max Pain и Zero Flip обязательно интегрируй в логику торгового плана (например: «Стоп ставим за уровень Call Wall / Put Wall», «Тейк 1 на Max Pain»).`,
+Связь с GEX и динамическая роль уровней: 
+Используй строгий стандарт именования: Потолок (CW, Дневной/Месячный), Пол (PW, Дневной/Месячный), Флип (Flip, Дневной), Магнит (Месячный).
+Обязательно учитывай динамическую смену ролей:
+- Если цена пробила Пол (PW) вниз и находится ниже него — уровень называется «Сопротивление (Бывшая поддержка)».
+- Если цена пробила Потолок (CW) вверх и находится выше — уровень называется «Поддержка (Бывшее сопротивление)».
+Интегрируй эти уровни в логику плана (например: «Стоп ставим за Потолок (CW, Дневной)», «Тейк 1 на Магнит (Месячный)»).`,
   scheduleCalendar: defaultCalendarSlots,
   scheduleCalendarEnabled: true,
   chartSourceMode: "tradingview_link",
@@ -2610,6 +2722,25 @@ async function broadcastNewsAlertToTelegram(item: MacroNewsItem): Promise<boolea
     `\n📝 <b>Суть:</b>\n<i>${item.summary}</i>\n\n` +
     `💡 <b>Влияние на цену золота:</b>\n<i>${item.goldEffect}</i>\n`;
 
+  // Append current standardized GEX barrier levels with dynamic roles
+  try {
+    const dual = cachedDualMarketData;
+    if (dual && dual.scriptIndicators?.gex) {
+      const g = dual.scriptIndicators.gex;
+      const spot = dual.oanda.price;
+      const cwRole = getLevelRole("CALL_WALL", g.callWall, spot, "DAY");
+      const pwRole = getLevelRole("PUT_WALL", g.putWall, spot, "DAY");
+      const flipRole = getLevelRole("GAMMA_FLIP", g.zeroFlip, spot, "DAY");
+      const painRole = getLevelRole("MAX_PAIN", g.maxPain, spot, "MONTH");
+
+      msg += `\n🏛️ <b>Опционные барьеры GEX (CME):</b>\n` +
+        `• <b>${cwRole.fullName}</b> <i>[${cwRole.role}]</i>\n` +
+        `• <b>${pwRole.fullName}</b> <i>[${pwRole.role}]</i>\n` +
+        `• <b>${flipRole.fullName}</b>\n` +
+        `• <b>${painRole.fullName}</b>\n`;
+    }
+  } catch {}
+
   if (item.url) {
     msg += `\n🔗 <a href="${item.url}">Читать первоисточник новости</a>\n`;
   }
@@ -2964,6 +3095,11 @@ async function runDeepSeekAnalysis(params: {
     // OPTION 2: Built-in QUANTEX Indicator Engine on Server
     const s = calculateStandaloneIndicatorState(pair, dualMarketData?.oanda?.price);
     generatedSvg = generateStandaloneChartSvg(pair, s);
+    const sCwRole = getLevelRole("CALL_WALL", s.gex.callWall, s.currentPrice, "DAY");
+    const sPwRole = getLevelRole("PUT_WALL", s.gex.putWall, s.currentPrice, "DAY");
+    const sFlipRole = getLevelRole("GAMMA_FLIP", s.gex.zeroFlip, s.currentPrice, "DAY");
+    const sPainRole = getLevelRole("MAX_PAIN", s.gex.maxPain, s.currentPrice, "MONTH");
+
     chartDataBlock = `[ИСТОЧНИК ДАННЫХ: ВСТРОЕННЫЙ АВТОНОМНЫЙ ДВИЖОК QUANTEX INDICATOR STUDIO (БЕЗ TRADINGVIEW)]
 - Инструмент: ${pair} | Таймфреймы: ${tfs.join(", ")}
 - Лоренцевский ML классификатор: ${s.mlSignal} (Уверенность алгоритма: ${s.mlConfidence}%)
@@ -2975,10 +3111,10 @@ async function runDeepSeekAnalysis(params: {
 - 1H Fair Value Gap (FVG Имбаланс): ${s.fvgZone}
 - 🏛️ Опционный профиль GEX (Gamma Exposure CME):
   * Текущий режим: ${s.gex.regime} (${s.gex.gammaExposure})
-  * Call Wall (Потолок дилеров / Ключевое сопротивление): ${s.gex.callWall.toFixed(2)}
-  * Put Wall (Пол дилеров / Институциональная поддержка): ${s.gex.putWall.toFixed(2)}
-  * Zero-Gamma Flip (Граница смены режима волатильности): ${s.gex.zeroFlip.toFixed(2)}
-  * Max Pain Pinning Target (Гравитационный магнит экспирации): ${s.gex.maxPain.toFixed(2)}
+  * Потолок (CW, Дневной): ${s.gex.callWall.toFixed(2)} [Роль: ${sCwRole.role}]
+  * Пол (PW, Дневной): ${s.gex.putWall.toFixed(2)} [Роль: ${sPwRole.role}]
+  * Флип (Flip, Дневной): ${s.gex.zeroFlip.toFixed(2)} [Роль: ${sFlipRole.role}]
+  * Магнит (Месячный): ${s.gex.maxPain.toFixed(2)} [Роль: ${sPainRole.role}]
   * Поведение дилеров: ${s.gex.dealerStance}
 - 5ТФ Консенсус трендов: 15m (${s.consensus.m15}), 30m (${s.consensus.m30}), 1H (${s.consensus.h1}), 4H (${s.consensus.h4}), 1D (${s.consensus.d1})`;
   } else if (sourceMode === "tradingview_link") {
@@ -2998,20 +3134,27 @@ async function runDeepSeekAnalysis(params: {
     }
 
     const baseP = dualMarketData ? dualMarketData.oanda.price : 4186.80;
+    const tvCwRole = getLevelRole("CALL_WALL", baseP + 25, baseP, "DAY");
+    const tvPwRole = getLevelRole("PUT_WALL", baseP - 22, baseP, "DAY");
     chartDataBlock = `[ИСТОЧНИК ДАННЫХ: СОХРАНЕННЫЙ ГРАФИК TRADINGVIEW С НАЛОЖЕННЫМ ИНДИКАТОРОМ QUANTEX]
 - Ссылка на чарт: ${tvUrl}
 - Режим отображения таймфреймов: ${tfDetail}
 - Индикатор на графике: QUANTEX SuperFusion v6 (Лоренцевский ML + CVD Дельта + 5TF Консенсус + GEX Gamma Engine)
-- GEX Опционные уровни CME: Call Wall ${(baseP + 25).toFixed(2)} | Put Wall ${(baseP - 22).toFixed(2)} | Zero-Gamma Flip ${(baseP - 5.5).toFixed(2)} | Max Pain ${(baseP + 3).toFixed(2)} (+GAMMA Режим)
+- GEX Опционные уровни CME: Потолок (CW, Дневной): ${(baseP + 25).toFixed(2)} [${tvCwRole.role}] | Пол (PW, Дневной): ${(baseP - 22).toFixed(2)} [${tvPwRole.role}] | Флип (Flip, Дневной): ${(baseP - 5.5).toFixed(2)} | Магнит (Месячный): ${(baseP + 3).toFixed(2)} (+GAMMA Режим)
 - Текущие котировки: XAUUSD вблизи ключевых пулов ликвидности.`;
   } else {
     // OPTION 3: Manual Screenshot / Paste
     chartDataBlock = `[ИСТОЧНИК ДАННЫХ: РУЧНАЯ ЗАГРУЗКА СКРИНШОТА / CTRL+V]
-- Анализ предоставленного трейдером графика ${pair} (${tfs.join(", ")}) с учетом опционных уровней GEX (Call Wall, Put Wall, Zero Flip, Max Pain)`;
+- Анализ предоставленного трейдером графика ${pair} (${tfs.join(", ")}) с учетом опционных уровней GEX: Потолок (CW), Пол (PW), Флип (Flip), Магнит`;
   }
 
   // Inject real live dual-market data if enabled
   if (dualMarketData) {
+    const dSpot = dualMarketData.oanda.price;
+    const dCwRole = getLevelRole("CALL_WALL", dualMarketData.scriptIndicators.gex.callWall, dSpot, "DAY");
+    const dPwRole = getLevelRole("PUT_WALL", dualMarketData.scriptIndicators.gex.putWall, dSpot, "DAY");
+    const dPainRole = getLevelRole("MAX_PAIN", dualMarketData.scriptIndicators.gex.maxPain, dSpot, "MONTH");
+
     chartDataBlock += `\n\n[🇷🇺 ДВУХРЫНОЧНЫЙ СИНТЕЗ С НАЛОЖЕНИЕМ СКРИПТА: OANDA XAUUSD + ФЬЮЧЕРСЫ МОСКОВСКОЙ БИРЖИ FORTS (${dualMarketData.moex.ticker})]
 1. МИРОВОЙ СПОТ (OANDA XAUUSD):
    - Текущая цена: $${dualMarketData.oanda.price.toFixed(2)}/oz (Day High: $${dualMarketData.oanda.high.toFixed(2)}, Day Low: $${dualMarketData.oanda.low.toFixed(2)})
@@ -3036,9 +3179,9 @@ async function runDeepSeekAnalysis(params: {
      * Точка входа: $${dualMarketData.scriptIndicators.entryPrice}
      * Защитный Stop Loss / Трейлинг: $${dualMarketData.scriptIndicators.trailingStop}
      * Take Profit 1: $${dualMarketData.scriptIndicators.tp1}
-     * Take Profit 2 (GEX Wall): $${dualMarketData.scriptIndicators.tp2}
+     * Take Profit 2 (Потолок/Пол): $${dualMarketData.scriptIndicators.tp2}
      * Take Profit 3 (HTF Target): $${dualMarketData.scriptIndicators.tp3}
-   - CME GEX Call Wall: $${dualMarketData.scriptIndicators.gex.callWall.toFixed(2)} | Max Pain: $${dualMarketData.scriptIndicators.gex.maxPain.toFixed(2)} | Put Wall: $${dualMarketData.scriptIndicators.gex.putWall.toFixed(2)}
+   - CME GEX Опционные уровни: Потолок (CW, Дневной): $${dualMarketData.scriptIndicators.gex.callWall.toFixed(2)} [${dCwRole.role}] | Магнит (Месячный): $${dualMarketData.scriptIndicators.gex.maxPain.toFixed(2)} [${dPainRole.role}] | Пол (PW, Дневной): $${dualMarketData.scriptIndicators.gex.putWall.toFixed(2)} [${dPwRole.role}]
    - Уровни MOEX GD: Вход $${dualMarketData.scriptIndicators.moexLevels.moexEntry} | SL $${dualMarketData.scriptIndicators.moexLevels.moexSl} | TP1 $${dualMarketData.scriptIndicators.moexLevels.moexTargetTp1} | TP2 $${dualMarketData.scriptIndicators.moexLevels.moexTargetTp2}
    - 5TF Консенсус скрипта: ${dualMarketData.scriptIndicators.consensusSummary}`;
   }
@@ -4101,12 +4244,13 @@ app.post("/api/system/git-init-repo", async (req, res) => {
 
 // --- AUTONOMOUS QUANTEX TRADING STATION API (GEX, CANDLES, AI, CALENDAR, JOURNAL) ---
 
-// 1. Live GEX Report
+// 1. Live GEX Report (Stabilized with Hysteresis & Active Trade Freeze)
 app.get("/api/gex/report", async (req, res) => {
   try {
     const asset = (req.query.asset as string) || "BTC";
     const horizon = ((req.query.horizon as string)?.toUpperCase() as any) || "WEEK";
-    const report = await getGexReportForAsset(asset, horizon);
+    const spotPrice = req.query.spot ? Number(req.query.spot) : undefined;
+    const report = await getStabilizedGexReport(asset, horizon, spotPrice);
     res.json({ success: true, report });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -10597,8 +10741,8 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     if (!currentMonthCw || !currentMonthPw || !currentDayCw) {
       try {
         const [dReport, mReport] = await Promise.all([
-          !currentDayCw ? getGexReportForAsset(ticker, "DAY") : null,
-          (!currentMonthCw || !currentMonthPw) ? getGexReportForAsset(ticker, "MONTH") : null
+          !currentDayCw ? getStabilizedGexReport(ticker, "DAY", currentPriceNum) : null,
+          (!currentMonthCw || !currentMonthPw) ? getStabilizedGexReport(ticker, "MONTH", currentPriceNum) : null
         ]);
         if (dReport) {
           if (!currentDayCw) currentDayCw = Number(dReport.callWall);

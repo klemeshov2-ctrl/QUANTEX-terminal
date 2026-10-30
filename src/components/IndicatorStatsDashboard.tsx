@@ -40,6 +40,7 @@ export type IndicatorSetupStatus =
   | "WIN_TRAILING"
   | "LOSS_SL"
   | "NOT_TRIGGERED"
+  | "MISSED_ENTRY"
   | "EXPIRED";
 
 export interface IndicatorSetupItem {
@@ -251,6 +252,7 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
       if (filterStatus === "LOSS" && s.status !== "LOSS_SL") return false;
       if (filterStatus === "PENDING" && s.status !== "PENDING") return false;
       if (filterStatus === "NOT_TRIGGERED" && s.status !== "NOT_TRIGGERED") return false;
+      if (filterStatus === "MISSED_ENTRY" && s.status !== "MISSED_ENTRY") return false;
     }
     return true;
   });
@@ -590,6 +592,7 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                     <option value="LOSS">Стопы (LOSS SL)</option>
                     <option value="PENDING">В работе (PENDING)</option>
                     <option value="NOT_TRIGGERED">Не исполнен (сменился сетап)</option>
+                    <option value="MISSED_ENTRY">Недоход (MISSED ENTRY)</option>
                   </select>
                 </div>
               </div>
@@ -606,6 +609,7 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                 const isLoss = setup.status === "LOSS_SL";
                 const isPending = setup.status === "PENDING";
                 const isNotTriggered = setup.status === "NOT_TRIGGERED";
+                const isMissedEntry = setup.status === "MISSED_ENTRY";
 
                 const isLong = setup.direction === "LONG";
 
@@ -617,6 +621,8 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                         ? "bg-[#0b141b] border-emerald-500/30 hover:border-emerald-500/60"
                         : isLoss
                         ? "bg-[#180e14] border-rose-500/30 hover:border-rose-500/60"
+                        : isMissedEntry
+                        ? "bg-[#11131a] border-gray-700/80 hover:border-gray-600 opacity-85"
                         : isNotTriggered
                         ? "bg-[#15131a] border-amber-500/30 hover:border-amber-500/60"
                         : "bg-[#0d1222] border-cyan-500/40 hover:border-cyan-500/70"
@@ -626,7 +632,9 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                     <div className="flex items-start justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className={`px-2 py-0.5 rounded text-[11px] font-black font-mono tracking-wider flex items-center gap-1 ${
-                          isLong
+                          isMissedEntry
+                            ? "bg-gray-800 text-gray-400 border border-gray-700"
+                            : isLong
                             ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                             : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
                         }`}>
@@ -659,6 +667,11 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                             <XCircle className="h-3 w-3" />
                             <span>СТОП-ЛОСС</span>
                           </span>
+                        ) : isMissedEntry ? (
+                          <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700 font-bold text-[10.5px] flex items-center gap-1 line-through">
+                            <XCircle className="h-3 w-3 text-gray-400" />
+                            <span>НЕДОХОД (MISSED ENTRY)</span>
+                          </span>
                         ) : isNotTriggered ? (
                           <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold text-[10.5px] flex items-center gap-1">
                             <AlertTriangle className="h-3 w-3" />
@@ -672,7 +685,7 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                         )}
 
                         <span className={`font-mono font-black text-xs sm:text-sm ${
-                          isWin ? "text-emerald-400" : isLoss ? "text-rose-400" : isNotTriggered ? "text-gray-400" : "text-cyan-300"
+                          isWin ? "text-emerald-400" : isLoss ? "text-rose-400" : (isNotTriggered || isMissedEntry) ? "text-gray-400" : "text-cyan-300"
                         }`}>
                           {setup.pnlPercent !== undefined ? (
                             <span>{setup.pnlPercent >= 0 ? `+${setup.pnlPercent}%` : `${setup.pnlPercent}%`} ({setup.pnlR}R)</span>
@@ -689,11 +702,11 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                       <div className="bg-[#070a12] p-2 rounded-xl border border-gray-800">
                         <span className="text-[9.5px] text-gray-400 block uppercase font-sans">1. Точка входа:</span>
                         <div className="flex items-center justify-between mt-0.5">
-                          <span className="font-bold text-white text-xs">{setup.entryPrice}</span>
+                          <span className={`font-bold text-xs ${isMissedEntry ? "line-through text-gray-500" : "text-white"}`}>{setup.entryPrice}</span>
                           <span className={`text-[9.5px] px-1 py-0.2 rounded font-bold ${
-                            setup.entryTriggered ? "bg-emerald-500/20 text-emerald-300" : isNotTriggered ? "bg-amber-500/20 text-amber-300" : "bg-gray-800 text-gray-400"
+                            setup.entryTriggered ? "bg-emerald-500/20 text-emerald-300" : isMissedEntry ? "bg-gray-800 text-gray-400 line-through" : isNotTriggered ? "bg-amber-500/20 text-amber-300" : "bg-gray-800 text-gray-400"
                           }`}>
-                            {setup.entryTriggered ? "✅ Сработала" : isNotTriggered ? "⚠️ Не активирована" : "⏳ В ожидании"}
+                            {setup.entryTriggered ? "✅ Сработала" : isMissedEntry ? "🚫 Недоход" : isNotTriggered ? "⚠️ Не активирована" : "⏳ В ожидании"}
                           </span>
                         </div>
                       </div>
@@ -702,11 +715,11 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                       <div className="bg-[#070a12] p-2 rounded-xl border border-gray-800">
                         <span className="text-[9.5px] text-emerald-400 block uppercase font-sans">2. Тейк-Профит 1:</span>
                         <div className="flex items-center justify-between mt-0.5">
-                          <span className="font-bold text-emerald-300 text-xs">{setup.tp1}</span>
+                          <span className={`font-bold text-xs ${isMissedEntry ? "text-gray-500 line-through" : "text-emerald-300"}`}>{setup.tp1}</span>
                           <span className={`text-[9.5px] px-1 py-0.2 rounded font-bold ${
-                            setup.tp1Hit ? "bg-emerald-500/20 text-emerald-300" : "bg-gray-800 text-gray-400"
+                            setup.tp1Hit ? "bg-emerald-500/20 text-emerald-300" : isMissedEntry ? "bg-gray-800 text-gray-400 line-through" : "bg-gray-800 text-gray-400"
                           }`}>
-                            {setup.tp1Hit ? "✅ Взят" : "⏳ Ожидание"}
+                            {setup.tp1Hit ? "✅ Взят" : isMissedEntry ? "🚫 Пропущен" : "⏳ Ожидание"}
                           </span>
                         </div>
                       </div>
@@ -715,11 +728,11 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                       <div className="bg-[#070a12] p-2 rounded-xl border border-gray-800">
                         <span className="text-[9.5px] text-emerald-400 block uppercase font-sans">3. Тейк-Профит 2:</span>
                         <div className="flex items-center justify-between mt-0.5">
-                          <span className="font-bold text-emerald-300 text-xs">{setup.tp2}</span>
+                          <span className={`font-bold text-xs ${isMissedEntry ? "text-gray-500 line-through" : "text-emerald-300"}`}>{setup.tp2}</span>
                           <span className={`text-[9.5px] px-1 py-0.2 rounded font-bold ${
-                            setup.tp2Hit ? "bg-emerald-500/20 text-emerald-300" : "bg-gray-800 text-gray-400"
+                            setup.tp2Hit ? "bg-emerald-500/20 text-emerald-300" : isMissedEntry ? "bg-gray-800 text-gray-400 line-through" : "bg-gray-800 text-gray-400"
                           }`}>
-                            {setup.tp2Hit ? "✅ Взят" : "⏳ Ожидание"}
+                            {setup.tp2Hit ? "✅ Взят" : isMissedEntry ? "🚫 Пропущен" : "⏳ Ожидание"}
                           </span>
                         </div>
                       </div>
@@ -728,11 +741,11 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
                       <div className="bg-[#070a12] p-2 rounded-xl border border-gray-800">
                         <span className="text-[9.5px] text-rose-400 block uppercase font-sans">4. Трейлинг / Стоп-лосс:</span>
                         <div className="flex items-center justify-between mt-0.5">
-                          <span className="font-bold text-rose-300 text-xs">{setup.activeTrailingSl}</span>
+                          <span className={`font-bold text-xs ${isMissedEntry ? "text-gray-500 line-through" : "text-rose-300"}`}>{setup.activeTrailingSl}</span>
                           <span className={`text-[9.5px] px-1 py-0.2 rounded font-bold ${
-                            setup.trailingHit ? "bg-cyan-500/20 text-cyan-300" : setup.slHit ? "bg-rose-500/20 text-rose-300" : "bg-gray-800 text-gray-400"
+                            isMissedEntry ? "bg-gray-800 text-gray-400 line-through" : setup.trailingHit ? "bg-cyan-500/20 text-cyan-300" : setup.slHit ? "bg-rose-500/20 text-rose-300" : "bg-gray-800 text-gray-400"
                           }`}>
-                            {setup.trailingHit ? "🔒 Трейл сработал" : setup.slHit ? "❌ Стоп сработал" : setup.trailingStageStr}
+                            {isMissedEntry ? "🚫 Отменен" : setup.trailingHit ? "🔒 Трейл сработал" : setup.slHit ? "❌ Стоп сработал" : setup.trailingStageStr}
                           </span>
                         </div>
                       </div>

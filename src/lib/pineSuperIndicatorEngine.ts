@@ -354,6 +354,7 @@ export interface ForecastState {
   barsSinceStart?: number;
   isLocked?: boolean;
   statusReason?: string;
+  isMissedEntry?: boolean;
   startPrice: number;
   p1Entry: number; // Вход
   p2Tp1: number;   // TP1
@@ -1500,28 +1501,6 @@ export function evaluateSuperIndicator(
       }
       entry = Math.round(entry * 100) / 100;
 
-      // TP1 anchored to entry
-      const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
-      let candP2 = entry + tp1Dist;
-      for (let i = cleanBearOb.length - 1; i >= 0; i--) {
-        const ob = cleanBearOb[i];
-        if (ob.left <= bIdx && ob.bottom >= entry + bAtr * min_tp1_atr && ob.bottom <= entry + bAtr * max_tp1_atr * tpMult) {
-          candP2 = ob.bottom;
-          break;
-        }
-      }
-      candP2 = f_avoid_round(candP2, true, bAtr);
-      const tp1 = Math.max(entry + bAtr * min_tp1_atr, Math.min(entry + bAtr * max_tp1_atr * tpMult, candP2));
-
-      // TP2 anchored strictly above TP1
-      const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
-      let candP3 = Math.max(tp1 + bAtr * min_tp2_atr, entry + tp2Dist);
-      candP3 = f_avoid_round(candP3, true, bAtr);
-      const tp2 = Math.max(tp1 + bAtr * min_tp2_atr, Math.min(entry + bAtr * max_tp2_atr * tpMult, candP3));
-
-      // TP3 strictly above TP2
-      const tp3 = tp2 + bAtr * Math.max(0.85, 1.10 * tpMult);
-
       // Stop Loss strictly below entry
       let sl = entry - bAtr * 0.85;
       const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
@@ -1533,6 +1512,55 @@ export function evaluateSuperIndicator(
       }
       sl = f_avoid_round_sl(sl, true, bAtr);
       sl = Math.min(entry - bAtr * 0.35, sl);
+      const riskDist = Math.max(entry - sl, bAtr * 0.75, 2.0);
+
+      const isNegativeGamma = close < gammaFlip || Boolean(gex?.isDumping);
+      const isTrendingOrNegGamma = isTrending || isNegativeGamma;
+
+      let tp1: number;
+      let tp2: number;
+      let tp3: number;
+
+      if (isTrendingOrNegGamma) {
+        // Enforce R:R >= 1:3 anchored to structural levels (Call Wall, swing highs, OBs)
+        const minTrendTp1Dist = Math.max(riskDist * 3.0, bAtr * 2.8);
+        let structuralTarget = entry + minTrendTp1Dist;
+
+        if (callWall > entry + minTrendTp1Dist) {
+          structuralTarget = callWall;
+        }
+
+        const recentHighs = candles.slice(Math.max(0, bIdx - 30), bIdx + 1).map(c => c.high);
+        const swingHigh = Math.max(...recentHighs);
+        if (swingHigh > entry + minTrendTp1Dist && (callWall <= entry + minTrendTp1Dist || swingHigh < callWall)) {
+          structuralTarget = swingHigh;
+        }
+
+        structuralTarget = f_avoid_round(structuralTarget, true, bAtr);
+        tp1 = Math.max(entry + minTrendTp1Dist, structuralTarget);
+        tp2 = Math.max(tp1 + riskDist * 1.5, callWall > tp1 ? callWall : tp1 + bAtr * 2.5);
+        tp2 = f_avoid_round(tp2, true, bAtr);
+        tp3 = tp2 + Math.max(riskDist * 1.5, bAtr * 2.0);
+      } else {
+        // Flat / ranging market: keep standard short bounded scalp targets
+        const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
+        let candP2 = entry + tp1Dist;
+        for (let i = cleanBearOb.length - 1; i >= 0; i--) {
+          const ob = cleanBearOb[i];
+          if (ob.left <= bIdx && ob.bottom >= entry + bAtr * min_tp1_atr && ob.bottom <= entry + bAtr * max_tp1_atr * tpMult) {
+            candP2 = ob.bottom;
+            break;
+          }
+        }
+        candP2 = f_avoid_round(candP2, true, bAtr);
+        tp1 = Math.max(entry + bAtr * min_tp1_atr, Math.min(entry + bAtr * max_tp1_atr * tpMult, candP2));
+
+        const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
+        let candP3 = Math.max(tp1 + bAtr * min_tp2_atr, entry + tp2Dist);
+        candP3 = f_avoid_round(candP3, true, bAtr);
+        tp2 = Math.max(tp1 + bAtr * min_tp2_atr, Math.min(entry + bAtr * max_tp2_atr * tpMult, candP3));
+        tp3 = tp2 + bAtr * Math.max(0.85, 1.10 * tpMult);
+      }
 
       const altTp1 = sl - bAtr * 1.5;
       const altTp2 = sl - bAtr * 3.0;
@@ -1565,28 +1593,6 @@ export function evaluateSuperIndicator(
       }
       entry = Math.round(entry * 100) / 100;
 
-      // TP1 anchored to entry (strictly below entry)
-      const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
-      let candP2 = entry - tp1Dist;
-      for (let i = cleanBullOb.length - 1; i >= 0; i--) {
-        const ob = cleanBullOb[i];
-        if (ob.left <= bIdx && ob.top <= entry - bAtr * min_tp1_atr && ob.top >= entry - bAtr * max_tp1_atr * tpMult) {
-          candP2 = ob.top;
-          break;
-        }
-      }
-      candP2 = f_avoid_round(candP2, false, bAtr);
-      const tp1 = Math.min(entry - bAtr * min_tp1_atr, Math.max(entry - bAtr * max_tp1_atr * tpMult, candP2));
-
-      // TP2 anchored strictly below TP1 (GUARANTEE: TP2 < TP1 ALWAYS!)
-      const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
-      let candP3 = Math.min(tp1 - bAtr * min_tp2_atr, entry - tp2Dist);
-      candP3 = f_avoid_round(candP3, false, bAtr);
-      const tp2 = Math.min(tp1 - bAtr * min_tp2_atr, Math.max(entry - bAtr * max_tp2_atr * tpMult, candP3));
-
-      // TP3 strictly below TP2
-      const tp3 = tp2 - bAtr * Math.max(0.85, 1.10 * tpMult);
-
       // Stop Loss strictly above entry
       let sl = entry + bAtr * 0.85;
       const winSlice = candles.slice(Math.max(0, bIdx - 7), bIdx + 1);
@@ -1598,6 +1604,55 @@ export function evaluateSuperIndicator(
       }
       sl = f_avoid_round_sl(sl, false, bAtr);
       sl = Math.max(entry + bAtr * 0.35, sl);
+      const riskDist = Math.max(sl - entry, bAtr * 0.75, 2.0);
+
+      const isNegativeGamma = close < gammaFlip || Boolean(gex?.isDumping);
+      const isTrendingOrNegGamma = isTrending || isNegativeGamma;
+
+      let tp1: number;
+      let tp2: number;
+      let tp3: number;
+
+      if (isTrendingOrNegGamma) {
+        // Enforce R:R >= 1:3 anchored to structural levels (Put Wall, swing lows, OBs)
+        const minTrendTp1Dist = Math.max(riskDist * 3.0, bAtr * 2.8);
+        let structuralTarget = entry - minTrendTp1Dist;
+
+        if (putWall < entry - minTrendTp1Dist) {
+          structuralTarget = putWall;
+        }
+
+        const recentLows = candles.slice(Math.max(0, bIdx - 30), bIdx + 1).map(c => c.low);
+        const swingLow = Math.min(...recentLows);
+        if (swingLow < entry - minTrendTp1Dist && (putWall >= entry - minTrendTp1Dist || swingLow > putWall)) {
+          structuralTarget = swingLow;
+        }
+
+        structuralTarget = f_avoid_round(structuralTarget, false, bAtr);
+        tp1 = Math.min(entry - minTrendTp1Dist, structuralTarget);
+        tp2 = Math.min(tp1 - riskDist * 1.5, putWall < tp1 ? putWall : tp1 - bAtr * 2.5);
+        tp2 = f_avoid_round(tp2, false, bAtr);
+        tp3 = tp2 - Math.max(riskDist * 1.5, bAtr * 2.0);
+      } else {
+        // Flat / ranging market: keep standard short bounded scalp targets
+        const tp1Dist = bAtr * Math.max(min_tp1_atr, Math.min(max_tp1_atr * tpMult, 1.25 * tpMult));
+        let candP2 = entry - tp1Dist;
+        for (let i = cleanBullOb.length - 1; i >= 0; i--) {
+          const ob = cleanBullOb[i];
+          if (ob.left <= bIdx && ob.top <= entry - bAtr * min_tp1_atr && ob.top >= entry - bAtr * max_tp1_atr * tpMult) {
+            candP2 = ob.top;
+            break;
+          }
+        }
+        candP2 = f_avoid_round(candP2, false, bAtr);
+        tp1 = Math.min(entry - bAtr * min_tp1_atr, Math.max(entry - bAtr * max_tp1_atr * tpMult, candP2));
+
+        const tp2Dist = bAtr * Math.max(min_tp2_atr, Math.min(max_tp2_atr * tpMult, 2.10 * tpMult));
+        let candP3 = Math.min(tp1 - bAtr * min_tp2_atr, entry - tp2Dist);
+        candP3 = f_avoid_round(candP3, false, bAtr);
+        tp2 = Math.min(tp1 - bAtr * min_tp2_atr, Math.max(entry - bAtr * max_tp2_atr * tpMult, candP3));
+        tp3 = tp2 - bAtr * Math.max(0.85, 1.10 * tpMult);
+      }
 
       const altTp1 = sl + bAtr * 1.5;
       const altTp2 = sl + bAtr * 3.0;
@@ -1831,6 +1886,17 @@ export function evaluateSuperIndicator(
         trailingStageIdx > 0 &&
         bi > (leg2Idx ?? anchorIdx) &&
         (prev.isBull ? cb.low <= activeTrailingSl : cb.high >= activeTrailingSl);
+      
+      // Missed entry: price reached TP1 or TP2 before limit entry was hit
+      const isMissedEntryAtBi =
+        !leg1Hit &&
+        (prev.isBull
+          ? cb.high >= prev.p2Tp1
+          : cb.low <= prev.p2Tp1);
+      if (isMissedEntryAtBi) {
+        prev.isMissedEntry = true;
+      }
+
       // Runaway without entry: price already achieved TP1 or broke SL before entry ever triggered
       const runawayWithoutEntry =
         !leg1Hit &&
@@ -1854,6 +1920,7 @@ export function evaluateSuperIndicator(
     }
 
     const barsPassed = targetEndIdx - anchorIdx;
+    const isMissedEntry = Boolean(prev.isMissedEntry);
     const updatedForecast: ForecastState = {
       ...prev,
       startBar: anchorIdx,
@@ -1862,7 +1929,10 @@ export function evaluateSuperIndicator(
       startPrice: prev.startPrice,
       barsSinceStart: barsPassed,
       isLocked: true,
-      statusReason: `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
+      isMissedEntry,
+      statusReason: isMissedEntry
+        ? `🚫 НЕДОХОД (MISSED ENTRY) - Тейк взят до активации лимита`
+        : `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
       leg1Hit,
       leg1Idx,
       leg1Time,

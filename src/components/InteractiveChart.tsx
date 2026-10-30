@@ -425,6 +425,8 @@ export default function InteractiveChart({
     let leg1HitIdx = -1;
     let leg2HitIdx = -1;
 
+    let isMissedEntry = false;
+
     for (let i = anchorIdx + 1; i < candlesticks.length; i++) {
       const candle = candlesticks[i];
       if (!candle) continue;
@@ -433,10 +435,12 @@ export default function InteractiveChart({
         if (isBull && candle.low <= p1) {
           leg1Completed = true;
           leg1HitIdx = i;
-        }
-        if (!isBull && candle.high >= p1) {
+        } else if (!isBull && candle.high >= p1) {
           leg1Completed = true;
           leg1HitIdx = i;
+        } else if ((isBull && candle.high >= p2) || (!isBull && candle.low <= p2)) {
+          // Price reached TP1 before limit entry was filled -> Missed Entry
+          isMissedEntry = true;
         }
       }
       if (leg1Completed && !leg2Completed && i > leg1HitIdx) {
@@ -467,7 +471,7 @@ export default function InteractiveChart({
       }
     }
 
-    let status = "Ожидание разворота OTE";
+    let status = isMissedEntry ? "🚫 НЕДОХОД (MISSED ENTRY)" : "Ожидание разворота OTE";
     let activeLeg = 1;
     if (leg1Completed) {
       status = "Тест поддержки (Leg 1) ✅";
@@ -550,6 +554,7 @@ export default function InteractiveChart({
       confidence,
       noPullbackProb,
       isHighRunaway,
+      isMissedEntry,
       slPrice: isBull ? anchorPrice - sRange * 0.45 : anchorPrice + sRange * 0.45,
       altDumpPrice: isBull ? (anchorPrice - sRange * 0.45) - sRange * 0.85 : (anchorPrice + sRange * 0.45) + sRange * 0.85
     };
@@ -1485,6 +1490,21 @@ export default function InteractiveChart({
         ? entryPrice * (1 - slMultiplier) 
         : entryPrice * (1 + slMultiplier);
 
+      // Check if price reached TP before Entry was triggered -> Missed Entry
+      let tradeEntryHit = false;
+      let tradeIsMissed = false;
+      for (let i = activeSignalIdx + 1; i < candlesticks.length; i++) {
+        const c = candlesticks[i];
+        if (!tradeEntryHit) {
+          if (isBuy ? c.low <= entryPrice : c.high >= entryPrice) {
+            tradeEntryHit = true;
+          } else if (isBuy ? c.high >= tpPrice : c.low <= tpPrice) {
+            tradeIsMissed = true;
+            break;
+          }
+        }
+      }
+
       const yEntry = getY(entryPrice);
       const yTp = getY(tpPrice);
       const ySl = getY(slPrice);
@@ -1500,16 +1520,16 @@ export default function InteractiveChart({
       const topYLoss = isBuy ? yEntry : ySl;
       const bottomYLoss = isBuy ? ySl : yEntry;
 
-      // Draw green profit region
-      ctx.fillStyle = "rgba(16, 185, 129, 0.06)";
+      // Draw green profit region (or grayed if missed)
+      ctx.fillStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.04)" : "rgba(16, 185, 129, 0.06)";
       ctx.fillRect(xStart, Math.min(topYProfit, bottomYProfit), xEnd - xStart, Math.abs(yTp - yEntry));
 
-      // Draw red loss region
-      ctx.fillStyle = "rgba(239, 68, 68, 0.06)";
+      // Draw red loss region (or grayed if missed)
+      ctx.fillStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.03)" : "rgba(239, 68, 68, 0.06)";
       ctx.fillRect(xStart, Math.min(topYLoss, bottomYLoss), xEnd - xStart, Math.abs(ySl - yEntry));
 
-      // 2. Draw Entry Line (Dashed Blue)
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.6)"; // Neon Blue
+      // 2. Draw Entry Line (Dashed Blue or Gray if Missed)
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.65)" : "rgba(56, 189, 248, 0.6)";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
@@ -1518,13 +1538,15 @@ export default function InteractiveChart({
       ctx.stroke();
 
       // Draw Entry Pill Badge
-      const entryText = ` Вход в сделку (Entry Price): ~${entryPrice.toFixed(assetIsCrypto ? 1 : 5)} `;
+      const entryText = tradeIsMissed 
+        ? ` 🚫 ВХОД ОТМЕНЕН (НЕДОХОД): ~${entryPrice.toFixed(assetIsCrypto ? 1 : 5)} `
+        : ` Вход в сделку (Entry Price): ~${entryPrice.toFixed(assetIsCrypto ? 1 : 5)} `;
       ctx.font = "bold 9px sans-serif";
       ctx.textBaseline = "middle";
       ctx.textAlign = "right";
       const entryW = ctx.measureText(entryText).width + 8;
-      ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.8)";
+      ctx.fillStyle = tradeIsMissed ? "rgba(31, 41, 55, 0.95)" : "rgba(15, 23, 42, 0.92)";
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.8)" : "rgba(56, 189, 248, 0.8)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       if (typeof ctx.roundRect === "function") {
@@ -1534,23 +1556,35 @@ export default function InteractiveChart({
       }
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#38bdf8";
+      ctx.fillStyle = tradeIsMissed ? "#9ca3af" : "#38bdf8";
       ctx.fillText(entryText, xEnd - 14, yEntry);
 
-      // 3. Draw Take Profit Line (Solid Green)
-      ctx.strokeStyle = "rgba(16, 185, 129, 0.85)"; // Green
+      if (tradeIsMissed) {
+        // Draw visual strikethrough across Entry badge
+        ctx.strokeStyle = "#9ca3af";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(xEnd - entryW - 6, yEntry);
+        ctx.lineTo(xEnd - 12, yEntry);
+        ctx.stroke();
+      }
+
+      // 3. Draw Take Profit Line (Solid Green or Gray if Missed)
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.65)" : "rgba(16, 185, 129, 0.85)";
       ctx.lineWidth = 1.8;
-      ctx.setLineDash([]); // solid
+      ctx.setLineDash(tradeIsMissed ? [4, 3] : []);
       ctx.beginPath();
       ctx.moveTo(xStart, yTp);
       ctx.lineTo(xEnd, yTp);
       ctx.stroke();
 
       // Draw TP Pill Badge
-      const tpText = `🎯 Тейк-профит (Take Profit / TP): ~${tpPrice.toFixed(assetIsCrypto ? 1 : 5)} `;
+      const tpText = tradeIsMissed
+        ? ` 🏁 ТЕЙК ВЗЯТ БЕЗ ВХОДА (MISSED): ~${tpPrice.toFixed(assetIsCrypto ? 1 : 5)} `
+        : `🎯 Тейк-профит (Take Profit / TP): ~${tpPrice.toFixed(assetIsCrypto ? 1 : 5)} `;
       const tpW = ctx.measureText(tpText).width + 8;
-      ctx.fillStyle = "rgba(10, 14, 24, 0.92)";
-      ctx.strokeStyle = "rgba(16, 185, 129, 0.9)";
+      ctx.fillStyle = tradeIsMissed ? "rgba(31, 41, 55, 0.95)" : "rgba(10, 14, 24, 0.92)";
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.8)" : "rgba(16, 185, 129, 0.9)";
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       if (typeof ctx.roundRect === "function") {
@@ -1560,11 +1594,21 @@ export default function InteractiveChart({
       }
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#10b981";
+      ctx.fillStyle = tradeIsMissed ? "#9ca3af" : "#10b981";
       ctx.fillText(tpText, xEnd - 14, yTp);
 
-      // 4. Draw Stop Loss Line (Solid Red)
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.85)"; // Red
+      if (tradeIsMissed) {
+        // Draw visual strikethrough across TP badge
+        ctx.strokeStyle = "#9ca3af";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(xEnd - tpW - 6, yTp);
+        ctx.lineTo(xEnd - 12, yTp);
+        ctx.stroke();
+      }
+
+      // 4. Draw Stop Loss Line (Solid Red or Gray if Missed)
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.5)" : "rgba(239, 68, 68, 0.85)";
       ctx.lineWidth = 1.8;
       ctx.beginPath();
       ctx.moveTo(xStart, ySl);
@@ -1574,8 +1618,8 @@ export default function InteractiveChart({
       // Draw SL Pill Badge
       const slText = `🛡️ Стоп-лосс (Stop Loss / SL): ~${slPrice.toFixed(assetIsCrypto ? 1 : 5)} `;
       const slW = ctx.measureText(slText).width + 8;
-      ctx.fillStyle = "rgba(10, 14, 24, 0.92)";
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.9)";
+      ctx.fillStyle = tradeIsMissed ? "rgba(31, 41, 55, 0.95)" : "rgba(10, 14, 24, 0.92)";
+      ctx.strokeStyle = tradeIsMissed ? "rgba(107, 114, 128, 0.6)" : "rgba(239, 68, 68, 0.9)";
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       if (typeof ctx.roundRect === "function") {
@@ -1585,7 +1629,7 @@ export default function InteractiveChart({
       }
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#f87171";
+      ctx.fillStyle = tradeIsMissed ? "#9ca3af" : "#f87171";
       ctx.fillText(slText, xEnd - 14, ySl);
 
       ctx.restore();
@@ -1627,34 +1671,44 @@ export default function InteractiveChart({
 
         const isCryptoAsset = asset.includes("BTC") || asset.includes("ETH") || asset.includes("SOL") || asset.includes("USDT");
         const pDec = asset === "EUR/USD" ? 4 : isCryptoAsset ? 1 : 2;
+        const isMissed = Boolean(fc.isMissedEntry);
         // Construct pts array with explicit prices for Entry, SL, TP
         const pts = [
-          { x: x0, y: y0, completed: true, label: `${tf} Старт` },
+          { x: x0, y: y0, completed: true, isMissed: false, label: `${tf} Старт` },
           { 
             x: x1, 
             y: getY(fc.p1), 
             completed: fc.leg1Completed, 
-            label: fc.leg1Completed 
-              ? `📍 ВХОД (${fc.p1.toFixed(pDec)}) [OK]` 
-              : (fc.isHighRunaway 
-                  ? `📍 ВХОД: ${fc.p1.toFixed(pDec)} ⚡ Без отката ${fc.noPullbackProb}%` 
-                  : `📍 ВХОД: ${fc.p1.toFixed(pDec)}`)
+            isMissed,
+            label: isMissed
+              ? `🚫 ВХОД: ${fc.p1.toFixed(pDec)} [ОТМЕНЕН]`
+              : fc.leg1Completed 
+                ? `📍 ВХОД (${fc.p1.toFixed(pDec)}) [OK]` 
+                : (fc.isHighRunaway 
+                    ? `📍 ВХОД: ${fc.p1.toFixed(pDec)} ⚡ Без отката ${fc.noPullbackProb}%` 
+                    : `📍 ВХОД: ${fc.p1.toFixed(pDec)}`)
           },
           { 
             x: x2, 
             y: getY(fc.p2), 
-            completed: fc.leg2Completed, 
-            label: fc.leg2Completed 
-              ? `🏁 TP1 (${fc.p2.toFixed(pDec)}) [OK]` 
-              : `🏁 TP1: ${fc.p2.toFixed(pDec)}`
+            completed: fc.leg2Completed || isMissed, 
+            isMissed,
+            label: isMissed
+              ? `🏁 TP1: ${fc.p2.toFixed(pDec)} [ВЗЯТ БЕЗ ВХОДА]`
+              : fc.leg2Completed 
+                ? `🏁 TP1 (${fc.p2.toFixed(pDec)}) [OK]` 
+                : `🏁 TP1: ${fc.p2.toFixed(pDec)}`
           },
           { 
             x: x3, 
             y: getY(fc.p3), 
             completed: fc.leg3Completed, 
-            label: fc.leg3Completed 
-              ? `🎯 TP2 (${fc.p3.toFixed(pDec)}) [OK]` 
-              : `🎯 TP2: ${fc.p3.toFixed(pDec)}`
+            isMissed,
+            label: isMissed
+              ? `🎯 TP2: ${fc.p3.toFixed(pDec)} [ВНЕ СДЕЛКИ]`
+              : fc.leg3Completed 
+                ? `🎯 TP2 (${fc.p3.toFixed(pDec)}) [OK]` 
+                : `🎯 TP2: ${fc.p3.toFixed(pDec)}`
           }
         ];
 
@@ -1663,6 +1717,7 @@ export default function InteractiveChart({
             x: x4,
             y: getY(fc.p4),
             completed: fc.leg4Completed,
+            isMissed: false,
             label: fc.leg4Completed
               ? `${tf} Ретест [OK]`
               : `${tf} Ретест 🔄`
@@ -1678,17 +1733,17 @@ export default function InteractiveChart({
           const isPostTargetLeg = j === 3;
 
           ctx.save();
-          if (isCurrent) {
+          if (isCurrent && !isMissed) {
             ctx.shadowBlur = isLegCompleted ? 0 : (isPostTargetLeg ? 5 : 10);
             ctx.shadowColor = `rgba(${fc.colorRgb}, 0.75)`;
           } else {
             ctx.shadowBlur = 0;
           }
           
-          let strokeColor = fc.color;
-          if (isLegCompleted) {
+          let strokeColor = isMissed ? "rgba(107, 114, 128, 0.45)" : fc.color;
+          if (isLegCompleted && !isMissed) {
             strokeColor = `rgba(${fc.colorRgb}, 0.35)`;
-          } else if (!isCurrent) {
+          } else if (!isCurrent && !isMissed) {
             strokeColor = `rgba(${fc.colorRgb}, 0.75)`;
           }
 
@@ -1697,9 +1752,11 @@ export default function InteractiveChart({
             ? (isLegCompleted ? 1.8 : (isPostTargetLeg ? 2.5 : 3.5))
             : (isLegCompleted ? 1.0 : 1.8);
 
-          ctx.setLineDash(isCurrent
-            ? (isLegCompleted ? [5, 4] : (isPostTargetLeg ? [3, 3] : []))
-            : [4, 4]
+          ctx.setLineDash(isMissed
+            ? [5, 4]
+            : isCurrent
+              ? (isLegCompleted ? [5, 4] : (isPostTargetLeg ? [3, 3] : []))
+              : [4, 4]
           );
 
           ctx.beginPath();
@@ -1714,7 +1771,11 @@ export default function InteractiveChart({
           const arrowSize = isCurrent ? (isLegCompleted ? 6.5 : 9) : 5.0;
 
           ctx.shadowBlur = 0;
-          ctx.fillStyle = isLegCompleted ? `rgba(${fc.colorRgb}, 0.3)` : fc.color;
+          ctx.fillStyle = isMissed
+            ? "rgba(107, 114, 128, 0.5)"
+            : isLegCompleted
+              ? `rgba(${fc.colorRgb}, 0.3)`
+              : fc.color;
 
           ctx.beginPath();
           ctx.moveTo(midX, midY);
@@ -1734,7 +1795,11 @@ export default function InteractiveChart({
           if (!shouldDrawNode) return;
 
           ctx.save();
-          ctx.fillStyle = isLegCompleted ? `rgba(${fc.colorRgb}, 0.4)` : fc.color;
+          ctx.fillStyle = pt.isMissed
+            ? "rgba(107, 114, 128, 0.6)"
+            : isLegCompleted
+              ? `rgba(${fc.colorRgb}, 0.4)`
+              : fc.color;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, isCurrent ? (isLegCompleted ? 3.5 : 5) : 3, 0, 2 * Math.PI);
           ctx.fill();
@@ -1744,7 +1809,7 @@ export default function InteractiveChart({
           ctx.stroke();
 
           if (isCurrent) {
-            ctx.font = isLegCompleted ? "8px sans-serif" : "bold 9px sans-serif";
+            ctx.font = isLegCompleted || pt.isMissed ? "8px sans-serif" : "bold 9px sans-serif";
             const labelW = ctx.measureText(pt.label).width;
             const bW = labelW + 8;
             const bH = 14;
@@ -1753,8 +1818,14 @@ export default function InteractiveChart({
             const bY = isAbove ? pt.y - 18 : pt.y + 6;
             const bX = Math.max(10, Math.min(drawWidth - bW - 10, pt.x - bW / 2));
 
-            ctx.fillStyle = isLegCompleted ? "rgba(15, 23, 42, 0.85)" : "rgba(15, 23, 42, 0.96)";
-            ctx.strokeStyle = `rgba(${fc.colorRgb}, ${isLegCompleted ? 0.35 : 0.8})`;
+            ctx.fillStyle = pt.isMissed
+              ? "rgba(31, 41, 55, 0.95)"
+              : isLegCompleted
+                ? "rgba(15, 23, 42, 0.85)"
+                : "rgba(15, 23, 42, 0.96)";
+            ctx.strokeStyle = pt.isMissed
+              ? "rgba(107, 114, 128, 0.7)"
+              : `rgba(${fc.colorRgb}, ${isLegCompleted ? 0.35 : 0.8})`;
             ctx.lineWidth = 1.2;
             
             ctx.beginPath();
@@ -1766,10 +1837,24 @@ export default function InteractiveChart({
             ctx.fill();
             ctx.stroke();
 
-            ctx.fillStyle = isLegCompleted ? "rgba(241, 245, 249, 0.6)" : "#f1f5f9";
+            ctx.fillStyle = pt.isMissed
+              ? "#9ca3af"
+              : isLegCompleted
+                ? "rgba(241, 245, 249, 0.6)"
+                : "#f1f5f9";
             ctx.textBaseline = "middle";
             ctx.textAlign = "center";
             ctx.fillText(pt.label, bX + bW / 2, bY + bH / 2 + 0.5);
+
+            if (pt.isMissed && j > 0) {
+              // Draw strikethrough line across badge
+              ctx.strokeStyle = "#9ca3af";
+              ctx.lineWidth = 1.2;
+              ctx.beginPath();
+              ctx.moveTo(bX + 3, bY + bH / 2);
+              ctx.lineTo(bX + bW - 3, bY + bH / 2);
+              ctx.stroke();
+            }
           } else {
             // Draw small clean text on target node only
             if (j === 3) {

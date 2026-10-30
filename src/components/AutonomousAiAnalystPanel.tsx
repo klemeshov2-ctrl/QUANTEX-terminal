@@ -42,6 +42,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import { UserAccountItem } from "./UnifiedStationSettings";
 import { detectMarketRangeMode, auditSingleGexLevel } from "../lib/pineSuperIndicatorEngine";
+import { formatGexLevelLabel, getLevelRole } from "../lib/gexLabels";
 
 export interface MacroCalendarEvent {
   id?: string;
@@ -1796,8 +1797,12 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         ? `В позиции, удерживаем до TP1 ${tp1} со стопом в БУ.`
         : `Ждем отскок к ${entryConservative} для входа в ${isBull ? "лонг" : "шорт"}.`;
 
+      const spotPriceNum = Number(price) || 0;
+      const cwRole = getLevelRole("CW", Number(callWall), spotPriceNum);
+      const pwRole = getLevelRole("PW", Number(putWall), spotPriceNum);
+
       return `1. 🚨 Фон чистый (важных новостей в ближайшие 30 минут нет).
-2. GEX: Call ${callWall}, Put ${putWall}. Консенсус ТФ: ${isBull ? "4 из 5 за ПОКУПКИ" : "4 из 5 за ПРОДАЖИ"}.
+2. GEX: Потолок (CW, Дневной): ${callWall} (${cwRole.roleLabel}), Пол (PW, Дневной): ${putWall} (${pwRole.roleLabel}). Консенсус ТФ: ${isBull ? "4 из 5 за ПОКУПКИ" : "4 из 5 за ПРОДАЖИ"}.
 3. Сделка на основе консенсуса: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryConservative} | SL: ${slLevel} | TP1: ${tp1}.
 4. Вердикт: ${verdict}`;
     }
@@ -1806,14 +1811,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     const assetNameRu = (currentTicker.includes("GOLD") || currentTicker.includes("XAU") || currentTicker.includes("GLD")) ? "золото" : (currentTicker.includes("BTC") ? "биткоин" : currentTicker);
     const consensusStr = isBull ? "4 из 5 ТФ за ПОКУПКИ" : "4 из 5 ТФ за ПРОДАЖИ";
 
+    const spotPriceNum = Number(price) || 0;
+    const cwRole = getLevelRole("CW", Number(callWall), spotPriceNum);
+    const pwRole = getLevelRole("PW", Number(putWall), spotPriceNum);
+
     return `1. 📰 Фундаментальный фон и новости:
 - [${mskNow} МСК] — Фон чистый — Ближайшие важные публикации отсутствуют.
-- [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: поддержка котировок у Put Wall ${putWall}.
+- [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: поддержка котировок у ${formatGexLevelLabel("PW", Number(putWall), "DAY", spotPriceNum)}.
 
 2. 📊 Опционные уровни (GEX):
-- Call Wall (Сопротивление): ${callWall}
-- Put Wall (Поддержка): ${putWall}
-- Max Pain: ${maxPain}
+- ${formatGexLevelLabel("CW", Number(callWall), "DAY", spotPriceNum)}
+- ${formatGexLevelLabel("PW", Number(putWall), "DAY", spotPriceNum)}
+- Магнит (Max Pain, Дневной): ${maxPain}
 - Гамма-режим: ${regime}.
 
 3. 📈 Технический анализ и Консенсус таймфреймов:
@@ -1829,7 +1838,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 На основе консенсуса ${consensusStr} и уровней GEX, план следующий:
 - Основной сценарий: ${isBull ? "LONG" : "SHORT"}.
 - Вход: ${entryConservative} (от зоны отката и уровней GEX).
-- Стоп-лосс (SL): ${slLevel} (обязательно привязан к ${isBull ? `Put Wall ${putWall}` : `Call Wall ${callWall}`}).
+- Стоп-лосс (SL): ${slLevel} (обязательно привязан к ${isBull ? `Полу (PW) ${putWall}` : `Потолку (CW) ${callWall}`}).
 - Тейк-профит (TP1 / TP2): TP1: ${tp1} (${isTp1Hit ? "взят" : isEntryHit ? "в позиции, ждём TP1" : "ждём входа"}) / TP2: ${tp2}.
 - ⚠️ Корректировка на новости: При отсутствии резких новостных импульсов сделка отрабатывается по целям плана.
 - План Б: При пробое уровня ${cancelLevel} в обратную сторону, ищем вход с целями ${altTarget}.`;
@@ -3283,7 +3292,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 🪙 Спрос ЦБ &amp; БРИКС
               </button>
               <button
-                onClick={() => handleSendManualQuery(`Проанализируй уровни GEX для ${activeAsset}: Call Wall, Put Wall и Max Pain.`)}
+                onClick={() => handleSendManualQuery(`Проанализируй уровни GEX для ${activeAsset}: Потолок (CW), Пол (PW), Флип (Flip) и Магнит (Max Pain).`)}
                 className="px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 hover:bg-purple-900 border border-purple-800/80 shrink-0 cursor-pointer transition"
               >
                 🏛️ GEX уровни

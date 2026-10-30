@@ -72,6 +72,7 @@ import {
   Menu
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData } from "../../server/gexEngine";
+import { getLevelRole, getExpirySuffix } from "../lib/gexLabels";
 import { AutonomousAiAnalystPanel, MacroNewsItem } from "./AutonomousAiAnalystPanel";
 import { GexAdvancedModules } from "./GexAdvancedModules";
 import { GexProbabilityHero } from "./GexProbabilityHero";
@@ -7340,122 +7341,160 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     </details>
                   </div>
 
-                  {/* Card 2: Call Wall (Потолок) */}
-                  <div className="bg-[#0b0e17] border border-emerald-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-emerald-500/5">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                          🏰 Call Wall (Потолок)
-                        </span>
-                        <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                          +{(((gexReport.callWall - gexReport.spotPrice) / gexReport.spotPrice) * 100).toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex items-baseline justify-between">
-                        <div className="text-2xl font-mono font-bold text-emerald-400">
-                          {activeAsset === "MOEX_MINI" ? `${gexReport.callWall} ₽` : `$${gexReport.callWall}`}
+                  {/* Card 2: Потолок (CW) */}
+                  {(() => {
+                    const cwRoleInfo = getLevelRole("CALL_WALL", gexReport.callWall, gexReport.spotPrice, gexReport.horizon);
+                    return (
+                      <div className="bg-[#0b0e17] border border-emerald-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-emerald-500/5">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                              🏰 {cwRoleInfo.baseName} ({getExpirySuffix(gexReport.horizon)})
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                              cwRoleInfo.isBroken ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" : "bg-emerald-500/20 text-emerald-300"
+                            }`}>
+                              {cwRoleInfo.isBroken ? "ПРОБИТ ВВЕРХ" : `+${(((gexReport.callWall - gexReport.spotPrice) / gexReport.spotPrice) * 100).toFixed(2)}%`}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <div className="text-2xl font-mono font-bold text-emerald-400">
+                              {activeAsset === "MOEX_MINI" ? `${gexReport.callWall} ₽` : `$${gexReport.callWall}`}
+                            </div>
+                            <span className="text-[11px] font-mono text-emerald-300">
+                              Дист: {gexReport.spotPrice > gexReport.callWall ? "-" : "+"}${Math.abs(gexReport.callWall - gexReport.spotPrice).toFixed(1)}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-[11px] font-mono text-emerald-300">
-                          Дист: +${(gexReport.callWall - gexReport.spotPrice).toFixed(1)}
-                        </span>
-                      </div>
-                    </div>
 
-                    <div className="p-2 rounded-lg bg-emerald-950/25 border border-emerald-500/25 text-[11px] text-emerald-100 leading-snug">
-                      <b className="text-emerald-300">⚡ Сейчас для цены:</b>{" "}
-                      {gexReport.callWall - gexReport.spotPrice <= 8
-                        ? `Цена вплотную у потолка $${gexReport.callWall} — высокая вероятность торможения и отката, либо сквиза при закреплении выше.`
-                        : `Главный целевой барьер сверху ($${gexReport.callWall}), где фиксируются лонги и включается продажа дилеров.`}
-                    </div>
-
-                    <details className="group text-[10px] text-gray-400">
-                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
-                        <span>ℹ️ Суть Call Wall</span>
-                        <span className="group-open:rotate-180 transition-transform">▾</span>
-                      </summary>
-                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
-                        Страйк с максимальной гаммой и объемом Call выше спота. За его пределами сосредоточены стопы шортистов (Buy-Side Liquidity).
-                      </p>
-                    </details>
-                  </div>
-
-                  {/* Card 3: Put Wall (Поддержка) */}
-                  <div className="bg-[#0b0e17] border border-rose-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-rose-500/5">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                          🛡️ Put Wall (Пол)
-                        </span>
-                        <span className="text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                          -{(((gexReport.spotPrice - gexReport.putWall) / gexReport.spotPrice) * 100).toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex items-baseline justify-between">
-                        <div className="text-2xl font-mono font-bold text-rose-400">
-                          {activeAsset === "MOEX_MINI" ? `${gexReport.putWall} ₽` : `$${gexReport.putWall}`}
+                        <div className="p-2 rounded-lg bg-emerald-950/25 border border-emerald-500/25 text-[11px] text-emerald-100 leading-snug">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <b className="text-emerald-300">Роль:</b>
+                            <span className={`px-1.5 py-0.2 rounded font-bold text-[10px] ${
+                              cwRoleInfo.isBroken ? "bg-amber-500/25 text-amber-200" : "bg-emerald-500/20 text-emerald-200"
+                            }`}>
+                              {cwRoleInfo.role}
+                            </span>
+                          </div>
+                          {cwRoleInfo.isBroken
+                            ? `Цена пробила уровень Потолок (CW) вверх. Теперь уровень действует как зеркальная поддержка при откате.`
+                            : gexReport.callWall - gexReport.spotPrice <= 8
+                            ? `Цена вплотную у потолка $${gexReport.callWall} — высокая вероятность торможения и отката, либо сквиза при закреплении выше.`
+                            : `Главный целевой барьер сверху ($${gexReport.callWall}), где фиксируются лонги и включается продажа дилеров.`}
                         </div>
-                        <span className="text-[11px] font-mono text-rose-300">
-                          Дист: -${(gexReport.spotPrice - gexReport.putWall).toFixed(1)}
-                        </span>
+
+                        <details className="group text-[10px] text-gray-400">
+                          <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                            <span>ℹ️ Суть Потолка (CW)</span>
+                            <span className="group-open:rotate-180 transition-transform">▾</span>
+                          </summary>
+                          <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                            Страйк с максимальной гаммой и объемом Call выше спота. За его пределами сосредоточены стопы шортистов (Buy-Side Liquidity).
+                          </p>
+                        </details>
                       </div>
-                    </div>
+                    );
+                  })()}
 
-                    <div className="p-2 rounded-lg bg-rose-950/25 border border-rose-500/25 text-[11px] text-rose-100 leading-snug">
-                      <b className="text-rose-300">⚡ Сейчас для цены:</b>{" "}
-                      {gexReport.spotPrice - gexReport.putWall <= 8
-                        ? `Цена тестирует защиту $${gexReport.putWall} — зона лимитного выкупа дилерами (стоп выносить за ATR-буфер).`
-                        : `Институциональное дно на $${gexReport.putWall}: проливы к уровню встречают алгоритмический откуп.`}
-                    </div>
-
-                    <details className="group text-[10px] text-gray-400">
-                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
-                        <span>ℹ️ Суть Put Wall</span>
-                        <span className="group-open:rotate-180 transition-transform">▾</span>
-                      </summary>
-                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
-                        Страйк максимальной концентрации Put-опционов ниже спота. Закрытие путов при подходе цены вынуждает дилеров выкупать фьючерс.
-                      </p>
-                    </details>
-                  </div>
-
-                  {/* Card 4: Gamma Flip & Max Pain */}
-                  <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                          ⚡ Zero-Flip &amp; Max Pain
-                        </span>
-                        <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                          MP: ${gexReport.maxPain}
-                        </span>
-                      </div>
-                      <div className="flex items-baseline justify-between">
-                        <div className="text-2xl font-mono font-bold text-purple-400">
-                          {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+                  {/* Card 3: Пол (PW) */}
+                  {(() => {
+                    const pwRoleInfo = getLevelRole("PUT_WALL", gexReport.putWall, gexReport.spotPrice, gexReport.horizon);
+                    return (
+                      <div className="bg-[#0b0e17] border border-rose-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden shadow-sm shadow-rose-500/5">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                              🛡️ {pwRoleInfo.baseName} ({getExpirySuffix(gexReport.horizon)})
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                              pwRoleInfo.isBroken ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" : "bg-rose-500/20 text-rose-300"
+                            }`}>
+                              {pwRoleInfo.isBroken ? "ПРОБИТ ВНИЗ" : `-${(((gexReport.spotPrice - gexReport.putWall) / gexReport.spotPrice) * 100).toFixed(2)}%`}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <div className="text-2xl font-mono font-bold text-rose-400">
+                              {activeAsset === "MOEX_MINI" ? `${gexReport.putWall} ₽` : `$${gexReport.putWall}`}
+                            </div>
+                            <span className="text-[11px] font-mono text-rose-300">
+                              Дист: {gexReport.spotPrice < gexReport.putWall ? "+" : "-"}${Math.abs(gexReport.spotPrice - gexReport.putWall).toFixed(1)}
+                            </span>
+                          </div>
                         </div>
-                        <span className={`text-[10px] font-mono font-bold ${gexReport.spotPrice >= gexReport.gammaFlip ? "text-emerald-400" : "text-rose-400"}`}>
-                          {gexReport.spotPrice >= gexReport.gammaFlip ? "Выше Flip (+GEX)" : "Ниже Flip (-GEX)"}
-                        </span>
+
+                        <div className="p-2 rounded-lg bg-rose-950/25 border border-rose-500/25 text-[11px] text-rose-100 leading-snug">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <b className="text-rose-300">Роль:</b>
+                            <span className={`px-1.5 py-0.2 rounded font-bold text-[10px] ${
+                              pwRoleInfo.isBroken ? "bg-rose-500/25 text-rose-200" : "bg-emerald-500/20 text-emerald-200"
+                            }`}>
+                              {pwRoleInfo.role}
+                            </span>
+                          </div>
+                          {pwRoleInfo.isBroken
+                            ? `Цена пробила уровень Пол (PW) вниз. Теперь уровень выступает как жесткое сопротивление (бывшая поддержка).`
+                            : gexReport.spotPrice - gexReport.putWall <= 8
+                            ? `Цена тестирует защиту $${gexReport.putWall} — зона лимитного выкупа дилерами (стоп выносить за ATR-буфер).`
+                            : `Институциональное дно на $${gexReport.putWall}: проливы к уровню встречают алгоритмический откуп.`}
+                        </div>
+
+                        <details className="group text-[10px] text-gray-400">
+                          <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                            <span>ℹ️ Суть Пола (PW)</span>
+                            <span className="group-open:rotate-180 transition-transform">▾</span>
+                          </summary>
+                          <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                            Страйк максимальной концентрации Put-опционов ниже спота. Закрытие путов при подходе цены вынуждает дилеров выкупать фьючерс.
+                          </p>
+                        </details>
                       </div>
-                    </div>
+                    );
+                  })()}
 
-                    <div className="p-2 rounded-lg bg-purple-950/25 border border-purple-500/25 text-[11px] text-purple-100 leading-snug">
-                      <b className="text-purple-300">⚡ Сейчас для цены:</b>{" "}
-                      {gexReport.spotPrice >= gexReport.gammaFlip
-                        ? `Цена удерживается выше $${gexReport.gammaFlip} — приоритет возврата к балансу Max Pain $${gexReport.maxPain}.`
-                        : `Цена ниже $${gexReport.gammaFlip} — повышенный риск ускорения распродаж к Put Wall $${gexReport.putWall}.`}
-                    </div>
+                  {/* Card 4: Флип (Flip) & Магнит */}
+                  {(() => {
+                    const flipRoleInfo = getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, gexReport.spotPrice, gexReport.horizon);
+                    const painRoleInfo = getLevelRole("MAX_PAIN", gexReport.maxPain, gexReport.spotPrice, "MONTH");
+                    return (
+                      <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                              ⚡ {flipRoleInfo.baseName} &amp; {painRoleInfo.baseName}
+                            </span>
+                            <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Магнит: ${gexReport.maxPain}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <div className="text-2xl font-mono font-bold text-purple-400">
+                              {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+                            </div>
+                            <span className={`text-[10px] font-mono font-bold ${gexReport.spotPrice >= gexReport.gammaFlip ? "text-emerald-400" : "text-rose-400"}`}>
+                              {gexReport.spotPrice >= gexReport.gammaFlip ? "Выше Flip (+GEX)" : "Ниже Flip (-GEX)"}
+                            </span>
+                          </div>
+                        </div>
 
-                    <details className="group text-[10px] text-gray-400">
-                      <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
-                        <span>ℹ️ Суть Flip и Max Pain</span>
-                        <span className="group-open:rotate-180 transition-transform">▾</span>
-                      </summary>
-                      <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
-                        Zero-Flip — точка смены знака гаммы дилеров. Max Pain ($${gexReport.maxPain}) — страйк минимальных выплат по опционам к экспирации.
-                      </p>
-                    </details>
-                  </div>
+                        <div className="p-2 rounded-lg bg-purple-950/25 border border-purple-500/25 text-[11px] text-purple-100 leading-snug">
+                          <b className="text-purple-300">⚡ Роль и динамика:</b>{" "}
+                          {gexReport.spotPrice >= gexReport.gammaFlip
+                            ? `Цена выше Флипа $${gexReport.gammaFlip} (+GEX) — приоритет возврата к балансу Магнита $${gexReport.maxPain}.`
+                            : `Цена ниже Флипа $${gexReport.gammaFlip} (-GEX) — риск ускорения распродаж к Полу (PW) $${gexReport.putWall}.`}
+                        </div>
+
+                        <details className="group text-[10px] text-gray-400">
+                          <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
+                            <span>ℹ️ Суть Флипа и Магнита</span>
+                            <span className="group-open:rotate-180 transition-transform">▾</span>
+                          </summary>
+                          <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
+                            Флип (Zero-Flip) разграничивает зоны рыночной волатильности (+GEX и -GEX). Магнит (Max Pain) — страйк, к которому цена тяготеет к моменту экспирации.
+                          </p>
+                        </details>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Additional Institutional Flow Bar (PCR & IV vs RV with Live Price Action Takeaways) */}

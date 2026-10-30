@@ -10,6 +10,7 @@ export type IndicatorSetupStatus =
   | "WIN_TRAILING"
   | "LOSS_SL"
   | "NOT_TRIGGERED"
+  | "MISSED_ENTRY"
   | "EXPIRED";
 
 export interface IndicatorSetupItem {
@@ -33,7 +34,7 @@ export interface IndicatorSetupItem {
   tp3Hit?: boolean; // сработал ли тейк 3
   slHit?: boolean; // сработал ли стоп-лосс
   trailingHit?: boolean; // сработал ли трейлинг-стоп
-  exitReason?: "TP1" | "TP2" | "TP3" | "TRAILING" | "SL" | "NOT_TRIGGERED" | "EXPIRED";
+  exitReason?: "TP1" | "TP2" | "TP3" | "TRAILING" | "SL" | "NOT_TRIGGERED" | "MISSED_ENTRY" | "EXPIRED";
   behaviorNote?: string; // как индикатор себя вел в данной ситуации (отскок, свип, срыв, реверс План Б)
   exitPrice?: number;
   exitTimestamp?: number;
@@ -1144,9 +1145,21 @@ export function evaluateIndicatorSetups(
         updated++;
       } else {
         // Entry NOT triggered. Check if price ran away to TP1/TP2 or broke initial SL without entry
-        const runawayHit = isLong ? hi >= item.tp1 : lo <= item.tp1;
+        const runawayHit = isLong ? (hi >= item.tp1 || (item.tp2 && hi >= item.tp2)) : (lo <= item.tp1 || (item.tp2 && lo <= item.tp2));
         const slBroken = isLong ? lo <= item.initialSl : hi >= item.initialSl;
-        if (runawayHit || slBroken) {
+        if (runawayHit) {
+          item.status = "MISSED_ENTRY";
+          item.exitReason = "MISSED_ENTRY";
+          item.exitPrice = cur;
+          item.exitTimestamp = now;
+          item.exitTimeMsk = `${timeMsk} МСК`;
+          item.pnlPercent = 0;
+          item.pnlR = 0;
+          item.notes = `Недоход (Missed Entry): цена достигла ${isLong ? (item.tp2 && hi >= item.tp2 ? "TP2" : "TP1") : (item.tp2 && lo <= item.tp2 ? "TP2" : "TP1")} без активации лимитного входа ($${item.entryPrice})`;
+          item.behaviorNote = "Недоход (Missed Entry): рынок достиг цели без активации лимитного ордера, сетап аннулирован";
+          updated++;
+          continue;
+        } else if (slBroken) {
           item.status = "NOT_TRIGGERED";
           item.exitReason = "NOT_TRIGGERED";
           item.exitPrice = cur;
@@ -1154,10 +1167,9 @@ export function evaluateIndicatorSetups(
           item.exitTimeMsk = `${timeMsk} МСК`;
           item.pnlPercent = 0;
           item.pnlR = 0;
-          item.behaviorNote = runawayHit
-            ? "Сетап не исполнен: цена ушла напрямую к тейк-профиту без отката к точке входа"
-            : "Сетап отменен: структура сломана до срабатывания точки входа";
+          item.behaviorNote = "Сетап отменен: структура сломана до срабатывания точки входа";
           updated++;
+          continue;
         }
         // Do not evaluate targets or wins for a position that was never entered
         continue;

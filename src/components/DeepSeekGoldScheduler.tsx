@@ -1798,29 +1798,39 @@ export const DeepSeekGoldScheduler: React.FC = () => {
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
-                <div className="p-2 rounded bg-black/50 border border-gray-800">
+              <div className={`grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "opacity-85" : ""}`}>
+                <div className={`p-2 rounded border ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "bg-gray-900/90 border-gray-700" : "bg-black/50 border-gray-800"}`}>
                   <span className="text-gray-400 block">QUANTEX Тренд &amp; Сетап:</span>
-                  <span className={`font-bold ${dualMarketData?.scriptIndicators?.direction === "SHORT" ? "text-rose-400" : "text-emerald-400"}`}>
+                  <span className={`font-bold ${
+                    dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY"
+                      ? "text-gray-400 line-through"
+                      : dualMarketData?.scriptIndicators?.direction === "SHORT"
+                      ? "text-rose-400"
+                      : "text-emerald-400"
+                  }`}>
                     {dualMarketData?.scriptIndicators?.mlSignal || "🟢 LONG (15m OTE)"}
                   </span>
                   <div className="flex items-center justify-between text-[9px] mt-0.5">
-                    <span className="text-gray-300 font-mono">
+                    <span className={`font-mono ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "text-gray-500 line-through" : "text-gray-300"}`}>
                       Вход: ${dualMarketData?.scriptIndicators?.entryPrice?.toFixed(2) || "..."}
                     </span>
-                    {(dualMarketData?.scriptIndicators as any)?.isFrozen && (
+                    {dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? (
+                      <span className="px-1.5 py-0.5 text-[8px] bg-gray-800 text-gray-300 border border-gray-600 rounded font-mono font-bold" title="Цена ушла на TP1/TP2 без входа в позицию (Недоход / Missed Entry)">
+                        🚫 Недоход
+                      </span>
+                    ) : (dualMarketData?.scriptIndicators as any)?.isFrozen ? (
                       <span className="px-1 py-0.5 text-[8px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded font-mono" title="Точка входа жестко зафиксирована (Stateful Lock), 0% перерисовки">
                         🔒 Зафиксирован
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
-                <div className="p-2 rounded bg-black/50 border border-gray-800">
+                <div className={`p-2 rounded border ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "bg-gray-900/90 border-gray-700" : "bg-black/50 border-gray-800"}`}>
                   <span className="text-gray-400 block">Цели (TP1 / TP2 / TP3):</span>
-                  <span className="font-bold text-sky-400 font-mono">
+                  <span className={`font-bold font-mono ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "text-gray-400 line-through" : "text-sky-400"}`}>
                     TP1: ${dualMarketData?.scriptIndicators?.tp1?.toFixed(2) || "..."}
                   </span>
-                  <span className="text-[9px] text-amber-300 font-mono block mt-0.5">
+                  <span className={`text-[9px] font-mono block mt-0.5 ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "text-gray-500 line-through" : "text-amber-300"}`}>
                     TP2: ${dualMarketData?.scriptIndicators?.tp2?.toFixed(2) || "..."} | TP3: ${dualMarketData?.scriptIndicators?.tp3?.toFixed(2) || "..."}
                   </span>
                 </div>
@@ -1835,7 +1845,7 @@ export const DeepSeekGoldScheduler: React.FC = () => {
                 </div>
                 <div className="p-2 rounded bg-black/50 border border-gray-800">
                   <span className="text-gray-400 block">Stop Loss / MOEX GD:</span>
-                  <span className="font-bold text-rose-300 font-mono">
+                  <span className={`font-bold font-mono ${dualMarketData?.scriptIndicators?.status === "MISSED_ENTRY" ? "text-gray-400 line-through" : "text-rose-300"}`}>
                     SL: ${dualMarketData?.scriptIndicators?.trailingStop?.toFixed(2) || "..."}
                   </span>
                   <span className="text-[9px] text-cyan-300 font-mono block mt-0.5">
