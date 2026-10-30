@@ -150,14 +150,28 @@ export async function getStabilizedGexReport(
   const newPwOi = newPwStrike ? newPwStrike.putOi : 0;
 
   const spot = spotPrice || freshReport.spotPrice;
+  const horizonUpper = (freshReport.horizon || "DAY").toUpperCase();
+  const maxCorridorWallDist =
+    horizonUpper === "DAY"
+      ? 55
+      : horizonUpper === "WEEK"
+      ? 90
+      : horizonUpper === "MONTH"
+      ? 185
+      : 215;
 
-  // 1. Физический пробой уровней ценой (Breach Detection):
-  // Если цена пробила Call Wall вверх (spot > currentCw + 0.5), старый уровень стал поддержкой,
-  // и Call Wall обязан мигрировать к следующему верхнему сопротивлению.
-  const isCwBreached = spot > currentCw + 0.5;
-  // Если цена пробила Put Wall вниз (spot < currentPw - 0.5), старый уровень стал сопротивлением,
-  // и Put Wall обязан мигрировать к следующей нижней поддержке.
-  const isPwBreached = spot < currentPw - 0.5;
+  // 1. Физический пробой уровней ценой (Breach Detection) или выход старого кэша за пределы рабочего коридора горизонта:
+  // Если цена пробила Call Wall вверх (spot > currentCw + 0.5) или ушла вниз так далеко, что старый Call Wall
+  // оказался за пределами максимального рабочего коридора горизонта, уровень обязан мигрировать к актуальному.
+  const isCwBreached =
+    spot > currentCw + 0.5 ||
+    currentCw <= spot + 2 ||
+    Math.abs(currentCw - spot) > maxCorridorWallDist;
+  // Аналогично для Put Wall (Пол):
+  const isPwBreached =
+    spot < currentPw - 0.5 ||
+    currentPw >= spot - 2 ||
+    Math.abs(spot - currentPw) > maxCorridorWallDist;
 
   // 2. Смена клиринговой сессии (EOD Roll):
   const lastDateStr = new Date(cached.lastUpdatedAt).toISOString().slice(0, 10);
@@ -168,10 +182,11 @@ export async function getStabilizedGexReport(
   let stabilizedPw = currentPw;
   let stabilizedFlip = currentFlip;
   let stabilizedPain = currentPain;
+  let wallMigrated = false;
 
   // 1a. Стабилизация Call Wall (Потолок):
   // Миграция разрешена ТОЛЬКО если:
-  // - Уровень физически пробит ценой (isCwBreached)
+  // - Уровень физически пробит ценой или вышел за коридор горизонта (isCwBreached)
   // - Наступила новая торговая сессия / клиринг (isNewDaySession)
   // - Новый страйк накопил НА 25-30% БОЛЬШЕ открытого интереса, чем текущий (newCwOi >= cached.callWallOi * (1 + HYSTERESIS_THRESHOLD))
   // В остальных случаях уровень удерживается железобетонно, не дергаясь за спотом!
@@ -182,6 +197,7 @@ export async function getStabilizedGexReport(
       stabilizedCw = newCw;
       cached.callWallOi = newCwOi;
       cached.lastUpdatedAt = now;
+      wallMigrated = true;
     }
   }
 
@@ -193,14 +209,18 @@ export async function getStabilizedGexReport(
       stabilizedPw = newPw;
       cached.putWallOi = newPwOi;
       cached.lastUpdatedAt = now;
+      wallMigrated = true;
     }
   }
 
   // 1c. Стабилизация Zero Flip и Max Pain (Магнит):
+  // Если мигрировала стена (Call Wall или Put Wall) или старый Flip/Pain оказался вне коридора [stabilizedPw, stabilizedCw],
+  // синхронизируем внутренние уровни с актуальным расчетом
   if (newFlip !== currentFlip) {
     const flipShiftPts = Math.abs(newFlip - currentFlip);
+    const isFlipOutOfBounds = currentFlip <= stabilizedPw + 5 || currentFlip >= stabilizedCw - 5;
     const isSignificantFlipShift = flipShiftPts >= 20 || Math.abs(spot - currentFlip) > 30;
-    if (isNewDaySession || (isCooldownPassed && isSignificantFlipShift)) {
+    if (wallMigrated || isFlipOutOfBounds || isNewDaySession || (isCooldownPassed && isSignificantFlipShift)) {
       stabilizedFlip = newFlip;
       cached.lastUpdatedAt = now;
     }
@@ -208,12 +228,17 @@ export async function getStabilizedGexReport(
 
   if (newPain !== currentPain) {
     const painShiftPts = Math.abs(newPain - currentPain);
+    const isPainOutOfBounds = currentPain <= stabilizedPw + 10 || currentPain >= stabilizedCw - 10;
     const isSignificantPainShift = painShiftPts >= 20;
-    if (isNewDaySession || (isCooldownPassed && isSignificantPainShift)) {
+    if (wallMigrated || isPainOutOfBounds || isNewDaySession || (isCooldownPassed && isSignificantPainShift)) {
       stabilizedPain = newPain;
       cached.lastUpdatedAt = now;
     }
   }
+
+  // Строгая инвариантная защита: Gamma Flip и Max Pain всегда строго внутри [stabilizedPw, stabilizedCw]
+  stabilizedFlip = Math.max(stabilizedPw + 5, Math.min(stabilizedCw - 5, stabilizedFlip));
+  stabilizedPain = Math.max(stabilizedPw + 10, Math.min(stabilizedCw - 10, stabilizedPain));
 
   // Формируем результирующий отчет: обновляем живой спот, греки, страйки и дельту,
   // но СОХРАНЯЕМ СТАБИЛИЗИРОВАННЫЕ ключевые стены (CW, PW, Flip, Pain)

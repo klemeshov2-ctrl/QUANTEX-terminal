@@ -886,8 +886,10 @@ async function fetchCboeGoldOptionChain(
     const options: any[] = json.data?.options || [];
     if (options.length === 0) return null;
 
-    // Scale GLD shares to COMEX spot gold price ($4040+)
-    const proxyScale = spotPrice / gldSpot;
+    // Quantize reference spot to $20 institutional clearing grid so GLD->XAUUSD strike mapping
+    // is 100% deterministic across servers and does not shift on intraday $1-$15 ticks
+    const anchorSpot = Math.round(spotPrice / 20) * 20;
+    const proxyScale = anchorSpot / gldSpot;
 
     // Extract all unique expiration dates in YYMMDD format
     const expSet = new Set<string>();
@@ -1342,7 +1344,8 @@ async function fetchYahooGoldRealOptions(
         chainData = gldData;
         isProxy = true;
         const gldPrice = gldData.underlyingPrice || 371.6;
-        proxyScale = spotPrice / gldPrice;
+        const anchorSpot = Math.round(spotPrice / 20) * 20;
+        proxyScale = anchorSpot / gldPrice;
       }
     } catch (err: any) {
       console.error("[PM2 GEX Engine] GLD options proxy query exception:", err.message);
@@ -1750,9 +1753,16 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
     );
     if (resOanda.ok) {
       const j = await resOanda.json();
+      const liveRtc = Number(j.rtc || j.close || 0);
       const hasLiveSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && (j.ask - j.bid) < 10;
       const liveMid = hasLiveSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
-      const livePrice = liveMid > 0 ? liveMid : Number(j.rtc || j.close || 0);
+      // Prefer real-time trade price (rtc/close) whenever scanner bid/ask lags by > $3
+      const livePrice =
+        liveRtc > 0 && (liveMid === 0 || Math.abs(liveMid - liveRtc) > 3)
+          ? liveRtc
+          : liveMid > 0
+          ? liveMid
+          : liveRtc;
       if (livePrice > 0) {
         spotPrice = Math.round(livePrice * 100) / 100;
         oandaOpen = Number(j.open) || spotPrice;
@@ -1832,10 +1842,15 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
       ? { minDist: 40, maxDist: 175, defDist: 85 }
       : { minDist: 30, maxDist: 200, defDist: 95 };
 
+  // Use $10 grid reference spot for corridor bounds so two servers within the same $10 zone
+  // evaluate the exact same strike candidate set
+  const refSpot = Math.round(spotPrice / 10) * 10;
+
   let callCandidates = strikes.filter(
     s =>
-      s.strike >= spotPrice + corridorBounds.minDist &&
-      s.strike <= spotPrice + corridorBounds.maxDist &&
+      s.strike > spotPrice &&
+      s.strike >= refSpot + corridorBounds.minDist &&
+      s.strike <= refSpot + corridorBounds.maxDist &&
       (s.callOi > 0 || s.callGex > 0)
   );
   if (callCandidates.length === 0) {
@@ -1844,8 +1859,9 @@ export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise
 
   let putCandidates = strikes.filter(
     s =>
-      s.strike <= spotPrice - corridorBounds.minDist &&
-      s.strike >= spotPrice - corridorBounds.maxDist &&
+      s.strike < spotPrice &&
+      s.strike <= refSpot - corridorBounds.minDist &&
+      s.strike >= refSpot - corridorBounds.maxDist &&
       (s.putOi > 0 || s.putGex < 0)
   );
   if (putCandidates.length === 0) {
