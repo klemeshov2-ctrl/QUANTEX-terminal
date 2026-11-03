@@ -4695,19 +4695,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           leg3Hit: fc.leg3Hit
         };
 
-        if (showAltWave) {
-          const altStartLog = fc.isPlanBActive ? Math.min(lastIdx, setupAnchorLog + 2) : lastIdx;
+        if (showAltWave && fc?.altTp1 && fc.altTp1 > 0) {
+          const altStartLog = setupAnchorLog;
           const altStartTime = cleanCandles[altStartLog]?.time ?? lastCandle.time;
+          const altStartPrice = fc.activeTrailingSl || computedSl || computedEntry;
+          const altTp1Log = Math.max(lastIdx + 2, setupAnchorLog + 8);
+          const altTp2Log = Math.max(lastIdx + 7, setupAnchorLog + 13);
           altForecastData = {
             startTime: altStartTime,
-            startPrice: fc.activeTrailingSl,
+            startPrice: altStartPrice,
             startLogical: altStartLog,
-            tp1Time: lastCandle.time + tfSec * 6,
+            tp1Time: cleanCandles[altTp1Log]?.time ?? (lastCandle.time + tfSec * (altTp1Log - lastIdx)),
             tp1Price: fc.altTp1,
-            tp1Logical: lastIdx + 6,
-            tp2Time: lastCandle.time + tfSec * 11,
+            tp1Logical: altTp1Log,
+            tp2Time: cleanCandles[altTp2Log]?.time ?? (lastCandle.time + tfSec * (altTp2Log - lastIdx)),
             tp2Price: fc.altTp2,
-            tp2Logical: lastIdx + 11,
+            tp2Logical: altTp2Log,
             isBull: !fc.isBull,
             labelTp1: `План Б: ${fc.altTp1.toFixed(dec)}`,
             labelTp2: `Цель 2: ${fc.altTp2.toFixed(dec)}`
@@ -4786,7 +4789,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         labelTextColor: "#fef3c7"
       });
 
-      // TP1 (Green line)
+      // TP1 (Teal/Cyan dashed line matching original chart design)
       boundedLines.push({
         id: "tp1_line",
         price: Number(computedTp1.toFixed(dec)),
@@ -4794,16 +4797,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         endTime: lineEndTime,
         startLogical: lineStartLog,
         endLogical: lineEndLog,
-        color: fc?.leg2Hit ? "#059669" : "#10b981",
+        color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
         lineWidth: 1,
-        lineStyle: fc?.leg2Hit ? "solid" : "dotted",
+        lineStyle: "dashed",
         label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`,
-        labelBg: "rgba(6, 24, 16, 0.98)",
-        labelBorderColor: "#34d399",
-        labelTextColor: "#d1fae5"
+        labelBg: "rgba(6, 24, 20, 0.98)",
+        labelBorderColor: "#2dd4bf",
+        labelTextColor: "#ccfbf1"
       });
 
-      // TP2 (Blue line)
+      // TP2 (Sky-Blue dashed line matching original chart design)
       if (computedTp2 > 0) {
         boundedLines.push({
           id: "tp2_line",
@@ -4814,13 +4817,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           endLogical: lineEndLog,
           color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
           lineWidth: 1,
-          lineStyle: fc?.leg3Hit ? "solid" : "dotted",
+          lineStyle: "dashed",
           label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`,
           labelBg: "rgba(6, 18, 28, 0.98)",
           labelBorderColor: "#38bdf8",
           labelTextColor: "#e0f2fe"
         });
       }
+
+      // Note: Alternative Plan B & Target 2 are rendered along the diagonal contingency ray
+      // directly in TradingViewZonesPrimitive without adding extra horizontal cross-lines.
     }
 
     // 8. Institutional GEX Levels (Synchronized with active GEX Analytics report)
@@ -5040,7 +5046,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // Update native canvas primitive with zones, forecast, bounded lines, floating price-axis tags, and bar countdown
+    // Update native canvas primitive with zones, forecast zigzag vectors, bounded lines, and tags
     zonesPrimitiveRef.current?.setData({
       zones: zoneBoxes,
       forecast: forecastData,
@@ -7534,7 +7540,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
                         </span>
                         <span className="font-extrabold text-white text-xs sm:text-sm tracking-wide">
-                          🟢 Опционные данные ({gexReport.source.includes("Yahoo Finance Options GC=F / GLD ETF") ? "Yahoo Finance Options GC=F / GLD ETF (delayed quotes)" : gexReport.source.includes("MOEX") ? "MOEX ISS ROPD" : "Deribit Live API"})
+                          🟢 Опционные данные ({gexReport.dataFreshnessLabel || (gexReport.source.includes("Yahoo Finance Options GC=F / GLD ETF") ? "Yahoo Finance Options GC=F / GLD ETF (delayed quotes)" : gexReport.source.includes("MOEX") ? "MOEX ISS ROPD" : "Deribit Live API")})
                         </span>
                         {(gexReport.asset === "XAUUSD" || gexReport.proxyNote) && (
                           <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/20 text-amber-200 rounded border border-amber-500/40 font-bold">
@@ -7558,10 +7564,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide flex items-center gap-1.5">
                           <span className="inline-block px-1.5 py-0.5 rounded bg-amber-500 text-black text-[10px] font-black uppercase">
-                            {gexReport.isDataStale || gexReport.source?.includes("Данные устарели") ? "Данные устарели" : "Синтетика"}
+                            {gexReport.isDataStale ? "Данные устарели" : "Синтетика"}
                           </span>
-                          {gexReport.isDataStale || gexReport.source?.includes("Данные устарели")
-                            ? "Данные устарели (>1ч) • Синтетический / резервный режим GEX"
+                          {gexReport.isDataStale
+                            ? (gexReport.dataFreshnessLabel || "Данные опционов устарели (>24ч) • Резервный режим GEX")
                             : "Математическая модель GEX (Резервный режим)"}
                         </span>
                         <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-950/80 text-amber-300 rounded border border-amber-500/50 font-bold">
@@ -7784,8 +7790,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                       level: string;
                       oldValue: number | null;
                       newValue: number;
+                      spotPrice?: number;
                       reason: "breach" | "cooldown+OI" | "new session" | "reset";
                       details: string;
+                      freshValues?: { callWall: number; putWall: number; gammaFlip: number; maxPain: number };
+                      topOi?: { topCalls: Array<{ strike: number; oi: number }>; topPuts: Array<{ strike: number; oi: number }> };
                     }>;
                     return (
                       <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
@@ -7836,9 +7845,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                             {migrationEntries.length > 0 && (
                               <div className="pt-1 border-t border-gray-800/80 space-y-1 font-mono text-[9.5px]">
                                 <div className="text-purple-300 font-bold">Лог миграций стабилизатора:</div>
-                                {migrationEntries.slice(-5).map((m, i) => (
-                                  <div key={i} className="text-gray-300 truncate" title={m.details}>
-                                    [{m.level}] {m.oldValue !== null ? `${m.oldValue}→${m.newValue}` : `init→${m.newValue}`} • <span className="text-cyan-300 font-semibold">reason={m.reason}</span> ({m.details})
+                                {migrationEntries.slice(-8).map((m, i) => (
+                                  <div key={i} className="text-gray-300 truncate" title={`${m.details}${m.freshValues ? ` | Fresh: CW ${m.freshValues.callWall}, PW ${m.freshValues.putWall}, Flip ${m.freshValues.gammaFlip}, Pain ${m.freshValues.maxPain}` : ""}`}>
+                                    <span className="text-purple-400 font-bold">[{m.horizon || "DAY"}]</span> [{m.level}] {m.oldValue !== null ? `${m.oldValue}→${m.newValue}` : `init→${m.newValue}`}
+                                    {m.spotPrice ? <span className="text-amber-300/80"> spot=${m.spotPrice}</span> : ""} •{" "}
+                                    <span className="text-cyan-300 font-semibold">reason={m.reason}</span>
+                                    {m.freshValues ? (
+                                      <span className="text-gray-400 text-[8.5px]"> (Fresh: CW {m.freshValues.callWall} / PW {m.freshValues.putWall})</span>
+                                    ) : null}
                                   </div>
                                 ))}
                               </div>

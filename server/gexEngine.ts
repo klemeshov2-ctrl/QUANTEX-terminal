@@ -24,9 +24,12 @@ export interface GexMarketReport {
   timestamp: string;
   expirationDate?: string; // Exact format e.g. "22 окт, 18:45 MSK (0DTE)"
   source: string;
-  isSynthetic?: boolean;      // Explicit flag: true if mathematically generated fallback or option data >1h stale, false if live fresh options
-  isDataStale?: boolean;      // True if option chain timestamp is older than 1 hour (>3600s) or API unreachable
+  isSynthetic?: boolean;      // Explicit flag: true if mathematically generated fallback or option data genuinely stale (>24h or missing), false if live/overnight options
+  isDataStale?: boolean;      // True if option chain timestamp is older than session validity (e.g. >26h on weekdays) or API unreachable
   dataTimestamp?: string;     // ISO timestamp of the underlying option chain snapshot
+  dataFreshnessLabel?: string;// Human readable freshness label according to session policy
+  timestampSource?: GexTimestampSource; // "exchange_timestamp" | "fetch_time" | "none"
+  sessionVerdict?: GexSessionVerdict;   // "fresh" | "overnight_normal" | "stale" | "market_closed" | "unavailable"
   proxyNote?: string;         // Explicit instrument disclosure note (e.g. "Опционы на ETF GLD, не на фьючерс золота COMEX GC")
   outOfCorridor?: boolean;    // True if gammaFlip or maxPain natively lies outside [putWall, callWall]
   flipOutOfCorridor?: boolean;// True if gammaFlip natively lies outside [putWall, callWall]
@@ -1289,31 +1292,317 @@ const REAL_BROWSER_HEADERS: Record<string, string> = {
   "Sec-Fetch-User": "?1"
 };
 
-const OPTION_DATA_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour freshness threshold
+export type GexSessionVerdict =
+  | "fresh"
+  | "overnight_normal"
+  | "stale"
+  | "market_closed"
+  | "unavailable";
+
+export type GexTimestampSource =
+  | "exchange_timestamp"
+  | "fetch_time"
+  | "none";
+
+export interface OptionFreshnessEvaluation {
+  sessionVerdict: GexSessionVerdict;
+  dataFreshnessLabel: string;
+  isDataStale: boolean;
+  isSynthetic: boolean;
+  ageMinutes: number | null;
+  timestampSource: GexTimestampSource;
+}
+
+export interface GexSourceStatusEntry {
+  sourceId: string;
+  sourceName: string;
+  asset: string;
+  marketType: "US_OPTIONS" | "CRYPTO_24_7" | "MOEX_FORTS";
+  lastHttpStatus: number | null;
+  latencyMs: number;
+  lastFetchMs: number;
+  parsedTimestamp: string | null;
+  ageMinutes: number | null;
+  sessionVerdict: GexSessionVerdict;
+  dataFreshnessLabel: string;
+  timestampSource: GexTimestampSource;
+  isSynthetic: boolean;
+  isDataStale: boolean;
+}
+
 const YAHOO_SESSION_TTL_MS = 30 * 60 * 1000;   // 30 minutes Yahoo crumb session cache TTL
 
-export function parseOptionChainTimestampMs(rawTs: unknown): number | null {
-  if (!rawTs) return null;
+// Central registry of option sources health and freshness
+const gexSourceStatusMap = new Map<string, GexSourceStatusEntry>();
+
+export function recordGexSourceStatus(entry: GexSourceStatusEntry) {
+  gexSourceStatusMap.set(entry.sourceId, entry);
+}
+
+function getNewYorkDateTime(ms: number) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    weekday: "short"
+  });
+  const parts = formatter.formatToParts(new Date(ms));
+  const getPart = (type: string) => parts.find(p => p.type === type)?.value || "";
+  const year = parseInt(getPart("year"), 10);
+  const month = parseInt(getPart("month"), 10);
+  const day = parseInt(getPart("day"), 10);
+  const hour = parseInt(getPart("hour"), 10);
+  const minute = parseInt(getPart("minute"), 10);
+  const second = parseInt(getPart("second"), 10);
+  const weekday = getPart("weekday"); // Mon, Tue, Wed, Thu, Fri, Sat, Sun
+  const minuteOfDay = hour * 60 + minute;
+  return { year, month, day, hour, minute, second, weekday, minuteOfDay };
+}
+
+export function parseOptionTimestampWithSource(
+  rawTs: unknown,
+  fallbackNowMs = Date.now()
+): { timestampMs: number; timestampSource: GexTimestampSource } {
+  if (!rawTs) {
+    return { timestampMs: fallbackNowMs, timestampSource: "fetch_time" };
+  }
   if (typeof rawTs === "number" && isFinite(rawTs) && rawTs > 0) {
-    // Distinguish Unix seconds vs milliseconds
-    return rawTs < 10_000_000_000 ? rawTs * 1000 : rawTs;
+    const timestampMs = rawTs < 10_000_000_000 ? rawTs * 1000 : rawTs;
+    return { timestampMs, timestampSource: "exchange_timestamp" };
   }
   if (typeof rawTs === "string") {
     const trimmed = rawTs.trim();
-    if (!trimmed) return null;
+    if (!trimmed) {
+      return { timestampMs: fallbackNowMs, timestampSource: "fetch_time" };
+    }
     const asNum = Number(trimmed);
     if (!isNaN(asNum) && asNum > 0) {
-      return asNum < 10_000_000_000 ? asNum * 1000 : asNum;
+      const timestampMs = asNum < 10_000_000_000 ? asNum * 1000 : asNum;
+      return { timestampMs, timestampSource: "exchange_timestamp" };
     }
     const parsed = Date.parse(trimmed.includes("T") ? trimmed : `${trimmed.replace(" ", "T")}Z`);
-    if (!isNaN(parsed) && parsed > 0) return parsed;
+    if (!isNaN(parsed) && parsed > 0) {
+      return { timestampMs: parsed, timestampSource: "exchange_timestamp" };
+    }
   }
-  return null;
+  return { timestampMs: fallbackNowMs, timestampSource: "fetch_time" };
 }
 
-export function isOptionTimestampStale(timestampMs: number | null | undefined, nowMs = Date.now()): boolean {
-  if (!timestampMs || !isFinite(timestampMs) || timestampMs <= 0) return true;
-  return (nowMs - timestampMs) > OPTION_DATA_MAX_AGE_MS;
+export function parseOptionChainTimestampMs(rawTs: unknown): number | null {
+  if (!rawTs) return null;
+  const res = parseOptionTimestampWithSource(rawTs);
+  return res.timestampSource === "exchange_timestamp" ? res.timestampMs : null;
+}
+
+/**
+ * Session-Aware Freshness Policy for Options Data:
+ * - US Options (CBOE, Yahoo for GLD / GC=F):
+ *   Market hours 09:30-16:00 ET (16:30-23:00 MSK).
+ *   Outside session (overnight): data from previous session close is normal (not stale).
+ *   Weekends: data from Friday close is normal.
+ *   Only marked stale if age > 26h on weekdays or > 80h on weekends, or if market is open and unupdated for > 2h.
+ * - Crypto Options (Deribit): 24/7 market, 15-30m fresh, >60m stale.
+ * - MOEX Options (FORTS): 09:00-23:50 MSK weekdays. Outside session marked "рынок закрыт", not "устарели".
+ */
+export function evaluateOptionDataFreshness(options: {
+  timestampMs: number | null | undefined;
+  timestampSource?: GexTimestampSource;
+  marketType: "US_OPTIONS" | "CRYPTO_24_7" | "MOEX_FORTS";
+  nowMs?: number;
+  fetchFailed?: boolean;
+  strikesCount?: number;
+}): OptionFreshnessEvaluation {
+  const nowMs = options.nowMs ?? Date.now();
+  const strikesCount = options.strikesCount ?? 10;
+  const fetchFailed = options.fetchFailed ?? false;
+  const rawTs = options.timestampMs;
+
+  if (fetchFailed || strikesCount < 4 || !rawTs || !isFinite(rawTs) || rawTs <= 0) {
+    return {
+      sessionVerdict: "unavailable",
+      dataFreshnessLabel: "Биржевой API опционов недоступен",
+      isDataStale: true,
+      isSynthetic: true,
+      ageMinutes: null,
+      timestampSource: options.timestampSource || "none"
+    };
+  }
+
+  const timestampSource: GexTimestampSource = options.timestampSource || "exchange_timestamp";
+  const ageMs = Math.max(0, nowMs - rawTs);
+  const ageMinutes = Math.round(ageMs / 60000);
+
+  if (options.marketType === "US_OPTIONS") {
+    const et = getNewYorkDateTime(nowMs);
+    const isWeekend = et.weekday === "Sat" || et.weekday === "Sun";
+    // US regular session: 09:30 to 16:00 ET (570 to 960 minutes of day)
+    const isSessionOpen = !isWeekend && et.minuteOfDay >= 570 && et.minuteOfDay < 960;
+
+    // Weekend evaluation
+    if (isWeekend) {
+      if (ageMs <= 80 * 3600 * 1000) {
+        return {
+          sessionVerdict: "overnight_normal",
+          dataFreshnessLabel: "Данные опционов: закрытие пятницы",
+          isDataStale: false,
+          isSynthetic: false,
+          ageMinutes,
+          timestampSource
+        };
+      }
+      return {
+        sessionVerdict: "stale",
+        dataFreshnessLabel: "Данные опционов: устарели (>72ч)",
+        isDataStale: true,
+        isSynthetic: true,
+        ageMinutes,
+        timestampSource
+      };
+    }
+
+    // Weekday during active session (09:30 - 16:00 ET)
+    if (isSessionOpen) {
+      if (ageMs <= 2 * 3600 * 1000) {
+        return {
+          sessionVerdict: "fresh",
+          dataFreshnessLabel: "Рынок США открыт (Live • задержка 15 мин)",
+          isDataStale: false,
+          isSynthetic: false,
+          ageMinutes,
+          timestampSource
+        };
+      }
+      return {
+        sessionVerdict: "stale",
+        dataFreshnessLabel: "Данные опционов: устарели (>2ч в ходе сессии)",
+        isDataStale: true,
+        isSynthetic: ageMs > 24 * 3600 * 1000,
+        ageMinutes,
+        timestampSource
+      };
+    }
+
+    // Weekday outside active session (overnight pre-market or post-market)
+    if (ageMs <= 26 * 3600 * 1000) {
+      return {
+        sessionVerdict: "overnight_normal",
+        dataFreshnessLabel: "Данные опционов: закрытие прошлой сессии США (норма до 16:30 МСК)",
+        isDataStale: false,
+        isSynthetic: false,
+        ageMinutes,
+        timestampSource
+      };
+    }
+
+    return {
+      sessionVerdict: "stale",
+      dataFreshnessLabel: "Данные опционов: устарели (>24ч)",
+      isDataStale: true,
+      isSynthetic: true,
+      ageMinutes,
+      timestampSource
+    };
+  }
+
+  if (options.marketType === "CRYPTO_24_7") {
+    if (ageMinutes <= 30) {
+      return {
+        sessionVerdict: "fresh",
+        dataFreshnessLabel: "Deribit Live API (потоковые данные)",
+        isDataStale: false,
+        isSynthetic: false,
+        ageMinutes,
+        timestampSource
+      };
+    }
+    if (ageMinutes <= 60) {
+      return {
+        sessionVerdict: "fresh",
+        dataFreshnessLabel: `Deribit Live API (${ageMinutes} мин)`,
+        isDataStale: false,
+        isSynthetic: false,
+        ageMinutes,
+        timestampSource
+      };
+    }
+    return {
+      sessionVerdict: "stale",
+      dataFreshnessLabel: "Данные Deribit устарели (>1ч)",
+      isDataStale: true,
+      isSynthetic: ageMinutes > 24 * 60,
+      ageMinutes,
+      timestampSource
+    };
+  }
+
+  // MOEX_FORTS
+  const mskMs = nowMs + 3 * 3600 * 1000;
+  const mskDate = new Date(mskMs);
+  const mskDay = mskDate.getUTCDay(); // 0=Sun, 6=Sat
+  const mskHour = mskDate.getUTCHours();
+  const mskMinute = mskDate.getUTCMinutes();
+  const mskMinuteOfDay = mskHour * 60 + mskMinute;
+  const isMskWeekend = mskDay === 0 || mskDay === 6;
+  const isMskSession = !isMskWeekend && mskMinuteOfDay >= 540 && mskMinuteOfDay < 1430;
+
+  if (isMskWeekend) {
+    return {
+      sessionVerdict: "market_closed",
+      dataFreshnessLabel: "МосБиржа FORTS: закрытие пятницы",
+      isDataStale: false,
+      isSynthetic: false,
+      ageMinutes,
+      timestampSource
+    };
+  }
+
+  if (!isMskSession) {
+    return {
+      sessionVerdict: "market_closed",
+      dataFreshnessLabel: "МосБиржа FORTS: рынок закрыт (ночь / клиринг)",
+      isDataStale: false,
+      isSynthetic: false,
+      ageMinutes,
+      timestampSource
+    };
+  }
+
+  if (ageMinutes <= 30) {
+    return {
+      sessionVerdict: "fresh",
+      dataFreshnessLabel: "МосБиржа FORTS (Live)",
+      isDataStale: false,
+      isSynthetic: false,
+      ageMinutes,
+      timestampSource
+    };
+  }
+
+  return {
+    sessionVerdict: "stale",
+    dataFreshnessLabel: "МосБиржа FORTS: данные устарели (>30 мин)",
+    isDataStale: true,
+    isSynthetic: ageMinutes > 24 * 60,
+    ageMinutes,
+    timestampSource
+  };
+}
+
+export function isOptionTimestampStale(
+  timestampMs: number | null | undefined,
+  nowMs = Date.now(),
+  marketType: "US_OPTIONS" | "CRYPTO_24_7" | "MOEX_FORTS" = "US_OPTIONS"
+): boolean {
+  return evaluateOptionDataFreshness({
+    timestampMs,
+    nowMs,
+    marketType
+  }).isDataStale;
 }
 
 // ============================================================================
@@ -1328,8 +1617,11 @@ async function fetchCboeGoldOptionChain(
   expirationDateStr: string;
   tYears: number;
   dataTimestampMs: number | null;
+  timestampSource?: GexTimestampSource;
   isStale: boolean;
+  freshness?: OptionFreshnessEvaluation;
 } | null> {
+  const t0 = Date.now();
   try {
     let cboeRes: Response | null = null;
     const retryDelays = [1000, 2000, 4000];
@@ -1362,6 +1654,22 @@ async function fetchCboeGoldOptionChain(
 
     if (!cboeRes || !cboeRes.ok) {
       console.warn(`[PM2 GEX Engine] GLD delayed options API returned status ${cboeRes?.status || "network failure"} after 3 attempts`);
+      recordGexSourceStatus({
+        sourceId: "CBOE_GLD",
+        sourceName: "CBOE CDN (GLD ETF Delayed Options)",
+        asset: "XAUUSD",
+        marketType: "US_OPTIONS",
+        lastHttpStatus: cboeRes?.status ?? null,
+        latencyMs: Date.now() - t0,
+        lastFetchMs: Date.now(),
+        parsedTimestamp: null,
+        ageMinutes: null,
+        sessionVerdict: "unavailable",
+        dataFreshnessLabel: "Биржевой API опционов недоступен (HTTP ошибка)",
+        timestampSource: "none",
+        isSynthetic: true,
+        isDataStale: true
+      });
       return null;
     }
 
@@ -1370,15 +1678,38 @@ async function fetchCboeGoldOptionChain(
     const options: any[] = json.data?.options || [];
     if (options.length === 0) return null;
 
-    // Extract option feed timestamp and check 1-hour freshness
+    // Extract option feed timestamp and evaluate session-aware freshness
     const rawFeedTs =
       json.timestamp ||
       json.data?.timestamp ||
       json.data?.last_trade_time ||
       options[0]?.last_trade_time ||
       null;
-    const dataTimestampMs = parseOptionChainTimestampMs(rawFeedTs);
-    const isStale = isOptionTimestampStale(dataTimestampMs);
+    const { timestampMs: dataTimestampMs, timestampSource } = parseOptionTimestampWithSource(rawFeedTs);
+    const freshness = evaluateOptionDataFreshness({
+      timestampMs: dataTimestampMs,
+      timestampSource,
+      marketType: "US_OPTIONS",
+      strikesCount: options.length
+    });
+    const isStale = freshness.isDataStale;
+
+    recordGexSourceStatus({
+      sourceId: "CBOE_GLD",
+      sourceName: "CBOE CDN (GLD ETF Delayed Options)",
+      asset: "XAUUSD",
+      marketType: "US_OPTIONS",
+      lastHttpStatus: cboeRes?.status ?? 200,
+      latencyMs: Date.now() - t0,
+      lastFetchMs: Date.now(),
+      parsedTimestamp: dataTimestampMs ? new Date(dataTimestampMs).toISOString() : null,
+      ageMinutes: freshness.ageMinutes,
+      sessionVerdict: freshness.sessionVerdict,
+      dataFreshnessLabel: freshness.dataFreshnessLabel,
+      timestampSource,
+      isSynthetic: freshness.isSynthetic,
+      isDataStale: freshness.isDataStale
+    });
 
     // Quantize reference spot to $20 institutional clearing grid so GLD->XAUUSD strike mapping
     // is 100% deterministic across servers and does not shift on intraday $1-$15 ticks
@@ -1596,7 +1927,9 @@ async function fetchCboeGoldOptionChain(
       expirationDateStr,
       tYears,
       dataTimestampMs,
-      isStale
+      timestampSource,
+      isStale,
+      freshness
     };
   } catch (err: any) {
     console.warn("[PM2 GEX Engine] GLD delayed options fetch notice:", err.message);
@@ -1838,7 +2171,9 @@ async function fetchYahooGoldRealOptions(
   expirationDateStr: string;
   tYears: number;
   dataTimestampMs: number | null;
+  timestampSource?: GexTimestampSource;
   isStale: boolean;
+  freshness?: OptionFreshnessEvaluation;
 } | null> {
   const session = await getYahooFinanceSession();
 
@@ -1999,7 +2334,13 @@ async function fetchYahooGoldRealOptions(
   const horizonTag = horizon === "DAY" ? "0DTE" : horizon === "WEEK" ? "Неделя" : "Месяц";
   const sourceName = `Yahoo Finance Options GC=F / GLD ETF (delayed quotes, ${horizonTag})`;
   const dataTimestampMs = chainData.dataTimestampMs ?? null;
-  const isStale = isOptionTimestampStale(dataTimestampMs);
+  const timestampSource: GexTimestampSource = dataTimestampMs ? "exchange_timestamp" : "fetch_time";
+  const freshness = evaluateOptionDataFreshness({
+    timestampMs: dataTimestampMs || Date.now(),
+    timestampSource,
+    marketType: "US_OPTIONS",
+    strikesCount: strikes.length
+  });
 
   return {
     strikes: strikes.sort((a, b) => b.strike - a.strike),
@@ -2007,7 +2348,9 @@ async function fetchYahooGoldRealOptions(
     expirationDateStr: chainData.expirationDateStr,
     tYears,
     dataTimestampMs,
-    isStale
+    timestampSource,
+    isStale: freshness.isDataStale,
+    freshness
   };
 }
 
@@ -2023,7 +2366,9 @@ async function fetchDeribitGoldOptions(
   expirationDateStr: string;
   tYears: number;
   dataTimestampMs: number | null;
+  timestampSource?: GexTimestampSource;
   isStale: boolean;
+  freshness?: OptionFreshnessEvaluation;
 } | null> {
   try {
     const usdcUrl = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=USDC&kind=option";
@@ -2096,7 +2441,14 @@ async function fetchDeribitGoldOptions(
     if (strikes.length < 4) return null;
 
     const dataTimestampMs = maxCreationTs > 0 ? maxCreationTs : Date.now();
-    const isStale = isOptionTimestampStale(dataTimestampMs);
+    const timestampSource: GexTimestampSource = maxCreationTs > 0 ? "exchange_timestamp" : "fetch_time";
+    const freshness = evaluateOptionDataFreshness({
+      timestampMs: dataTimestampMs,
+      timestampSource,
+      marketType: "CRYPTO_24_7",
+      strikesCount: strikes.length
+    });
+    const isStale = freshness.isDataStale;
     const tYears = horizon === "DAY" ? 1 / 365 : horizon === "WEEK" ? 7 / 365 : 24 / 365;
 
     return {
@@ -2105,7 +2457,9 @@ async function fetchDeribitGoldOptions(
       expirationDateStr: getHorizonExpirationDateString(horizon),
       tYears,
       dataTimestampMs,
-      isStale
+      timestampSource,
+      isStale,
+      freshness
     };
   } catch {
     return null;
@@ -2580,12 +2934,18 @@ export function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMa
       severity: (idx === 0 ? "HIGH" : "MEDIUM") as "HIGH" | "MEDIUM"
     }));
 
-    // 1. Freshness enforcement: if option chain timestamp is older than 1 hour (isStale === true),
-    // mark isSynthetic: true and display "Данные устарели" honestly.
-    const isStaleChain = Boolean(realData.isStale);
-    const sourceLabel = isStaleChain
-      ? `${oandaSource} • ${realData.sourceName} • Данные устарели (>1ч)`
-      : `${oandaSource} • ${realData.sourceName}`;
+    // 1. Session-aware freshness enforcement (overnight US data is valid, not synthetic)
+    const freshness = (realData as any).freshness || evaluateOptionDataFreshness({
+      timestampMs: realData.dataTimestampMs,
+      timestampSource: (realData as any).timestampSource,
+      marketType: "US_OPTIONS",
+      strikesCount: strikes.length
+    });
+
+    const isStaleChain = freshness.isDataStale;
+    const isSyntheticChain = freshness.isSynthetic;
+    const dataFreshnessLabel = freshness.dataFreshnessLabel;
+    const sourceLabel = `${oandaSource} • ${realData.sourceName} • ${dataFreshnessLabel}`;
 
     const density = evaluateOptionBookDensity(strikes, "XAUUSD", horizon, sourceLabel);
 
@@ -2597,8 +2957,11 @@ export function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMa
       dataTimestamp: realData.dataTimestampMs ? new Date(realData.dataTimestampMs).toISOString() : undefined,
       expirationDate: realData.expirationDateStr,
       source: sourceLabel,
-      isSynthetic: isStaleChain,
+      isSynthetic: isSyntheticChain,
       isDataStale: isStaleChain,
+      dataFreshnessLabel,
+      timestampSource: (realData as any).timestampSource || "exchange_timestamp",
+      sessionVerdict: freshness.sessionVerdict,
       proxyNote: "Опционы на ETF GLD, не на фьючерс золота COMEX GC",
       outOfCorridor,
       flipOutOfCorridor,
@@ -3979,4 +4342,171 @@ export function getGexReportForAsset(asset: string, horizon: ExpiryHorizon = "WE
     return calculateCryptoGex("XRP", horizon);
   }
   return calculateCryptoGex("BTC", horizon);
+}
+
+/**
+ * Returns latest health, latency, parsed timestamp, age, and session-aware verdict for all option data sources.
+ * If probe === true or if no data has been collected yet, probes all live cascades.
+ */
+export async function getAllGexSourcesStatus(probe = false): Promise<GexSourceStatusEntry[]> {
+  const sourcesToProbe: Array<{
+    sourceId: string;
+    sourceName: string;
+    asset: string;
+    marketType: "US_OPTIONS" | "CRYPTO_24_7" | "MOEX_FORTS";
+    fetcher: () => Promise<any>;
+  }> = [
+    {
+      sourceId: "CBOE_GLD",
+      sourceName: "CBOE CDN (GLD ETF Delayed Options)",
+      asset: "XAUUSD",
+      marketType: "US_OPTIONS",
+      fetcher: () => fetchCboeGoldOptionChain("DAY", 4040)
+    },
+    {
+      sourceId: "YAHOO_GC",
+      sourceName: "Yahoo Finance Options (GC=F)",
+      asset: "XAUUSD",
+      marketType: "US_OPTIONS",
+      fetcher: async () => {
+        const session = await getYahooFinanceSession();
+        return fetchYahooOptionChain("GC=F", "DAY", session);
+      }
+    },
+    {
+      sourceId: "YAHOO_GLD",
+      sourceName: "Yahoo Finance Options (GLD ETF)",
+      asset: "XAUUSD",
+      marketType: "US_OPTIONS",
+      fetcher: async () => {
+        const session = await getYahooFinanceSession();
+        return fetchYahooOptionChain("GLD", "DAY", session);
+      }
+    },
+    {
+      sourceId: "DERIBIT_PAXG",
+      sourceName: "Deribit Gold Options (PAXG_USDC)",
+      asset: "XAUUSD",
+      marketType: "US_OPTIONS",
+      fetcher: () => fetchDeribitGoldOptions("DAY", 4040)
+    },
+    {
+      sourceId: "DERIBIT_BTC",
+      sourceName: "Deribit Real Options API (BTC)",
+      asset: "BTC",
+      marketType: "CRYPTO_24_7",
+      fetcher: () => calculateCryptoGex("BTC", "WEEK")
+    },
+    {
+      sourceId: "DERIBIT_ETH",
+      sourceName: "Deribit Real Options API (ETH)",
+      asset: "ETH",
+      marketType: "CRYPTO_24_7",
+      fetcher: () => calculateCryptoGex("ETH", "WEEK")
+    },
+    {
+      sourceId: "MOEX_ROPD",
+      sourceName: "MOEX ISS FORTS Options (ROPD)",
+      asset: "MOEX_GOLD",
+      marketType: "MOEX_FORTS",
+      fetcher: () => calculateMoexGoldGex("DAY")
+    }
+  ];
+
+  if (probe || gexSourceStatusMap.size === 0) {
+    await Promise.allSettled(
+      sourcesToProbe.map(async (s) => {
+        const t0 = Date.now();
+        try {
+          const res = await s.fetcher();
+          const latencyMs = Date.now() - t0;
+          if (res) {
+            const dataTimestampMs = res.dataTimestampMs || (res.timestamp ? Date.parse(res.timestamp) : Date.now());
+            const tsSource: GexTimestampSource = res.timestampSource || (res.dataTimestampMs ? "exchange_timestamp" : "fetch_time");
+            const strikesCount = res.strikes?.length || (res.calls?.length ? res.calls.length + res.puts.length : 10);
+            const freshness = res.freshness || evaluateOptionDataFreshness({
+              timestampMs: dataTimestampMs,
+              timestampSource: tsSource,
+              marketType: s.marketType,
+              strikesCount
+            });
+            recordGexSourceStatus({
+              sourceId: s.sourceId,
+              sourceName: s.sourceName,
+              asset: s.asset,
+              marketType: s.marketType,
+              lastHttpStatus: 200,
+              latencyMs,
+              lastFetchMs: Date.now(),
+              parsedTimestamp: dataTimestampMs ? new Date(dataTimestampMs).toISOString() : null,
+              ageMinutes: freshness.ageMinutes,
+              sessionVerdict: freshness.sessionVerdict,
+              dataFreshnessLabel: freshness.dataFreshnessLabel,
+              timestampSource: tsSource,
+              isSynthetic: freshness.isSynthetic,
+              isDataStale: freshness.isDataStale
+            });
+          } else {
+            recordGexSourceStatus({
+              sourceId: s.sourceId,
+              sourceName: s.sourceName,
+              asset: s.asset,
+              marketType: s.marketType,
+              lastHttpStatus: null,
+              latencyMs: Date.now() - t0,
+              lastFetchMs: Date.now(),
+              parsedTimestamp: null,
+              ageMinutes: null,
+              sessionVerdict: "unavailable",
+              dataFreshnessLabel: "Источник временно не вернул опционную цепочку",
+              timestampSource: "none",
+              isSynthetic: true,
+              isDataStale: true
+            });
+          }
+        } catch (err: any) {
+          recordGexSourceStatus({
+            sourceId: s.sourceId,
+            sourceName: s.sourceName,
+            asset: s.asset,
+            marketType: s.marketType,
+            lastHttpStatus: null,
+            latencyMs: Date.now() - t0,
+            lastFetchMs: Date.now(),
+            parsedTimestamp: null,
+            ageMinutes: null,
+            sessionVerdict: "unavailable",
+            dataFreshnessLabel: `Ошибка опроса: ${err.message}`,
+            timestampSource: "none",
+            isSynthetic: true,
+            isDataStale: true
+          });
+        }
+      })
+    );
+  }
+
+  // Ensure all known sources have an entry even if unprobed
+  for (const s of sourcesToProbe) {
+    if (!gexSourceStatusMap.has(s.sourceId)) {
+      gexSourceStatusMap.set(s.sourceId, {
+        sourceId: s.sourceId,
+        sourceName: s.sourceName,
+        asset: s.asset,
+        marketType: s.marketType,
+        lastHttpStatus: null,
+        latencyMs: 0,
+        lastFetchMs: 0,
+        parsedTimestamp: null,
+        ageMinutes: null,
+        sessionVerdict: "unavailable",
+        dataFreshnessLabel: "Ожидает первого опроса",
+        timestampSource: "none",
+        isSynthetic: true,
+        isDataStale: true
+      });
+    }
+  }
+
+  return Array.from(gexSourceStatusMap.values());
 }

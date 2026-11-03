@@ -18,9 +18,15 @@ import {
   fetchMoexFrontQuarterlyContracts,
   fetchMoexWithRetry,
   updateMoexLivePriceOverlay,
-  getLiveMoexStreamingBenchmarks
+  getLiveMoexStreamingBenchmarks,
+  getAllGexSourcesStatus
 } from "./server/gexEngine";
-import { getStabilizedGexReport, resetStabilizedGexCache, registerActiveTradeChecker } from "./server/gexStateManager";
+import {
+  getStabilizedGexReport,
+  resetStabilizedGexCache,
+  registerActiveTradeChecker,
+  getStabilizerMigrationLog
+} from "./server/gexStateManager";
 import { formatGexLevelLabel, getLevelRole } from "./src/lib/gexLabels";
 import {
   recordAiForecast,
@@ -4674,12 +4680,29 @@ const handleResetGexCache = async (req: express.Request, res: express.Response) 
 app.post("/api/gex/reset-cache", handleResetGexCache);
 app.get("/api/gex/reset-cache", handleResetGexCache);
 
+// 1.15 Option Sources Health, Latency & Freshness Status
+app.get("/api/gex/source-status", async (req, res) => {
+  try {
+    const probe = req.query.probe === "1" || req.query.probe === "true";
+    const sources = await getAllGexSourcesStatus(probe);
+    return res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      sources
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 1.2 Persistent GEX Level Migration Log (data/gex-migration-log.json)
 const GEX_MIGRATION_LOG_FILE = path.join(process.cwd(), "data", "gex-migration-log.json");
 
 app.get("/api/gex/migration-log", async (req, res) => {
   try {
     const asset = req.query.asset as string | undefined;
+    const horizon = req.query.horizon as any;
+    const stabilizerAuditLog = getStabilizerMigrationLog(asset, horizon);
     let logs: any[] = [];
     try {
       const raw = await fs.promises.readFile(GEX_MIGRATION_LOG_FILE, "utf-8");
@@ -4699,9 +4722,9 @@ app.get("/api/gex/migration-log", async (req, res) => {
         return false;
       });
     }
-    return res.json({ success: true, logs });
+    return res.json({ success: true, logs, stabilizerAuditLog });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message, logs: [] });
+    return res.status(500).json({ success: false, error: err.message, logs: [], stabilizerAuditLog: [] });
   }
 });
 

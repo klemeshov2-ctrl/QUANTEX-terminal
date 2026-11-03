@@ -201,7 +201,7 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
               <span className={`text-[11px] font-mono font-extrabold px-2.5 py-0.5 rounded-lg border ${dominantBadge.cls}`}>
                 {dominantBadge.label}
               </span>
-              {gexReport.isSynthetic && (
+              {gexReport.isSynthetic ? (
                 <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
                   <AlertTriangle className="h-3 w-3 text-amber-400" />
                   <span>
@@ -210,7 +210,12 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
                       : "Синтетическая модель"}
                   </span>
                 </span>
-              )}
+              ) : gexReport.dataFreshnessLabel ? (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/35 flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span>{gexReport.dataFreshnessLabel}</span>
+                </span>
+              ) : null}
               {(gexReport.asset === "XAUUSD" || gexReport.proxyNote) && (
                 <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-200 border border-blue-500/35">
                   {gexReport.proxyNote || "Опционы на ETF GLD, не на фьючерс золота COMEX GC"}

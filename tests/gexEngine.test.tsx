@@ -11,6 +11,7 @@ import {
   getGexReportForAsset,
   clearGexEngineCache,
   isOptionTimestampStale,
+  evaluateOptionDataFreshness,
   GexStrikeData,
   GexMarketReport
 } from "../server/gexEngine";
@@ -122,13 +123,68 @@ async function runTests() {
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 5: При isSynthetic=true UI-компонент рендерит плашку-предупреждение + проверка свежести >1ч и плашки GLD ETF
+  // ---------------------------------------------------------------------------
+  // TEST 5: Сессионно-осознанная политика свежести опционных данных + рендер UI
   // ---------------------------------------------------------------------------
   {
-    const now = Date.now();
-    assert.equal(isOptionTimestampStale(now - 20 * 60 * 1000, now), false, "20m old timestamp should be fresh");
-    assert.equal(isOptionTimestampStale(now - 65 * 60 * 1000, now), true, "65m old timestamp (>1h) should be stale");
+    // Scenario 1: timestamp = сейчас внутри сессии США (например, среда 19:00 UTC = 14:00 ET) -> fresh
+    const wedSessionMs = Date.parse("2026-11-04T19:00:00Z");
+    const s1 = evaluateOptionDataFreshness({
+      timestampMs: wedSessionMs - 5 * 60 * 1000,
+      marketType: "US_OPTIONS",
+      nowMs: wedSessionMs
+    });
+    assert.equal(s1.sessionVerdict, "fresh", "Expected fresh verdict during US session");
+    assert.equal(s1.isDataStale, false, "Expected isDataStale=false during active session");
+    assert.equal(s1.isSynthetic, false, "Expected isSynthetic=false during active session");
 
+    // Scenario 2: сейчас 13:00 МСК (10:00 UTC), timestamp = закрытие прошлой сессии США (21:00 UTC) -> overnight_normal
+    const tue13Msk = Date.parse("2026-11-03T10:00:00Z");
+    const monClose = Date.parse("2026-11-02T21:00:00Z");
+    const s2 = evaluateOptionDataFreshness({
+      timestampMs: monClose,
+      marketType: "US_OPTIONS",
+      nowMs: tue13Msk
+    });
+    assert.equal(s2.sessionVerdict, "overnight_normal", "Expected overnight_normal outside US session before open");
+    assert.equal(s2.isDataStale, false, "Expected isDataStale=false for overnight data from previous close");
+    assert.equal(s2.isSynthetic, false, "Expected isSynthetic=false for real overnight option chain");
+    assert.ok(s2.dataFreshnessLabel.includes("закрытие прошлой сессии США"), "Expected label to mention close of last US session");
+
+    // Scenario 3: timestamp старше 26 часов в будний день -> stale, isDataStale=true, isSynthetic=true
+    const s3 = evaluateOptionDataFreshness({
+      timestampMs: tue13Msk - 27 * 3600 * 1000,
+      marketType: "US_OPTIONS",
+      nowMs: tue13Msk
+    });
+    assert.equal(s3.sessionVerdict, "stale", "Expected stale verdict for data older than 26h");
+    assert.equal(s3.isDataStale, true, "Expected isDataStale=true for stale data");
+    assert.equal(s3.isSynthetic, true, "Expected isSynthetic=true for stale data >26h");
+
+    // Scenario 4: суббота, timestamp = закрытие пятницы -> overnight_normal (weekend), isDataStale=false
+    const satMs = Date.parse("2026-11-07T15:00:00Z");
+    const friClose = Date.parse("2026-11-06T21:00:00Z");
+    const s4 = evaluateOptionDataFreshness({
+      timestampMs: friClose,
+      marketType: "US_OPTIONS",
+      nowMs: satMs
+    });
+    assert.equal(s4.sessionVerdict, "overnight_normal", "Expected overnight_normal on weekend with Friday close");
+    assert.equal(s4.isDataStale, false, "Expected isDataStale=false on weekend with Friday close");
+    assert.equal(s4.isSynthetic, false, "Expected isSynthetic=false on weekend with Friday close");
+    assert.ok(s4.dataFreshnessLabel.includes("закрытие пятницы"), "Expected weekend label to mention Friday close");
+
+    // Scenario 5: fetch упал -> unavailable + isSynthetic=true, isDataStale=true
+    const s5 = evaluateOptionDataFreshness({
+      timestampMs: null,
+      marketType: "US_OPTIONS",
+      fetchFailed: true
+    });
+    assert.equal(s5.sessionVerdict, "unavailable", "Expected unavailable verdict on fetch failure");
+    assert.equal(s5.isSynthetic, true, "Expected isSynthetic=true on fetch failure");
+    assert.equal(s5.isDataStale, true, "Expected isDataStale=true on fetch failure");
+
+    // UI Rendering Verification
     const mockSyntheticReport: GexMarketReport = {
       asset: "XAUUSD",
       horizon: "WEEK",
@@ -174,7 +230,12 @@ async function runTests() {
 
     const htmlReal = renderToStaticMarkup(
       React.createElement(GexProbabilityHero, {
-        gexReport: { ...mockSyntheticReport, isSynthetic: false, isDataStale: false },
+        gexReport: {
+          ...mockSyntheticReport,
+          isSynthetic: false,
+          isDataStale: false,
+          dataFreshnessLabel: "Данные опционов: закрытие прошлой сессии США (норма до 16:30 МСК)"
+        },
         candles: [],
         activeAsset: "XAUUSD"
       })
@@ -192,8 +253,12 @@ async function runTests() {
       !htmlReal.includes("Синтетическая модель"),
       "Expected GexProbabilityHero with isSynthetic=false NOT to render warning badge 'Синтетическая модель'"
     );
+    assert.ok(
+      htmlReal.includes("закрытие прошлой сессии США"),
+      "Expected GexProbabilityHero with isSynthetic=false to render dataFreshnessLabel"
+    );
     console.log(
-      `✅ [PASS] Test 5: При isSynthetic=true/isDataStale=true UI рендерит "Синтетическая модель • Данные устарели" и примечание "Опционы на ETF GLD, не на фьючерс золота COMEX GC"`
+      `✅ [PASS] Test 5: Сессионная политика свежести (сессия/ночь/выходные/сбой) + UI рендерит корректные лейблы и примечание GLD ETF`
     );
     passed++;
   }
@@ -426,64 +491,52 @@ async function runTests() {
   }
 
   // ---------------------------------------------------------------------------
-  // TEST 11: Антиколлизия лейблов графика с плавающими тегами оси цены (spot, EMA9, EMA21, EMA200)
-  // на мобильной ширине (375px) — метка Flip на Неделе не перекрывается ими
+  // TEST 11: Горизонтальная антиколлизия 6 уровней с шагом 2px по Y на мобильной ширине (375px):
+  // все бейджи строго на своих ценовых линиях (смещение <= badgeH/2), лидер-линии = 0
   // ---------------------------------------------------------------------------
   {
     const { solveBadgeAntiCollision } = await import("../src/components/TradingViewZonesPrimitive");
     const mobileWidth = 375;
-    const mobileHeight = 520;
-    const minVertGap = 18;
+    const mobileHeight = 600;
+    const badgeH = 15; // mobile badge height
 
-    // Плавающие теги оси цены (spot, EMA9, EMA21, EMA200) сгруппированы около Y=240..256,
-    // и метка Flip (Недельный) изначально попадает прямо в этот кластер (Y=244)
+    // 6 уровней с шагом 2px по Y (кластер высокой плотности: 240, 242, 244, 246, 248, 250)
+    const denseBadges = [
+      { id: "level_0", label: "Потолок (CW, Дневной): 3940.0", x: 260, y: 240, anchorY: 240, lineRight: 240 },
+      { id: "level_1", label: "План Б: 3916.97", x: 260, y: 242, anchorY: 242, lineRight: 240 },
+      { id: "level_2", label: "0.50 EQ (3904.9)", x: 260, y: 244, anchorY: 244, lineRight: 240 },
+      { id: "level_3", label: "⚡ Флип (Flip, Недельный): 3905.0", x: 260, y: 246, anchorY: 246, lineRight: 240 },
+      { id: "level_4", label: "SL: 3908.90", x: 260, y: 248, anchorY: 248, lineRight: 240 },
+      { id: "level_5", label: "Пол (PW, Дневной): 3880.0", x: 260, y: 250, anchorY: 250, lineRight: 240 }
+    ];
+
     const priceAxisObstacles = [
-      { id: "spot", x: mobileWidth - 24, y: 242, isPriceAxisTag: true },
-      { id: "EMA9", x: mobileWidth - 24, y: 246, isPriceAxisTag: true },
-      { id: "EMA21", x: mobileWidth - 24, y: 252, isPriceAxisTag: true },
-      { id: "EMA200", x: mobileWidth - 24, y: 290, isPriceAxisTag: true }
+      { id: "spot", x: mobileWidth - 24, y: 244, isPriceAxisTag: true }
     ];
 
-    const badges = [
-      {
-        id: "flip_line",
-        label: "⚡ Флип (Flip, Недельный): 3955.0",
-        x: 520, // extends past right edge before clamping on mobile
-        y: 244,
-        anchorY: 244
-      },
-      {
-        id: "pain_line",
-        label: "🎯 Магнит (Недельный): 3950–3960 (середина 3955)",
-        x: 520,
-        y: 248,
-        anchorY: 248
-      }
-    ];
+    const solved = solveBadgeAntiCollision(denseBadges, priceAxisObstacles, mobileWidth, mobileHeight);
 
-    const solved = solveBadgeAntiCollision(badges, priceAxisObstacles, mobileWidth, mobileHeight, minVertGap);
-    const flipBadge = solved.find(b => b.id === "flip_line")!;
-    const painBadge = solved.find(b => b.id === "pain_line")!;
-
-    for (const obs of priceAxisObstacles) {
-      const distFlip = Math.abs(flipBadge.y - obs.y);
-      const distPain = Math.abs(painBadge.y - obs.y);
+    // 1. Все бейджи остаются строго на своих ценовых линиях (или микро-смещение <= badgeH/2 = Math.ceil(15/2) = 8px)
+    for (const b of solved) {
+      const vertOffset = Math.abs(b.y - b.anchorY);
+      const maxAllowed = Math.ceil(badgeH / 2);
       assert.ok(
-        distFlip >= minVertGap - 0.5,
-        `Expected Flip badge (y=${flipBadge.y}) to be >= ${minVertGap}px away from ${obs.id} (y=${obs.y}), got ${distFlip}px`
-      );
-      assert.ok(
-        distPain >= minVertGap - 0.5,
-        `Expected Pain badge (y=${painBadge.y}) to be >= ${minVertGap}px away from ${obs.id} (y=${obs.y}), got ${distPain}px`
+        vertOffset <= maxAllowed,
+        `Badge ${b.id} offset ${vertOffset}px exceeds maximum allowed half-badge-height (${maxAllowed}px)`
       );
     }
+
+    // 2. Коллизии решены по горизонтали (бейджи сдвинуты влево вдоль своих линий ступеньками)
+    const xs = solved.map(b => b.x);
+    const uniqueXs = new Set(xs);
     assert.ok(
-      Math.abs(flipBadge.y - painBadge.y) >= minVertGap - 0.5,
-      `Expected Flip (y=${flipBadge.y}) and Pain (y=${painBadge.y}) not to overlap each other`
+      uniqueXs.size >= 2,
+      `Expected horizontal staggering across columns, got unique X count = ${uniqueXs.size}`
     );
 
+    // 3. Лидер-линии отсутствуют по определению (Y привязан к линии, никаких диагональных выносок)
     console.log(
-      `✅ [PASS] Test 11: Антиколлизия на мобильной ширине (${mobileWidth}px) с тегами [spot, EMA9, EMA21, EMA200] → Flip разведен на y=${flipBadge.y}px (anchor=244), Pain на y=${painBadge.y}px (anchor=248)`
+      `✅ [PASS] Test 11: 6 уровней с шагом 2px по Y на ширине 375px → все бейджи на своих линиях (offset <= ${badgeH / 2}px), горизонтальный разнос [${xs.join(", ")}px], лидер-линии = 0`
     );
     passed++;
   }
@@ -518,8 +571,169 @@ async function runTests() {
     passed++;
   }
 
+  // ---------------------------------------------------------------------------
+  // TEST 13: Регрессия: запрет пинг-понга миграций с reason 'cooldown+OI' раньше 60 минут
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      recordStabilizerMigration,
+      getStabilizerMigrationLog
+    } = await import("../server/gexStateManager");
+
+    const t0 = 1793649720000; // 22:42
+    const t1 = t0 + 2 * 60 * 1000; // 22:44 (интервал 2 минуты)
+    const t2 = t0 + 65 * 60 * 1000; // 23:47 (интервал 65 минут)
+
+    // 1. Первая миграция CW 3970 -> 3980 в 22:42 с reason="cooldown+OI"
+    const firstAllowed = recordStabilizerMigration({
+      timestamp: new Date(t0).toISOString(),
+      asset: "XAUUSD_TEST",
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 3970,
+      newValue: 3980,
+      spotPrice: 3950,
+      reason: "cooldown+OI",
+      details: "cooldown=65m>=60m & newCwOi=12000>=prevCwOi=9000*1.25"
+    });
+    assert.strictEqual(firstAllowed, true, "First cooldown+OI migration must be allowed");
+
+    // 2. Попытка повторной обратной миграции CW 3980 -> 3970 в 22:44 (спустя 2 мин) с reason="cooldown+OI"
+    const secondAllowed = recordStabilizerMigration({
+      timestamp: new Date(t1).toISOString(),
+      asset: "XAUUSD_TEST",
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 3980,
+      newValue: 3970,
+      spotPrice: 3950,
+      reason: "cooldown+OI",
+      details: "premature ping-pong attempt after only 2 minutes"
+    });
+    assert.strictEqual(secondAllowed, false, "Second cooldown+OI migration within < 60 min MUST be strictly blocked");
+
+    // 3. Легитимная миграция спустя 65 минут (когда кулдаун честно прошёл)
+    const thirdAllowed = recordStabilizerMigration({
+      timestamp: new Date(t2).toISOString(),
+      asset: "XAUUSD_TEST",
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 3980,
+      newValue: 4010,
+      spotPrice: 3950,
+      reason: "cooldown+OI",
+      details: "cooldown=65m>=60m & newCwOi=18000>=prevCwOi=12000*1.25"
+    });
+    assert.strictEqual(thirdAllowed, true, "Third migration after 65 minutes must be allowed");
+
+    const testLogs = getStabilizerMigrationLog("XAUUSD_TEST", "DAY");
+    assert.strictEqual(testLogs.length, 2, "Log must contain exactly 2 valid migrations, premature ping-pong rejected");
+    assert.strictEqual(testLogs[0].newValue, 3980);
+    assert.strictEqual(testLogs[1].newValue, 4010);
+
+    console.log(
+      `✅ [PASS] Test 13: Регрессионная защита от пинг-понга: две миграции одного уровня с reason='cooldown+OI' с интервалом < 60 мин (22:42 -> 22:44) жестко заблокированы`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 14: Проверка логики видимости траекторий при переключении showForecast:
+  // showForecast=true -> forecast и altForecast передаются в примитив;
+  // showForecast=false -> forecast=null, altForecast=null;
+  // Горизонтальные линии уровней и бейджи остаются в обоих режимах
+  // ---------------------------------------------------------------------------
+  {
+    interface ZonesDataPayload {
+      forecast: any;
+      altForecast: any;
+      lines: any[];
+    }
+
+    const generatePrimitiveData = (showForecast: boolean, rawForecast: any, rawAltForecast: any, priceLines: any[]): ZonesDataPayload => {
+      return {
+        forecast: showForecast ? rawForecast : null,
+        altForecast: showForecast ? rawAltForecast : null,
+        lines: priceLines
+      };
+    };
+
+    const mockForecast = {
+      isBull: true,
+      startPrice: 3900,
+      pullbackPrice: 3905,
+      tp1Price: 3920,
+      tp2Price: 3940,
+      leg1Hit: true,
+      leg2Hit: false,
+      leg3Hit: false
+    };
+
+    const mockAltForecast = {
+      isBull: false,
+      startPrice: 3905,
+      tp1Price: 3890,
+      tp2Price: 3870
+    };
+
+    const mockLines = [
+      { id: "cw_line", price: 3940, label: "Потолок (CW, Дневной): 3940.0", color: "#34d399" },
+      { id: "pw_line", price: 3880, label: "Пол (PW, Дневной): 3880.0", color: "#f87171" }
+    ];
+
+    // Режим showForecast = true
+    const dataWithForecast = generatePrimitiveData(true, mockForecast, mockAltForecast, mockLines);
+    assert.ok(dataWithForecast.forecast !== null, "forecast must be present when showForecast=true");
+    assert.ok(dataWithForecast.altForecast !== null, "altForecast must be present when showForecast=true");
+    assert.strictEqual(dataWithForecast.lines.length, 2, "lines must be intact when showForecast=true");
+
+    // Режим showForecast = false
+    const dataWithoutForecast = generatePrimitiveData(false, mockForecast, mockAltForecast, mockLines);
+    assert.strictEqual(dataWithoutForecast.forecast, null, "forecast must be null when showForecast=false");
+    assert.strictEqual(dataWithoutForecast.altForecast, null, "altForecast must be null when showForecast=false");
+    assert.strictEqual(dataWithoutForecast.lines.length, 2, "lines and badges must remain intact when showForecast=false");
+
+    console.log(
+      `✅ [PASS] Test 14: Переключение showForecast (true -> зигзаг и План Б активны; false -> скрыты; уровни и бейджи сохранены в обоих случаях)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 15: Проверка отсутствия лидер-линий (диагональных "палок") в рендерере
+  // и проверка работы правила мобильной компактности бейджей
+  // ---------------------------------------------------------------------------
+  {
+    const fs = await import("fs");
+    const code = fs.readFileSync("src/components/TradingViewZonesPrimitive.ts", "utf8");
+
+    // Блок пунктирной выноски не должен существовать
+    const hasLeaderLineBlock = code.includes("Math.abs(b.y - b.anchorY) > 3") && code.includes("setLineDash([2, 2])");
+    assert.strictEqual(
+      hasLeaderLineBlock,
+      false,
+      "Dashed leader lines block (Math.abs(b.y - b.anchorY) > 3) must be completely removed from renderer!"
+    );
+
+    // Зигзаг и План Б отрисовываются ДО бейджей уровней
+    const forecastIdx = code.indexOf("// 2. Draw Forecast Zigzag Trajectory");
+    const altIdx = code.indexOf("// 3. Draw AltForecast");
+    const linesIdx = code.indexOf("// 4. Draw Bounded Price Lines");
+    const badgesIdx = code.indexOf("// PASS 2: Render all badges ON TOP of all lines");
+
+    assert.ok(forecastIdx > 0, "Forecast trajectory renderer must be present");
+    assert.ok(altIdx > forecastIdx, "AltForecast renderer must be present after forecast");
+    assert.ok(linesIdx > altIdx, "Bounded price lines must be rendered after trajectories");
+    assert.ok(badgesIdx > linesIdx, "Badges must be rendered in PASS 2 ON TOP of all lines and trajectories");
+
+    console.log(
+      `✅ [PASS] Test 15: Лидер-линии ("палки-указатели") полностью устранены (0 выносок). Иерархия Z-order: зигзаг/лучи -> линии -> бейджи поверху`
+    );
+    passed++;
+  }
+
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/12 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/15 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 

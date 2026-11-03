@@ -253,9 +253,17 @@ function drawBadge(
 }
 
 /**
- * Deterministic vertical anti-collision solver for chart badges.
- * Explicitly accounts for floating price-axis tags (spot, EMA9, EMA21, EMA200) and canvas obstacles
- * so badges (especially Flip on WEEK horizon on mobile widths) never overlap price-axis tags or each other.
+ * Deterministic horizontal anti-collision solver for chart badges.
+ * Badges remain strictly anchored on their price line (badge center Y = anchorY).
+ * When two or more badges overlap vertically (|A.y - B.y| < badgeH), collision
+ * is resolved strictly horizontally by stepping badges leftwards along their respective lines.
+ *
+ * Rule:
+ * Column 0: x = lineRight + 4 (or clamped to right edge: mediaW - width - 4)
+ * Column 1: x = col0_x - width - 6
+ * Column 2: x = col1_x - width - 6
+ * Extreme case: If horizontal spread across the canvas is completely saturated,
+ * a minimal micro-offset of at most ±(badgeH / 2) is permitted, with ZERO leader lines.
  */
 export function solveBadgeAntiCollision<
   T extends {
@@ -265,104 +273,160 @@ export function solveBadgeAntiCollision<
     y: number;
     anchorY: number;
     width?: number;
+    lineRight?: number;
   }
 >(
   badges: T[],
   fixedObstacles: AntiCollisionObstacle[],
   mediaW: number,
   mediaH: number,
-  minVertGap?: number
+  _minVertGap?: number
 ): T[] {
   if (!badges || badges.length === 0) return badges;
   const isMobile = mediaW < 640;
-  const gap = minVertGap ?? (isMobile ? 18 : 21);
+  const badgeH = isMobile ? 15 : 17;
+  const halfBadgeH = badgeH / 2;
 
-  // Clamp badge X coordinates to actual on-screen position before collision testing
+  // 1. Calculate estimated width and anchor all badges strictly to their price line (center Y = anchorY)
   for (const b of badges) {
     const estW =
       b.width ??
-      Math.min(mediaW - 8, Math.max(96, b.label.length * (isMobile ? 6.2 : 7.0) + 18));
+      Math.min(mediaW - 8, Math.max(80, b.label.length * (isMobile ? 6.2 : 7.0) + 16));
     b.width = estW;
-    b.x = snapPx(Math.max(3, Math.min(b.x, mediaW - estW - 3)));
+    b.y = snapPx(b.anchorY); // Center Y strictly on its own price line
+
+    // Initial default X: to the right of the price line (or clamped inside right border)
+    const baseX = typeof b.lineRight === "number" && b.lineRight > 0
+      ? snapPx(b.lineRight + 4)
+      : snapPx(mediaW - estW - 4);
+
+    b.x = snapPx(Math.max(4, Math.min(baseX, mediaW - estW - 4)));
   }
 
-  const overlapsHorizontallyWithObstacle = (b: T, obs: AntiCollisionObstacle): boolean => {
-    const bw = b.width ?? 140;
-    if (obs.isPriceAxisTag) {
-      // On mobile width (< 640px), right-anchored GEX / chart badges extend into the right zone
-      // where floating price-axis tags (spot, EMA9, EMA21, EMA200) sit.
-      return isMobile ? b.x + bw >= mediaW * 0.35 : b.x + bw >= mediaW - 140;
-    }
-    return Math.abs(b.x - obs.x) < 195;
-  };
-
-  const overlapsHorizontallyWithBadge = (a: T, b: T): boolean => {
-    return Math.abs(a.x - b.x) < 195;
-  };
-
-  // Sort badges top-to-bottom by anchorY (with stable tie-breaker keeping Flip/Pain/Walls prioritized)
+  // 2. Stable sort by anchorY ascending (with secondary tie-breaker by id)
   badges.sort((a, b) => a.anchorY - b.anchorY || a.id.localeCompare(b.id));
 
-  const placed: T[] = [];
+  // 3. Keep track of placed badge bounding boxes to resolve collisions strictly horizontally
+  interface BBox {
+    x1: number;
+    x2: number;
+    y1: number;
+    y2: number;
+    anchorY: number;
+  }
+  const placed: BBox[] = [];
 
-  const isPositionValid = (badge: T, candY: number): boolean => {
-    if (candY < 14 || candY > mediaH - 14) return false;
-    for (const obs of fixedObstacles) {
-      if (overlapsHorizontallyWithObstacle(badge, obs) && Math.abs(candY - obs.y) < gap - 0.25) {
-        return false;
-      }
+  // Register fixed obstacles
+  for (const obs of fixedObstacles) {
+    if (obs.isPriceAxisTag) {
+      placed.push({
+        x1: mediaW - 45,
+        x2: mediaW,
+        y1: obs.y - 7,
+        y2: obs.y + 7,
+        anchorY: obs.y
+      });
+    } else if (obs.x && obs.y) {
+      placed.push({
+        x1: obs.x - 20,
+        x2: obs.x + 80,
+        y1: obs.y - 8,
+        y2: obs.y + 8,
+        anchorY: obs.y
+      });
     }
-    for (const other of placed) {
-      if (overlapsHorizontallyWithBadge(badge, other) && Math.abs(candY - other.y) < gap - 0.25) {
-        return false;
-      }
-    }
-    return true;
-  };
+  }
 
   for (const b of badges) {
-    const initialY = Math.max(14, Math.min(mediaH - 14, b.anchorY));
-    if (isPositionValid(b, initialY)) {
-      b.y = snapPx(initialY);
-      placed.push(b);
-      continue;
-    }
+    const bw = b.width || 120;
+    let currX = b.x;
+    let currY = b.anchorY; // Strictly stays on anchorY!
 
-    // Generate candidate vertical slots around obstacles, placed badges, and fine offsets from anchorY
-    const candidates: number[] = [];
-    for (const obs of fixedObstacles) {
-      if (overlapsHorizontallyWithObstacle(b, obs)) {
-        candidates.push(obs.y - gap, obs.y + gap);
+    const collides = (candX: number, candY: number): boolean => {
+      const bx1 = candX;
+      const bx2 = candX + bw;
+      const by1 = candY - halfBadgeH;
+      const by2 = candY + halfBadgeH;
+
+      for (const p of placed) {
+        // Vertical overlap check (within badge height)
+        const vOverlap = Math.max(0, Math.min(by2, p.y2) - Math.max(by1, p.y1));
+        if (vOverlap >= 2.0) {
+          // Horizontal overlap check
+          const hOverlap = Math.max(0, Math.min(bx2, p.x2) - Math.max(bx1, p.x1));
+          if (hOverlap > 0) return true;
+        }
       }
-    }
-    for (const other of placed) {
-      if (overlapsHorizontallyWithBadge(b, other)) {
-        candidates.push(other.y - gap, other.y + gap);
+      return false;
+    };
+
+    if (collides(currX, currY)) {
+      let resolved = false;
+
+      // Candidate 1: Step left along ITS OWN LINE (x = lineRight + 4 - W_prev - 6)
+      const overlapping = placed.filter(p => {
+        const vOverlap = Math.max(0, Math.min(currY + halfBadgeH, p.y2) - Math.max(currY - halfBadgeH, p.y1));
+        return vOverlap >= 2.0;
+      });
+      // Sort rightmost first
+      overlapping.sort((a, b) => b.x1 - a.x1);
+
+      for (const ov of overlapping) {
+        const stepLeftX = ov.x1 - bw - 6;
+        if (stepLeftX >= 4 && !collides(stepLeftX, currY)) {
+          currX = snapPx(stepLeftX);
+          resolved = true;
+          break;
+        }
       }
-    }
-    const maxSteps = Math.ceil(mediaH / 2);
-    for (let step = 1; step <= maxSteps; step++) {
-      const delta = step * 2;
-      if (initialY - delta >= 14) candidates.push(initialY - delta);
-      if (initialY + delta <= mediaH - 14) candidates.push(initialY + delta);
-    }
 
-    let bestY = initialY;
-    let bestDist = Infinity;
+      // Candidate 2: Try near left canvas border (x = 6)
+      if (!resolved) {
+        const leftEdgeX = 6;
+        if (!collides(leftEdgeX, currY)) {
+          currX = leftEdgeX;
+          resolved = true;
+        }
+      }
 
-    for (const cand of candidates) {
-      const clampedCand = Math.max(14, Math.min(mediaH - 14, cand));
-      if (isPositionValid(b, clampedCand)) {
-        const dist = Math.abs(clampedCand - b.anchorY);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestY = clampedCand;
+      // Candidate 3 (Extreme case): If horizontal spread across the canvas along this line is completely blocked,
+      // allow a micro-offset of at most ±(badgeH / 2) up/down, strictly WITHOUT leader lines:
+      if (!resolved) {
+        const microOffsets = [-halfBadgeH, halfBadgeH];
+        for (const dy of microOffsets) {
+          const testY = snapPx(b.anchorY + dy);
+          if (testY >= 10 && testY <= mediaH - 10) {
+            if (!collides(b.x, testY)) {
+              currY = testY;
+              currX = b.x;
+              resolved = true;
+              break;
+            }
+            for (const ov of overlapping) {
+              const stepLeftX = ov.x1 - bw - 6;
+              if (stepLeftX >= 4 && !collides(stepLeftX, testY)) {
+                currY = testY;
+                currX = snapPx(stepLeftX);
+                resolved = true;
+                break;
+              }
+            }
+            if (resolved) break;
+          }
         }
       }
     }
 
-    b.y = snapPx(bestY);
-    placed.push(b);
+    b.x = snapPx(currX);
+    b.y = snapPx(currY);
+
+    placed.push({
+      x1: b.x,
+      x2: b.x + bw,
+      y1: b.y - halfBadgeH,
+      y2: b.y + halfBadgeH,
+      anchorY: b.anchorY
+    });
   }
 
   return badges;
@@ -638,333 +702,174 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           }
         }
 
-        // Check whether bounded price lines already render ВХОД / TP1 / TP2 / SL badges so we never draw duplicate labels
-        const hasBoundedForecastLines = Boolean(
-          data.lines && data.lines.some((l) => l.id === "tp1_line" || l.id === "sl_line" || l.id === "entry_line")
-        );
-
-        // 2. Draw TradingView-Style Forecast Zigzag Arrow (x0,y0 -> x1,y1 -> x2,y2 -> x3,y3)
+        // 2. Draw Forecast Zigzag Trajectory (Start -> Entry -> TP1 -> TP2)
         if (data.forecast) {
           const fc = data.forecast;
-          let xStart: number | null = null;
-          let xPullback: number | null = null;
-          let xTp1: number | null = null;
-          let xTp2: number | null = null;
-
-          if (typeof fc.startLogical === "number") {
-            const c = timeScale.logicalToCoordinate(fc.startLogical as any);
-            if (c !== null) xStart = c as number;
-          }
-          if (xStart === null) {
-            const raw = timeScale.timeToCoordinate(fc.startTime as any);
-            if (raw !== null) xStart = raw as number;
-          }
-
-          if (typeof fc.pullbackLogical === "number") {
-            const c = timeScale.logicalToCoordinate(fc.pullbackLogical as any);
-            if (c !== null) xPullback = c as number;
-          }
-          if (xPullback === null && xStart !== null) {
-            const delta = (fc.pullbackLogical ?? 3) - (fc.startLogical ?? 0);
-            xPullback = xStart + Math.max(1, delta) * barSpacing;
-          }
-
-          if (typeof fc.tp1Logical === "number") {
-            const c = timeScale.logicalToCoordinate(fc.tp1Logical as any);
-            if (c !== null) xTp1 = c as number;
-          }
-          if (xTp1 === null && xStart !== null) {
-            const delta = (fc.tp1Logical ?? 7) - (fc.startLogical ?? 0);
-            xTp1 = xStart + Math.max(2, delta) * barSpacing;
-          }
-
-          if (typeof fc.tp2Logical === "number") {
-            const c = timeScale.logicalToCoordinate(fc.tp2Logical as any);
-            if (c !== null) xTp2 = c as number;
-          }
-          if (xTp2 === null && xStart !== null) {
-            const delta = (fc.tp2Logical ?? 12) - (fc.startLogical ?? 0);
-            xTp2 = xStart + Math.max(3, delta) * barSpacing;
-          }
-
-          const rawYStart = series.priceToCoordinate(fc.startPrice);
-          const rawYTp1 = series.priceToCoordinate(fc.tp1Price);
-          const rawYTp2 = series.priceToCoordinate(fc.tp2Price);
-
-          if (xStart !== null && rawYStart !== null && rawYTp1 !== null && rawYTp2 !== null && xPullback !== null && xTp1 !== null && xTp2 !== null) {
-            const yStart = rawYStart as number;
-            const yTp1 = rawYTp1 as number;
-            const yTp2 = rawYTp2 as number;
-
-            let yPullback = yStart;
-            if (typeof fc.pullbackPrice === "number") {
-              const rawYP = series.priceToCoordinate(fc.pullbackPrice);
-              if (rawYP !== null) yPullback = rawYP as number;
-            } else {
-              yPullback = fc.isBull ? yStart + 12 : yStart - 12;
+          const getPt = (logical?: number, time?: number, price?: number) => {
+            if (price === undefined || !isFinite(price) || price <= 0) return null;
+            let x: number | null = null;
+            if (typeof logical === "number") {
+              const c = timeScale.logicalToCoordinate(logical as any);
+              if (c !== null) x = c as number;
             }
+            if (x === null && typeof time === "number") {
+              const c = timeScale.timeToCoordinate(time as any);
+              if (c !== null) x = c as number;
+            }
+            const y = series.priceToCoordinate(price);
+            if (x === null || y === null) return null;
+            return { x: snapPx(x), y: snapHalf(y as number) };
+          };
 
-            const trajWidth = isMobile ? 1.35 : 1.5;
+          const p0 = getPt(fc.startLogical, fc.startTime, fc.startPrice);
+          const p1 = getPt(fc.pullbackLogical, fc.pullbackTime, fc.pullbackPrice);
+          const p2 = getPt(fc.tp1Logical, fc.tp1Time, fc.tp1Price);
+          const p3 = getPt(fc.tp2Logical, fc.tp2Time, fc.tp2Price);
 
-            // Node 0: Start bar circle & direction label
-            ctx.fillStyle = fc.isBull ? "#089981" : "#f23645";
+          // Colors matched strictly to original design:
+          // Bull: Teal/Cyan (#2dd4bf) -> Sky Blue (#38bdf8)
+          // Bear: Rose/Coral (#f43f5e) -> Rose-400 (#fb7185)
+          const primaryColor = fc.isBull ? "#2dd4bf" : "#f43f5e";
+          const secondaryColor = fc.isBull ? "#38bdf8" : "#fb7185";
+
+          ctx.save();
+          ctx.lineWidth = isMobile ? 1.25 : 1.45;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+
+          // Leg 1: Start -> Entry (solid if hit, dashed if pending)
+          if (p0 && p1) {
+            ctx.strokeStyle = primaryColor;
+            ctx.setLineDash(fc.leg1Hit ? [] : [4, 3]);
             ctx.beginPath();
-            ctx.arc(xStart, yStart, isMobile ? 2.5 : 3, 0, Math.PI * 2);
-            ctx.fill();
-
-            if (fc.labelStart) {
-              ctx.fillStyle = fc.isBull ? "#089981" : "#f23645";
-              ctx.font = `600 ${isMobile ? 8.5 : 9}px "Manrope", sans-serif`;
-              ctx.textAlign = "right";
-              ctx.textBaseline = "middle";
-              ctx.fillText(fc.labelStart, snapPx(xStart - 5), snapPx(yStart));
-            }
-
-            // Leg 1: (x0, y0) -> (x1, y1) Pullback / Entry line (line_fc_0)
-            ctx.strokeStyle = fc.leg1Hit ? "#10b981" : "#f59e0b";
-            ctx.lineWidth = trajWidth;
-            if (!fc.leg1Hit) {
-              ctx.setLineDash([5, 3.5]);
-            } else {
-              ctx.setLineDash([]);
-            }
-            ctx.beginPath();
-            ctx.moveTo(xStart, yStart);
-            ctx.lineTo(xPullback, yPullback);
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
             ctx.stroke();
-            ctx.setLineDash([]);
 
-            // Node 1: Entry / Pullback node circle
-            ctx.fillStyle = fc.leg1Hit ? "#10b981" : "#f59e0b";
+            // Start node marker
+            ctx.fillStyle = primaryColor;
             ctx.beginPath();
-            ctx.arc(xPullback, yPullback, isMobile ? 2.5 : 3, 0, Math.PI * 2);
+            ctx.arc(p0.x, p0.y, 3, 0, Math.PI * 2);
             ctx.fill();
 
-            if (!hasBoundedForecastLines && fc.labelPullback) {
-              drawBadge(
-                ctx,
-                fc.leg1Hit ? `${fc.labelPullback} ✓` : fc.labelPullback,
-                xPullback + 6,
-                yPullback + (fc.isBull ? 8 : -8),
-                "rgba(8, 12, 21, 0.94)",
-                fc.leg1Hit ? "#10b981" : "#f59e0b",
-                fc.leg1Hit ? "#34d399" : "#fbbf24",
-                mediaW,
-                "left",
-                9
-              );
-            }
-
-            // Leg 2: (x1, y1) -> (x2, y2) Impulse line to TP1 (line_fc_1)
-            ctx.strokeStyle = fc.leg2Hit ? (fc.isBull ? "#059669" : "#dc2626") : (fc.isBull ? "#089981" : "#f23645");
-            ctx.lineWidth = trajWidth;
-            if (!fc.leg1Hit && !fc.leg2Hit) {
-              ctx.setLineDash([6, 4]);
-            } else {
-              ctx.setLineDash([]);
-            }
+            // Pullback / Entry marker
             ctx.beginPath();
-            ctx.moveTo(xPullback, yPullback);
-            ctx.lineTo(xTp1, yTp1);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Node 2: TP1 circle
-            ctx.fillStyle = fc.leg2Hit ? "#10b981" : (fc.isBull ? "#089981" : "#f23645");
-            ctx.beginPath();
-            ctx.arc(xTp1, yTp1, isMobile ? 2.5 : 3, 0, Math.PI * 2);
+            ctx.arc(p1.x, p1.y, 2.5, 0, Math.PI * 2);
             ctx.fill();
-
-            if (!hasBoundedForecastLines && fc.labelTp1) {
-              drawBadge(
-                ctx,
-                fc.leg2Hit ? `${fc.labelTp1} ✓` : fc.labelTp1,
-                xTp1 + 6,
-                yTp1 + (fc.isBull ? -8 : 8),
-                "rgba(8, 12, 21, 0.94)",
-                fc.isBull ? "#089981" : "#f23645",
-                fc.isBull ? "#34d399" : "#f87171",
-                mediaW,
-                "left",
-                9
-              );
-            }
-
-            // Leg 3: (x2, y2) -> (x3, y3) Impulse line to TP2 (line_fc_2)
-            ctx.strokeStyle = fc.leg3Hit ? "#059669" : "#0284c7";
-            ctx.lineWidth = trajWidth;
-            if (!fc.leg2Hit && !fc.leg3Hit) {
-              ctx.setLineDash([6, 4]);
-            } else {
-              ctx.setLineDash([]);
-            }
-            ctx.beginPath();
-            ctx.moveTo(xTp1, yTp1);
-            ctx.lineTo(xTp2, yTp2);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Node 3: Arrowhead at TP2
-            const angle = Math.atan2(yTp2 - yTp1, xTp2 - xTp1);
-            const arrowLen = isMobile ? 6.5 : 7.5;
-            ctx.fillStyle = fc.leg3Hit ? "#10b981" : "#0284c7";
-            ctx.beginPath();
-            ctx.moveTo(xTp2, yTp2);
-            ctx.lineTo(
-              xTp2 - arrowLen * Math.cos(angle - Math.PI / 6),
-              yTp2 - arrowLen * Math.sin(angle - Math.PI / 6)
-            );
-            ctx.lineTo(
-              xTp2 - arrowLen * Math.cos(angle + Math.PI / 6),
-              yTp2 - arrowLen * Math.sin(angle + Math.PI / 6)
-            );
-            ctx.closePath();
-            ctx.fill();
-
-            if (!hasBoundedForecastLines && fc.labelTp2) {
-              drawBadge(
-                ctx,
-                fc.labelTp2,
-                xTp2 + 6,
-                yTp2,
-                "rgba(8, 12, 21, 0.94)",
-                "#0284c7",
-                "#38bdf8",
-                mediaW,
-                "left",
-                9
-              );
-            }
-
-            // Stop Loss Line (only if not already drawn by boundedLines)
-            if (!hasBoundedForecastLines && typeof fc.slPrice === "number") {
-              const rawYSl = series.priceToCoordinate(fc.slPrice);
-              if (rawYSl !== null) {
-                const ySl = snapHalf(rawYSl as number);
-                const slEndX = snapPx(xTp2 + 16);
-                ctx.strokeStyle = "#ef4444";
-                ctx.lineWidth = 1.25;
-                ctx.setLineDash([6, 4]);
-                ctx.beginPath();
-                ctx.moveTo(snapPx(xStart), ySl);
-                ctx.lineTo(slEndX, ySl);
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                drawBadge(
-                  ctx,
-                  fc.labelSl || `SL: ${fc.slPrice.toFixed(1)}`,
-                  slEndX + 4,
-                  ySl,
-                  "rgba(8, 12, 21, 0.94)",
-                  "#ef4444",
-                  "#f87171",
-                  mediaW,
-                  "left",
-                  9
-                );
-              }
-            }
           }
+
+          // Leg 2: Entry -> TP1 (solid teal/cyan line to TP1 as shown on screenshot)
+          if (p1 && p2) {
+            ctx.strokeStyle = primaryColor;
+            ctx.setLineDash(fc.leg1Hit ? [] : [4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+
+            ctx.fillStyle = primaryColor;
+            ctx.beginPath();
+            ctx.arc(p2.x, p2.y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Leg 3: TP1 -> TP2 (dashed cyan/sky-blue line up to TP2)
+          if (p2 && p3) {
+            ctx.strokeStyle = secondaryColor;
+            ctx.setLineDash(fc.leg3Hit ? [] : [5, 4]);
+            ctx.beginPath();
+            ctx.moveTo(p2.x, p2.y);
+            ctx.lineTo(p3.x, p3.y);
+            ctx.stroke();
+
+            ctx.fillStyle = secondaryColor;
+            ctx.beginPath();
+            ctx.arc(p3.x, p3.y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
         }
 
-        // 3. Draw Alternative Plan B Breakdown Arrow
+        // 3. Draw AltForecast Contingency Trajectory (Plan B -> Target 2)
+        // Rendered as a single continuous dashed ray (p0 -> p1 -> p2) with node markers and labels right next to the line
         if (data.altForecast) {
-          const afc = data.altForecast;
-          let axStart: number | null = null;
-          let axTp1: number | null = null;
-          let axTp2: number | null = null;
+          const alt = data.altForecast;
+          const getPt = (logical?: number, time?: number, price?: number) => {
+            if (price === undefined || !isFinite(price) || price <= 0) return null;
+            let x: number | null = null;
+            if (typeof logical === "number") {
+              const c = timeScale.logicalToCoordinate(logical as any);
+              if (c !== null) x = c as number;
+            }
+            if (x === null && typeof time === "number") {
+              const c = timeScale.timeToCoordinate(time as any);
+              if (c !== null) x = c as number;
+            }
+            const y = series.priceToCoordinate(price);
+            if (x === null || y === null) return null;
+            return { x: snapPx(x), y: snapHalf(y as number) };
+          };
 
-          if (typeof afc.startLogical === "number") {
-            const c = timeScale.logicalToCoordinate(afc.startLogical as any);
-            if (c !== null) axStart = c as number;
-          }
-          if (axStart === null) {
-            const raw = timeScale.timeToCoordinate(afc.startTime as any);
-            if (raw !== null) axStart = raw as number;
-          }
-          if (typeof afc.tp1Logical === "number") {
-            const c = timeScale.logicalToCoordinate(afc.tp1Logical as any);
-            if (c !== null) axTp1 = c as number;
-          }
-          if (axTp1 === null && axStart !== null) {
-            axTp1 = axStart + 5 * barSpacing;
-          }
+          const p0 = getPt(alt.startLogical, alt.startTime, alt.startPrice);
+          const p1 = getPt(alt.tp1Logical, alt.tp1Time, alt.tp1Price);
+          const p2 = getPt(alt.tp2Logical, alt.tp2Time, alt.tp2Price);
 
-          if (typeof afc.tp2Logical === "number") {
-            const c = timeScale.logicalToCoordinate(afc.tp2Logical as any);
-            if (c !== null) axTp2 = c as number;
-          }
-          if (axTp2 === null && axStart !== null) {
-            axTp2 = axStart + 10 * barSpacing;
-          }
+          // In original design: When primary is Long, Plan B is Bearish rose/coral (#fb7185 / #f43f5e)
+          // When primary is Short, Plan B is Bullish emerald (#34d399)
+          const altColor = alt.isBull ? "#34d399" : "#fb7185";
+          const altTextColor = alt.isBull ? "#6ee7b7" : "#fecdd3";
+          const fontSize = isMobile ? 8.5 : 9.5;
 
-          const ayStartRaw = series.priceToCoordinate(afc.startPrice);
-          const ayTp1Raw = series.priceToCoordinate(afc.tp1Price);
-          const ayTp2Raw = series.priceToCoordinate(afc.tp2Price);
+          ctx.save();
+          ctx.strokeStyle = altColor;
+          ctx.lineWidth = isMobile ? 1.2 : 1.4;
+          ctx.setLineDash([5, 4]);
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
 
-          if (axStart !== null && axTp1 !== null && axTp2 !== null && ayStartRaw !== null && ayTp1Raw !== null && ayTp2Raw !== null) {
-            const ayStart = ayStartRaw as number;
-            const ayTp1 = ayTp1Raw as number;
-            const ayTp2 = ayTp2Raw as number;
-
-            ctx.strokeStyle = afc.isBull ? "#10b981" : "#f43f5e";
-            ctx.lineWidth = isMobile ? 1.2 : 1.35;
-            ctx.setLineDash([5, 4]);
+          // Single continuous diagonal ray: p0 -> p1 -> p2
+          if (p0 && p1) {
             ctx.beginPath();
-            ctx.moveTo(axStart, ayStart);
-            ctx.lineTo(axTp1, ayTp1);
-            ctx.lineTo(axTp2, ayTp2);
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            if (p2) {
+              ctx.lineTo(p2.x, p2.y);
+            }
             ctx.stroke();
-            ctx.setLineDash([]);
 
-            // Arrowhead at Plan B TP2
-            const angle = Math.atan2(ayTp2 - ayTp1, axTp2 - axTp1);
-            const arrowLen = isMobile ? 5.5 : 6.5;
-            ctx.fillStyle = afc.isBull ? "#10b981" : "#f43f5e";
+            // Node marker at p1
+            ctx.fillStyle = altColor;
             ctx.beginPath();
-            ctx.moveTo(axTp2, ayTp2);
-            ctx.lineTo(
-              axTp2 - arrowLen * Math.cos(angle - Math.PI / 6),
-              ayTp2 - arrowLen * Math.sin(angle - Math.PI / 6)
-            );
-            ctx.lineTo(
-              axTp2 - arrowLen * Math.cos(angle + Math.PI / 6),
-              ayTp2 - arrowLen * Math.sin(angle + Math.PI / 6)
-            );
-            ctx.closePath();
+            ctx.arc(p1.x, p1.y, 2.5, 0, Math.PI * 2);
             ctx.fill();
 
-            if (afc.labelTp1) {
-              drawBadge(
-                ctx,
-                afc.labelTp1,
-                axTp1 + 4,
-                ayTp1,
-                "rgba(8, 12, 21, 0.94)",
-                afc.isBull ? "#10b981" : "#f43f5e",
-                afc.isBull ? "#34d399" : "#fb7185",
-                mediaW,
-                "left",
-                8.5
-              );
-            }
-            if (afc.labelTp2) {
-              drawBadge(
-                ctx,
-                afc.labelTp2,
-                axTp2 + 5,
-                ayTp2,
-                "rgba(8, 12, 21, 0.94)",
-                afc.isBull ? "#10b981" : "#f43f5e",
-                afc.isBull ? "#34d399" : "#fb7185",
-                mediaW,
-                "left",
-                8.5
-              );
-            }
+            // Label for Plan B right next to p1
+            const label1 = alt.labelTp1 || `План Б: ${alt.tp1Price}`;
+            ctx.font = `600 ${fontSize}px "JetBrains Mono", ui-monospace, sans-serif`;
+            ctx.fillStyle = altTextColor;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label1, p1.x + 6, p1.y);
           }
+
+          if (p2) {
+            // Node marker at p2
+            ctx.fillStyle = altColor;
+            ctx.beginPath();
+            ctx.arc(p2.x, p2.y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Label for Target 2 right next to p2
+            const label2 = alt.labelTp2 || `Цель 2: ${alt.tp2Price}`;
+            ctx.font = `600 ${fontSize}px "JetBrains Mono", ui-monospace, sans-serif`;
+            ctx.fillStyle = altTextColor;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label2, p2.x + 6, p2.y);
+          }
+          ctx.restore();
         }
+
 
         // 4. Draw Bounded Price Lines (Entry, TP1, TP2, SL, CW, PW, Flip, Pain, Magnet, EM)
         // Strictly deduplicated by ID/label with deterministic multi-pass vertical anti-collision so badges never overlap
@@ -1003,15 +908,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               }
             }
           }
-          if (data.altForecast) {
-            const afc = data.altForecast;
-            const ay1 = series.priceToCoordinate(afc.tp1Price);
-            const ay2 = series.priceToCoordinate(afc.tp2Price);
-            const ax1 = typeof afc.tp1Logical === "number" ? timeScale.logicalToCoordinate(afc.tp1Logical as any) : null;
-            const ax2 = typeof afc.tp2Logical === "number" ? timeScale.logicalToCoordinate(afc.tp2Logical as any) : null;
-            if (ay1 !== null && ax1 !== null) fixedObstacles.push({ id: "alt_tp1", x: snapPx((ax1 as number) + 4), y: snapPx(ay1 as number) });
-            if (ay2 !== null && ax2 !== null) fixedObstacles.push({ id: "alt_tp2", x: snapPx((ax2 as number) + 5), y: snapPx(ay2 as number) });
-          }
+
 
           // Floating price-axis tags (spot, EMA9, EMA21, EMA200) and bar countdown on the right price axis
           if (data.floatingPriceAxisTags && data.floatingPriceAxisTags.length > 0) {
@@ -1134,6 +1031,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               const isFlip = pl.id === "flip_line" || pl.label.includes("Граница Гаммы");
               const isSl = pl.id === "sl_line" || pl.label.includes("SL");
               const isPain = pl.id === "pain_line" || pl.label.includes("Магнит");
+              const isAlt = pl.id === "alt_tp1_line" || pl.id === "alt_tp2_line" || pl.label.includes("План Б") || pl.label.includes("Цель 2");
 
               const labelBg = pl.labelBg || (isFlip
                 ? "rgba(18, 9, 31, 0.98)"
@@ -1141,6 +1039,8 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 ? "rgba(30, 9, 13, 0.98)"
                 : isPain
                 ? "rgba(6, 24, 32, 0.98)"
+                : isAlt
+                ? "rgba(30, 9, 13, 0.98)"
                 : "rgba(8, 12, 21, 0.96)");
               const labelBorder = pl.labelBorderColor || (isFlip
                 ? "#c084fc"
@@ -1148,6 +1048,8 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 ? "#f87171"
                 : isPain
                 ? "#22d3ee"
+                : isAlt
+                ? "#fb7185"
                 : pl.color);
               const labelText = pl.labelTextColor || (isFlip
                 ? "#f3e8ff"
@@ -1155,6 +1057,8 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 ? "#fecdd3"
                 : isPain
                 ? "#cffafe"
+                : isAlt
+                ? "#fecdd3"
                 : "#ffffff");
 
               badgesToRender.push({
@@ -1176,20 +1080,8 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           // PASS 1.5: Deterministic multi-pass vertical anti-collision solver (including spot, EMA9, EMA21, EMA200 tags)
           solveBadgeAntiCollision(badgesToRender, fixedObstacles, mediaW, mediaH, minVertGap);
 
-          // PASS 2: Render leader lines (when vertically displaced) and all badges ON TOP of all lines
+          // PASS 2: Render all badges ON TOP of all lines (leader lines removed: badges stay directly on their lines)
           for (const b of badgesToRender) {
-            if (Math.abs(b.y - b.anchorY) > 3) {
-              ctx.save();
-              ctx.strokeStyle = b.lineColor;
-              ctx.lineWidth = 1;
-              ctx.setLineDash([2, 2]);
-              ctx.beginPath();
-              ctx.moveTo(b.lineRight, b.anchorY);
-              ctx.lineTo(b.x, snapPx(b.y));
-              ctx.stroke();
-              ctx.restore();
-            }
-
             drawBadge(
               ctx,
               b.label,
