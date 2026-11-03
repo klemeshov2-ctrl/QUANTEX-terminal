@@ -1,10 +1,26 @@
+# Dependencies & build outputs
 node_modules/
 build/
 dist/
 coverage/
 .DS_Store
 *.log
+
+# Environment variables
 .env*
 !.env.example
-data/
 *.local
+
+# Persistent data directory
+data/
+
+# AI Studio workspace and temporary metadata
+.aistudio/
+
+# Screenshots and generated media captures
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.webp
+screenshot_*.svg

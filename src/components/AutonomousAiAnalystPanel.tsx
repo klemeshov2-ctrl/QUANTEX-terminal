@@ -1525,8 +1525,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       // Calculate Market Regime Context (Range / Flat vs Trend / Squeeze)
       const pwVal = Number(dayGexReport?.putWall || gexReport?.putWall || 4100);
       const cwVal = Number(dayGexReport?.callWall || gexReport?.callWall || 4200);
-      const pwAudit = auditSingleGexLevel(candles, pwVal, "SUPPORT", 86400);
-      const cwAudit = auditSingleGexLevel(candles, cwVal, "RESISTANCE", 86400);
+      const pwAudit = auditSingleGexLevel(candles, pwVal, "SUPPORT", 86400, activeAsset);
+      const cwAudit = auditSingleGexLevel(candles, cwVal, "RESISTANCE", 86400, activeAsset);
       const rangeDetection = detectMarketRangeMode(candles, pwVal, cwVal, pwAudit, cwAudit);
 
       let localMigrationHistory: any[] = [];

@@ -11,6 +11,7 @@ import {
   Crown,
   CheckCircle2
 } from "lucide-react";
+import { setStoredJwtToken, getStoredJwtToken } from "../lib/apiClient";
 
 export interface PublicUserInfo {
   id: string;
@@ -53,19 +54,7 @@ export const PasswordAuthModal: React.FC<PasswordAuthModalProps> = ({ onAuthenti
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-
   useEffect(() => {
-    // Check if session token exists AND user is in localStorage
-    const savedToken = sessionStorage.getItem("st_server_auth_token");
-    const savedUserStr = localStorage.getItem("quantex_active_user");
-    if (savedToken === "authenticated" && savedUserStr) {
-      try {
-        const u = JSON.parse(savedUserStr);
-        onAuthenticated(u);
-        return;
-      } catch {}
-    }
-
     // Fetch live users and server security status
     fetch("/api/auth/status")
       .then(res => res.json())
@@ -77,12 +66,16 @@ export const PasswordAuthModal: React.FC<PasswordAuthModalProps> = ({ onAuthenti
             role: "admin",
             allowedTabs: ["chart", "gex", "calendar", "editor", "journal", "settings"]
           };
-          sessionStorage.setItem("st_server_auth_token", "authenticated");
-          localStorage.setItem("quantex_active_user", JSON.stringify(defaultAdmin));
+          if (data.token) {
+            setStoredJwtToken(data.token, defaultAdmin);
+          } else {
+            localStorage.setItem("quantex_active_user", JSON.stringify(defaultAdmin));
+          }
           onAuthenticated(defaultAdmin);
           return;
         }
 
+        const savedUserStr = localStorage.getItem("quantex_active_user");
         if (Array.isArray(data.users) && data.users.length > 0) {
           setUsersList(data.users);
           if (savedUserStr) {
@@ -126,8 +119,11 @@ export const PasswordAuthModal: React.FC<PasswordAuthModalProps> = ({ onAuthenti
 
       const data = await res.json();
       if (res.ok && data.success && data.user) {
-        sessionStorage.setItem("st_server_auth_token", "authenticated");
-        localStorage.setItem("quantex_active_user", JSON.stringify(data.user));
+        if (data.token) {
+          setStoredJwtToken(data.token, data.user);
+        } else {
+          localStorage.setItem("quantex_active_user", JSON.stringify(data.user));
+        }
         onAuthenticated(data.user);
       } else {
         setError(data.error || "Неверный пароль или учетные данные пользователя");

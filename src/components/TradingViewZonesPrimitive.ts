@@ -103,6 +103,34 @@ export interface CurrentPriceCountdown {
   isBull: boolean;
 }
 
+export interface FloatingPriceAxisTag {
+  id: "spot" | "EMA9" | "EMA21" | "EMA200" | string;
+  price: number;
+  label?: string;
+}
+
+export interface AntiCollisionObstacle {
+  id?: string;
+  x: number;
+  y: number;
+  isPriceAxisTag?: boolean;
+}
+
+export interface AntiCollisionBadgeItem {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  anchorY: number;
+  width?: number;
+  lineRight: number;
+  lineColor: string;
+  bg: string;
+  border: string;
+  textColor: string;
+  showBorder: boolean;
+}
+
 export interface TradingViewPrimitiveData {
   zones: ZoneBox[];
   forecast: ForecastArrow | null;
@@ -112,6 +140,7 @@ export interface TradingViewPrimitiveData {
   lines?: BoundedPriceLine[];
   gexProfile?: GexProfileData | null;
   currentPriceCountdown?: CurrentPriceCountdown | null;
+  floatingPriceAxisTags?: FloatingPriceAxisTag[];
   chartFontSize?: number;
   showBadgeBorders?: boolean;
 }
@@ -221,6 +250,122 @@ function drawBadge(
   } finally {
     ctx.restore();
   }
+}
+
+/**
+ * Deterministic vertical anti-collision solver for chart badges.
+ * Explicitly accounts for floating price-axis tags (spot, EMA9, EMA21, EMA200) and canvas obstacles
+ * so badges (especially Flip on WEEK horizon on mobile widths) never overlap price-axis tags or each other.
+ */
+export function solveBadgeAntiCollision<
+  T extends {
+    id: string;
+    label: string;
+    x: number;
+    y: number;
+    anchorY: number;
+    width?: number;
+  }
+>(
+  badges: T[],
+  fixedObstacles: AntiCollisionObstacle[],
+  mediaW: number,
+  mediaH: number,
+  minVertGap?: number
+): T[] {
+  if (!badges || badges.length === 0) return badges;
+  const isMobile = mediaW < 640;
+  const gap = minVertGap ?? (isMobile ? 18 : 21);
+
+  // Clamp badge X coordinates to actual on-screen position before collision testing
+  for (const b of badges) {
+    const estW =
+      b.width ??
+      Math.min(mediaW - 8, Math.max(96, b.label.length * (isMobile ? 6.2 : 7.0) + 18));
+    b.width = estW;
+    b.x = snapPx(Math.max(3, Math.min(b.x, mediaW - estW - 3)));
+  }
+
+  const overlapsHorizontallyWithObstacle = (b: T, obs: AntiCollisionObstacle): boolean => {
+    const bw = b.width ?? 140;
+    if (obs.isPriceAxisTag) {
+      // On mobile width (< 640px), right-anchored GEX / chart badges extend into the right zone
+      // where floating price-axis tags (spot, EMA9, EMA21, EMA200) sit.
+      return isMobile ? b.x + bw >= mediaW * 0.35 : b.x + bw >= mediaW - 140;
+    }
+    return Math.abs(b.x - obs.x) < 195;
+  };
+
+  const overlapsHorizontallyWithBadge = (a: T, b: T): boolean => {
+    return Math.abs(a.x - b.x) < 195;
+  };
+
+  // Sort badges top-to-bottom by anchorY (with stable tie-breaker keeping Flip/Pain/Walls prioritized)
+  badges.sort((a, b) => a.anchorY - b.anchorY || a.id.localeCompare(b.id));
+
+  const placed: T[] = [];
+
+  const isPositionValid = (badge: T, candY: number): boolean => {
+    if (candY < 14 || candY > mediaH - 14) return false;
+    for (const obs of fixedObstacles) {
+      if (overlapsHorizontallyWithObstacle(badge, obs) && Math.abs(candY - obs.y) < gap - 0.25) {
+        return false;
+      }
+    }
+    for (const other of placed) {
+      if (overlapsHorizontallyWithBadge(badge, other) && Math.abs(candY - other.y) < gap - 0.25) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  for (const b of badges) {
+    const initialY = Math.max(14, Math.min(mediaH - 14, b.anchorY));
+    if (isPositionValid(b, initialY)) {
+      b.y = snapPx(initialY);
+      placed.push(b);
+      continue;
+    }
+
+    // Generate candidate vertical slots around obstacles, placed badges, and fine offsets from anchorY
+    const candidates: number[] = [];
+    for (const obs of fixedObstacles) {
+      if (overlapsHorizontallyWithObstacle(b, obs)) {
+        candidates.push(obs.y - gap, obs.y + gap);
+      }
+    }
+    for (const other of placed) {
+      if (overlapsHorizontallyWithBadge(b, other)) {
+        candidates.push(other.y - gap, other.y + gap);
+      }
+    }
+    const maxSteps = Math.ceil(mediaH / 2);
+    for (let step = 1; step <= maxSteps; step++) {
+      const delta = step * 2;
+      if (initialY - delta >= 14) candidates.push(initialY - delta);
+      if (initialY + delta <= mediaH - 14) candidates.push(initialY + delta);
+    }
+
+    let bestY = initialY;
+    let bestDist = Infinity;
+
+    for (const cand of candidates) {
+      const clampedCand = Math.max(14, Math.min(mediaH - 14, cand));
+      if (isPositionValid(b, clampedCand)) {
+        const dist = Math.abs(clampedCand - b.anchorY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestY = clampedCand;
+        }
+      }
+    }
+
+    b.y = snapPx(bestY);
+    placed.push(b);
+  }
+
+  return badges;
 }
 
 /**
@@ -822,20 +967,92 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
         }
 
         // 4. Draw Bounded Price Lines (Entry, TP1, TP2, SL, CW, PW, Flip, Pain, Magnet, EM)
-        // Strictly deduplicated by ID/label with vertical anti-collision so badges never overlap
+        // Strictly deduplicated by ID/label with deterministic multi-pass vertical anti-collision so badges never overlap
         if (data.lines && data.lines.length > 0) {
+          const mediaH = scope.mediaSize.height;
           const seenLabels = new Set<string>();
-          const placedBadges: Array<{ x: number; y: number }> = [];
-          const minVertGap = isMobile ? 16 : 18;
-          const badgesToRender: Array<{
-            label: string;
-            x: number;
-            y: number;
-            bg: string;
-            border: string;
-            textColor: string;
-            showBorder: boolean;
-          }> = [];
+          const minVertGap = isMobile ? 18 : 21;
+
+          // Collect fixed obstacles already drawn by background/altForecast (0.50 EQ, Liq LT/IT, Plan B)
+          // AND floating price-axis tags (spot, EMA9, EMA21, EMA200) so Flip/Magnet/Wall badges never overlap them
+          const fixedObstacles: AntiCollisionObstacle[] = [];
+          if (data.eqLine) {
+            const eqY = series.priceToCoordinate(data.eqLine.price);
+            let eqX2: number | null = null;
+            if (typeof data.eqLine.endLogical === "number") {
+              const c2 = timeScale.logicalToCoordinate(data.eqLine.endLogical as any);
+              if (c2 !== null) eqX2 = c2 as number;
+            }
+            if (eqY !== null && eqX2 !== null) {
+              fixedObstacles.push({ id: "eqLine", x: snapPx(eqX2 + 4), y: snapPx(eqY as number) });
+            }
+          }
+          if (data.zones) {
+            for (const z of data.zones) {
+              if (z.type === "sr" && z.label) {
+                const topY = series.priceToCoordinate(z.topPrice);
+                const botY = series.priceToCoordinate(z.bottomPrice);
+                const endX = typeof z.endLogical === "number" ? timeScale.logicalToCoordinate(z.endLogical as any) : null;
+                if (topY !== null && botY !== null && endX !== null) {
+                  fixedObstacles.push({
+                    id: z.label,
+                    x: snapPx((endX as number) + 4),
+                    y: snapPx(((topY as number) + (botY as number)) / 2)
+                  });
+                }
+              }
+            }
+          }
+          if (data.altForecast) {
+            const afc = data.altForecast;
+            const ay1 = series.priceToCoordinate(afc.tp1Price);
+            const ay2 = series.priceToCoordinate(afc.tp2Price);
+            const ax1 = typeof afc.tp1Logical === "number" ? timeScale.logicalToCoordinate(afc.tp1Logical as any) : null;
+            const ax2 = typeof afc.tp2Logical === "number" ? timeScale.logicalToCoordinate(afc.tp2Logical as any) : null;
+            if (ay1 !== null && ax1 !== null) fixedObstacles.push({ id: "alt_tp1", x: snapPx((ax1 as number) + 4), y: snapPx(ay1 as number) });
+            if (ay2 !== null && ax2 !== null) fixedObstacles.push({ id: "alt_tp2", x: snapPx((ax2 as number) + 5), y: snapPx(ay2 as number) });
+          }
+
+          // Floating price-axis tags (spot, EMA9, EMA21, EMA200) and bar countdown on the right price axis
+          if (data.floatingPriceAxisTags && data.floatingPriceAxisTags.length > 0) {
+            for (const tag of data.floatingPriceAxisTags) {
+              if (!tag || !isFinite(tag.price) || tag.price <= 0) continue;
+              const tagY = series.priceToCoordinate(tag.price);
+              if (tagY !== null && (tagY as number) >= -10 && (tagY as number) <= mediaH + 10) {
+                fixedObstacles.push({
+                  id: tag.id,
+                  x: snapPx(mediaW - 24),
+                  y: snapPx(tagY as number),
+                  isPriceAxisTag: true
+                });
+              }
+            }
+          }
+          if (data.currentPriceCountdown && isFinite(data.currentPriceCountdown.price) && data.currentPriceCountdown.price > 0) {
+            const spotY = series.priceToCoordinate(data.currentPriceCountdown.price);
+            if (spotY !== null && (spotY as number) >= -10 && (spotY as number) <= mediaH + 10) {
+              // Ensure both the spot price tag itself and the countdown badge below it are registered as right-axis obstacles
+              const hasSpotObstacle = fixedObstacles.some(
+                o => o.isPriceAxisTag && Math.abs(o.y - (spotY as number)) < 2
+              );
+              if (!hasSpotObstacle) {
+                fixedObstacles.push({
+                  id: "spot",
+                  x: snapPx(mediaW - 24),
+                  y: snapPx(spotY as number),
+                  isPriceAxisTag: true
+                });
+              }
+              fixedObstacles.push({
+                id: "spot_countdown",
+                x: snapPx(mediaW - 24),
+                y: snapPx((spotY as number) + 13),
+                isPriceAxisTag: true
+              });
+            }
+          }
+
+          const badgesToRender: AntiCollisionBadgeItem[] = [];
 
           // PASS 1: Calculate coordinates and draw all horizontal level lines first
           for (const pl of data.lines) {
@@ -876,63 +1093,78 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             const rawY = series.priceToCoordinate(pl.price);
             if (x1 === null || x2 === null || rawY === null) continue;
 
+            // Clamp rawY within visible canvas bounds for GEX levels (especially Monthly Magnet / Flip / Walls)
+            // so even if the 15m chart is zoomed in tightly, the Monthly Magnet badge stays pinned at the canvas edge
+            const isGexCoreLine =
+              pl.id === "pain_line" ||
+              pl.id === "flip_line" ||
+              pl.id === "cw_line" ||
+              pl.id === "pw_line";
+            const clampedRawY = isGexCoreLine
+              ? Math.max(16, Math.min(mediaH - 16, rawY as number))
+              : (rawY as number);
+
             const y = snapHalf(rawY as number);
             const left = snapPx(Math.min(x1, x2));
             const right = snapPx(Math.max(x1, x2));
 
-            // Stable anti-flicker horizontal level lines
-            ctx.strokeStyle = pl.color;
-            ctx.lineWidth = isMobile ? 1.0 : 1.25;
-            if (pl.lineStyle === "dashed") {
-              ctx.setLineDash([6, 4]);
-            } else if (pl.lineStyle === "dotted") {
-              ctx.setLineDash([4, 3]);
-            } else {
+            // Stable anti-flicker horizontal level lines (drawn when within canvas vertical bounds)
+            if ((rawY as number) >= -2 && (rawY as number) <= mediaH + 2) {
+              ctx.strokeStyle = pl.color;
+              ctx.lineWidth = isMobile ? 1.0 : 1.25;
+              if (pl.lineStyle === "dashed") {
+                ctx.setLineDash([6, 4]);
+              } else if (pl.lineStyle === "dotted") {
+                ctx.setLineDash([4, 3]);
+              } else {
+                ctx.setLineDash([]);
+              }
+              ctx.beginPath();
+              ctx.moveTo(left, y);
+              ctx.lineTo(right, y);
+              ctx.stroke();
               ctx.setLineDash([]);
             }
-            ctx.beginPath();
-            ctx.moveTo(left, y);
-            ctx.lineTo(right, y);
-            ctx.stroke();
-            ctx.setLineDash([]);
 
-            // Prepare badge for Pass 2 (drawn strictly on top of all lines)
+            // Collect badge for deterministic vertical anti-collision solver
             if (pl.label) {
-              let badgeY = snapPx(rawY as number);
+              const anchorY = snapPx(clampedRawY);
               const badgeX = snapPx(right + 4);
-              for (let attempt = 0; attempt < 8; attempt++) {
-                const conflict = placedBadges.find(
-                  (b) => Math.abs(b.x - badgeX) < 135 && Math.abs(b.y - badgeY) < minVertGap
-                );
-                if (!conflict) break;
-                badgeY = badgeY >= conflict.y ? conflict.y + minVertGap : conflict.y - minVertGap;
-              }
-              placedBadges.push({ x: badgeX, y: badgeY });
 
-              // High-contrast solid pill styling: Граница Гаммы (Flip) and SL have solid dark background with crisp borders
               const isFlip = pl.id === "flip_line" || pl.label.includes("Граница Гаммы");
               const isSl = pl.id === "sl_line" || pl.label.includes("SL");
+              const isPain = pl.id === "pain_line" || pl.label.includes("Магнит");
 
               const labelBg = pl.labelBg || (isFlip
                 ? "rgba(18, 9, 31, 0.98)"
                 : isSl
                 ? "rgba(30, 9, 13, 0.98)"
+                : isPain
+                ? "rgba(6, 24, 32, 0.98)"
                 : "rgba(8, 12, 21, 0.96)");
               const labelBorder = pl.labelBorderColor || (isFlip
                 ? "#c084fc"
                 : isSl
                 ? "#f87171"
+                : isPain
+                ? "#22d3ee"
                 : pl.color);
               const labelText = pl.labelTextColor || (isFlip
                 ? "#f3e8ff"
                 : isSl
                 ? "#fecdd3"
+                : isPain
+                ? "#cffafe"
                 : "#ffffff");
 
               badgesToRender.push({
+                id: pl.id || pl.label,
                 label: pl.label,
                 x: badgeX,
-                y: badgeY,
+                y: anchorY,
+                anchorY,
+                lineRight: right,
+                lineColor: labelBorder,
                 bg: labelBg,
                 border: labelBorder,
                 textColor: labelText,
@@ -941,13 +1173,28 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             }
           }
 
-          // PASS 2: Render all badges ON TOP of all lines so no line ever cuts through badge text!
+          // PASS 1.5: Deterministic multi-pass vertical anti-collision solver (including spot, EMA9, EMA21, EMA200 tags)
+          solveBadgeAntiCollision(badgesToRender, fixedObstacles, mediaW, mediaH, minVertGap);
+
+          // PASS 2: Render leader lines (when vertically displaced) and all badges ON TOP of all lines
           for (const b of badgesToRender) {
+            if (Math.abs(b.y - b.anchorY) > 3) {
+              ctx.save();
+              ctx.strokeStyle = b.lineColor;
+              ctx.lineWidth = 1;
+              ctx.setLineDash([2, 2]);
+              ctx.beginPath();
+              ctx.moveTo(b.lineRight, b.anchorY);
+              ctx.lineTo(b.x, snapPx(b.y));
+              ctx.stroke();
+              ctx.restore();
+            }
+
             drawBadge(
               ctx,
               b.label,
               b.x,
-              b.y,
+              snapPx(b.y),
               b.bg,
               b.border,
               b.textColor,

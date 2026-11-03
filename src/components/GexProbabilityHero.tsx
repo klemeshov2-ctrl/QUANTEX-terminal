@@ -201,6 +201,48 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
               <span className={`text-[11px] font-mono font-extrabold px-2.5 py-0.5 rounded-lg border ${dominantBadge.cls}`}>
                 {dominantBadge.label}
               </span>
+              {gexReport.isSynthetic && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3 text-amber-400" />
+                  <span>
+                    {gexReport.isDataStale || gexReport.source?.includes("Данные устарели")
+                      ? "Синтетическая модель • Данные устарели"
+                      : "Синтетическая модель"}
+                  </span>
+                </span>
+              )}
+              {(gexReport.asset === "XAUUSD" || gexReport.proxyNote) && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-200 border border-blue-500/35">
+                  {gexReport.proxyNote || "Опционы на ETF GLD, не на фьючерс золота COMEX GC"}
+                </span>
+              )}
+              {gexReport.normalizedNetGex !== undefined && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                  Норм. GEX: {gexReport.normalizedNetGex > 0 ? "+" : ""}{gexReport.normalizedNetGex}
+                </span>
+              )}
+              {gexReport.lowConfidence && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/45 flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3 text-amber-400" />
+                  <span>{gexReport.lowConfidenceReason || "Мало данных OI — уровни приблизительные"}</span>
+                </span>
+              )}
+              {(gexReport.painOutOfCorridor ||
+                (gexReport.putWall &&
+                  gexReport.callWall &&
+                  (gexReport.maxPain < gexReport.putWall || gexReport.maxPain > gexReport.callWall))) && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/45 flex items-center gap-1">
+                  <span>⚠️ Max Pain (${gexReport.maxPain}) вне коридора [${gexReport.putWall}–$${gexReport.callWall}]</span>
+                </span>
+              )}
+              {(gexReport.flipOutOfCorridor ||
+                (gexReport.putWall &&
+                  gexReport.callWall &&
+                  (gexReport.gammaFlip < gexReport.putWall || gexReport.gammaFlip > gexReport.callWall))) && (
+                <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/45 flex items-center gap-1">
+                  <span>⚠️ Flip (${gexReport.gammaFlip}) вне коридора [${gexReport.putWall}–$${gexReport.callWall}]</span>
+                </span>
+              )}
               {probResult.sweepRiskActive && (
                 <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
                   <AlertTriangle className="h-3 w-3 text-amber-400" />
@@ -352,12 +394,22 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
               <text
                 x={chartGeometry.padLeft - 5}
                 y={chartGeometry.flipY + 3}
-                fill="#c084fc"
+                fill={
+                  gexReport.flipOutOfCorridor ||
+                  gexReport.gammaFlip < gexReport.putWall ||
+                  gexReport.gammaFlip > gexReport.callWall
+                    ? "#fbbf24"
+                    : "#c084fc"
+                }
                 fontSize="9"
                 fontFamily="monospace"
                 textAnchor="end"
               >
-                Flip {fmtPrice(gexReport.gammaFlip)}
+                {gexReport.flipOutOfCorridor ||
+                gexReport.gammaFlip < gexReport.putWall ||
+                gexReport.gammaFlip > gexReport.callWall
+                  ? `⚠️ Flip ${fmtPrice(gexReport.gammaFlip)}`
+                  : `Flip ${fmtPrice(gexReport.gammaFlip)}`}
               </text>
 
               {/* Put Wall */}
@@ -436,19 +488,41 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
                 width={98}
                 height={18}
                 rx={4}
-                fill="#083344"
-                stroke="#06b6d4"
+                fill={
+                  gexReport.painOutOfCorridor ||
+                  gexReport.maxPain < gexReport.putWall ||
+                  gexReport.maxPain > gexReport.callWall
+                    ? "#451a03"
+                    : "#083344"
+                }
+                stroke={
+                  gexReport.painOutOfCorridor ||
+                  gexReport.maxPain < gexReport.putWall ||
+                  gexReport.maxPain > gexReport.callWall
+                    ? "#f59e0b"
+                    : "#06b6d4"
+                }
                 strokeWidth="1"
               />
               <text
                 x={chartGeometry.endX + 9}
                 y={chartGeometry.mpY + 3}
-                fill="#cffafe"
+                fill={
+                  gexReport.painOutOfCorridor ||
+                  gexReport.maxPain < gexReport.putWall ||
+                  gexReport.maxPain > gexReport.callWall
+                    ? "#fde68a"
+                    : "#cffafe"
+                }
                 fontSize="9.5"
                 fontFamily="monospace"
                 fontWeight="bold"
               >
-                FLAT {probResult.probabilityFlat}% • MP
+                {gexReport.painOutOfCorridor ||
+                gexReport.maxPain < gexReport.putWall ||
+                gexReport.maxPain > gexReport.callWall
+                  ? `⚠️ MP ${fmtPrice(gexReport.maxPain)} вне PW–CW`
+                  : `FLAT ${probResult.probabilityFlat}% • MP`}
               </text>
 
               {/* 3. SHORT Trajectory Curve */}

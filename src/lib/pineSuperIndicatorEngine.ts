@@ -108,7 +108,8 @@ export function auditSingleGexLevel(
   candles: Array<{ time: number; open: number; high: number; low: number; close: number }>,
   levelPrice: number,
   levelType: "RESISTANCE" | "SUPPORT" | "FLIP" | "MAGNET",
-  windowSec: number = 86400
+  windowSec: number = 86400,
+  asset: string = "XAUUSD"
 ): LevelAuditResult {
   if (!candles || candles.length === 0 || !levelPrice || levelPrice <= 0) {
     return { touches: 0, bounces: 0, breakouts: 0, hitRatePct: 0, isTested: false, closestExtreme: 0, distToExtreme: 0 };
@@ -134,23 +135,33 @@ export function auditSingleGexLevel(
   }
   const atr14 = trSum / Math.max(1, atrSlice.length);
 
-  // Dynamic touch tolerance buffer (Tolerance Buffer) strictly bound to live ATR-14
-  // Expands automatically during strong trend / news impulses so wicks don't trigger false breakouts
+  // Dynamic touch tolerance buffer (Tolerance Buffer) strictly bound to live ATR-14 and explicit asset type (no price range hardcoding)
   let touchTol: number;
   let breakTol: number;
 
-  if (levelPrice >= 1500 && levelPrice <= 6500) {
-    // Gold (XAUUSD / GD): 0.55x ATR14 (dynamically scales from ~$1.8 in calm flat up to ~$10.5 in high volatility)
+  const normAsset = (asset || "XAUUSD").toUpperCase();
+  const isGoldUsd =
+    normAsset.includes("XAU") ||
+    normAsset === "MOEX_GOLD" ||
+    normAsset === "MOEX_MINI" ||
+    normAsset === "GD" ||
+    normAsset === "GN" ||
+    normAsset.includes("PAXG");
+  const isBtc = normAsset.includes("BTC");
+  const isMoexHighNominal = normAsset.includes("SI") || normAsset.includes("RI") || normAsset.includes("RTS") || normAsset.includes("GLDRUB");
+
+  if (isGoldUsd) {
+    // Gold (XAUUSD / MOEX GD / GN): 0.55x ATR14
     touchTol = Math.round(Math.max(1.8, Math.min(11.5, atr14 * 0.55)) * 10) / 10;
     breakTol = Math.round(touchTol * 1.45 * 10) / 10;
-  } else if (levelPrice > 10000) {
-    // BTC / High-value indices: 0.55x ATR14
-    touchTol = Math.round(Math.max(85, Math.min(550, atr14 * 0.55)));
+  } else if (isBtc || isMoexHighNominal) {
+    // BTC / MOEX Si / MOEX RTS: 0.55x ATR14
+    touchTol = Math.round(Math.max(levelPrice * 0.0008, Math.min(levelPrice * 0.006, atr14 * 0.55)));
     breakTol = Math.round(touchTol * 1.45);
   } else {
-    // General assets (FX, ETH, SOL, MOEX): 0.55x ATR14
-    touchTol = Math.round(Math.max(levelPrice * 0.0007, Math.min(levelPrice * 0.0045, atr14 * 0.55)) * 100) / 100;
-    breakTol = Math.round(touchTol * 1.45 * 100) / 100;
+    // ETH, SOL, XRP, MOEX BR, MOEX NG: 0.55x ATR14
+    touchTol = Math.round(Math.max(levelPrice * 0.0007, Math.min(levelPrice * 0.0045, atr14 * 0.55)) * 1000) / 1000;
+    breakTol = Math.round(touchTol * 1.45 * 1000) / 1000;
   }
 
   let touches = 0;
@@ -1383,10 +1394,10 @@ export function evaluateSuperIndicator(
   }
 
   // Real-time audit of GEX levels against actual candle history (synchronized 1:1 with GEX Analytics Hit Rate)
-  const cwAudit = auditSingleGexLevel(candles, callWall, "RESISTANCE", 86400);
-  const pwAudit = auditSingleGexLevel(candles, putWall, "SUPPORT", 86400);
-  const flipAudit = auditSingleGexLevel(candles, gammaFlip, "FLIP", 86400);
-  const painAudit = auditSingleGexLevel(candles, maxPain, "MAGNET", 86400);
+  const cwAudit = auditSingleGexLevel(candles, callWall, "RESISTANCE", 86400, symbol);
+  const pwAudit = auditSingleGexLevel(candles, putWall, "SUPPORT", 86400, symbol);
+  const flipAudit = auditSingleGexLevel(candles, gammaFlip, "FLIP", 86400, symbol);
+  const painAudit = auditSingleGexLevel(candles, maxPain, "MAGNET", 86400, symbol);
   const totalGexTouches = cwAudit.touches + pwAudit.touches + flipAudit.touches + painAudit.touches;
 
   // Detect active dump / momentum sell-off (matching Thermometer in GEX Analytics)

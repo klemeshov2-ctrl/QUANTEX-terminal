@@ -6,8 +6,9 @@ export interface GexStrikeData {
   callGex: number;    // In Millions USD
   putGex: number;     // In Millions USD (negative sign convention)
   netGex: number;     // callGex + putGex
-  callOi: number;     // Open Interest in contracts
-  putOi: number;      // Open Interest in contracts
+  normalizedGex?: number; // Normalized GEX relative to peak strike [-1.0 ... +1.0]
+  callOi: number;     // Open Interest in contracts (no volume mixed)
+  putOi: number;      // Open Interest in contracts (no volume mixed)
   totalOi: number;
   callVolume: number;
   putVolume: number;
@@ -23,13 +24,37 @@ export interface GexMarketReport {
   timestamp: string;
   expirationDate?: string; // Exact format e.g. "22 окт, 18:45 MSK (0DTE)"
   source: string;
+  isSynthetic?: boolean;      // Explicit flag: true if mathematically generated fallback or option data >1h stale, false if live fresh options
+  isDataStale?: boolean;      // True if option chain timestamp is older than 1 hour (>3600s) or API unreachable
+  dataTimestamp?: string;     // ISO timestamp of the underlying option chain snapshot
+  proxyNote?: string;         // Explicit instrument disclosure note (e.g. "Опционы на ETF GLD, не на фьючерс золота COMEX GC")
+  outOfCorridor?: boolean;    // True if gammaFlip or maxPain natively lies outside [putWall, callWall]
+  flipOutOfCorridor?: boolean;// True if gammaFlip natively lies outside [putWall, callWall]
+  painOutOfCorridor?: boolean;// True if maxPain natively lies outside [putWall, callWall]
+  lowConfidence?: boolean;    // True if strikes with Call OI < 8 or strikes with Put OI < 8
+  lowConfidenceReason?: string; // "Мало данных OI — уровни приблизительные"
+  callOiStrikesCount?: number; // Number of active strikes with Call OI > 0
+  putOiStrikesCount?: number;  // Number of active strikes with Put OI > 0
   netGexTotal: number;        // Total net GEX ($/pt or $M)
+  normalizedNetGex?: number;  // Dimensionless Net GEX [-1.0 ... +1.0] for cross-asset comparison
+  gexIntensity?: number;      // Gross GEX as % of total market open interest value
   netGexRegime: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA";
   regimeDescription: string;  // Mean-reverting vs Volatile Trend Acceleration
   gammaFlip: number;          // Zero Gamma Level
-  callWall: number;           // Resistance ceiling
-  putWall: number;            // Support floor
-  maxPain: number;            // Expiration magnet
+  callWall: number;           // Resistance ceiling (highest Call OI strike above spot)
+  putWall: number;            // Support floor (highest Put OI strike below spot)
+  maxPain: number;            // Expiration magnet (minimum total buyer payout, OI only)
+  maxPainRange?: { low: number; high: number; mid: number } | null; // Pinning zone range when zero/min-payout zone is wider than 1 grid step
+  migrationLog?: {
+    timestamp: string;
+    asset: string;
+    horizon: ExpiryHorizon;
+    level: "CW" | "PW" | "FLIP" | "PAIN" | "ALL";
+    oldValue: number | null;
+    newValue: number;
+    reason: "breach" | "cooldown+OI" | "new session" | "reset";
+    details: string;
+  }[];
   sleeperMagnet?: number;     // Sleeper magnet strike
   expectedMove68: { low: number; high: number; rangePct: number }; // 1σ
   expectedMove95: { low: number; high: number; rangePct: number }; // 2σ
@@ -75,8 +100,8 @@ function normPdf(x: number): number {
   return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 }
 
-// Black-Scholes Gamma & Greeks calculation
-function calculateOptionGreeks(
+// Black-Scholes Gamma & Greeks calculation with strict edge-case validation
+export function calculateOptionGreeks(
   spot: number,
   strike: number,
   tYears: number,
@@ -84,19 +109,507 @@ function calculateOptionGreeks(
   isCall: boolean,
   rate = 0.04
 ) {
-  const safeT = Math.max(tYears, 1 / 365);
-  const safeVol = Math.max(vol, 0.05);
-  const d1 = (Math.log(spot / strike) + (rate + 0.5 * safeVol * safeVol) * safeT) / (safeVol * Math.sqrt(safeT));
+  // Input validations & sanitization (Point 7)
+  const safeSpot = Math.max(0.0001, isNaN(spot) || spot <= 0 ? 1 : spot);
+  const safeStrike = Math.max(0.0001, isNaN(strike) || strike <= 0 ? 1 : strike);
+  const safeT = Math.max(1 / (365 * 24), Math.max(0.0001, isNaN(tYears) || tYears <= 0 ? 1 / 365 : tYears));
+  const safeVol = Math.max(0.01, Math.min(5.0, isNaN(vol) || vol <= 0 ? 0.20 : vol));
+
+  const d1 = (Math.log(safeSpot / safeStrike) + (rate + 0.5 * safeVol * safeVol) * safeT) / (safeVol * Math.sqrt(safeT));
   const d2 = d1 - safeVol * Math.sqrt(safeT);
 
-  const gamma = normPdf(d1) / (spot * safeVol * Math.sqrt(safeT));
+  const rawGamma = normPdf(d1) / (safeSpot * safeVol * Math.sqrt(safeT));
+  const gamma = isFinite(rawGamma) && !isNaN(rawGamma) && rawGamma >= 0 ? rawGamma : 0;
   const delta = isCall ? normCdf(d1) : normCdf(d1) - 1;
-  const vanna = -normPdf(d1) * d2 / safeVol;
-  const charm = isCall 
+  const vanna = isFinite(d2) ? -normPdf(d1) * d2 / safeVol : 0;
+  const charm = isFinite(d2)
     ? -normPdf(d1) * (2 * rate * safeT - d2 * safeVol * Math.sqrt(safeT)) / (2 * safeT * safeVol * Math.sqrt(safeT))
-    : -normPdf(d1) * (2 * rate * safeT - d2 * safeVol * Math.sqrt(safeT)) / (2 * safeT * safeVol * Math.sqrt(safeT));
+    : 0;
 
   return { gamma, delta, vanna, charm };
+}
+
+/**
+ * 6. НОРМАЛИЗАЦИЯ: Рассчитывает нормализованные метрики GEX для кросс-активного сравнения силы уровней
+ */
+export function computeGexNormalization(strikes: GexStrikeData[], spotPrice: number): {
+  normalizedNetGex: number;
+  gexIntensity: number;
+} {
+  let grossGex = 0;
+  let netGex = 0;
+  let totalOi = 0;
+  let maxAbsGex = 0;
+
+  for (const s of strikes) {
+    const absCall = Math.abs(s.callGex || 0);
+    const absPut = Math.abs(s.putGex || 0);
+    grossGex += absCall + absPut;
+    netGex += (s.netGex || 0);
+    totalOi += (s.totalOi || 0);
+    if (Math.abs(s.netGex || 0) > maxAbsGex) {
+      maxAbsGex = Math.abs(s.netGex || 0);
+    }
+  }
+
+  // Assign normalized GEX to each strike profile [-1.0 ... +1.0]
+  if (maxAbsGex > 0) {
+    for (const s of strikes) {
+      s.normalizedGex = Math.round(((s.netGex || 0) / maxAbsGex) * 1000) / 1000;
+    }
+  }
+
+  // Normalized Net GEX from -1.0 to +1.0
+  const normalizedNetGex = grossGex > 0
+    ? Math.round((netGex / grossGex) * 1000) / 1000
+    : 0;
+
+  // GEX Intensity: Gross GEX relative to market notional open interest value
+  const notionalOiValue = totalOi * Math.max(1, spotPrice);
+  const gexIntensity = notionalOiValue > 0
+    ? Math.round(((grossGex * 1_000_000) / notionalOiValue) * 10000) / 100
+    : 0;
+
+  return { normalizedNetGex, gexIntensity };
+}
+
+/**
+ * 2a. РАВНОМЕРНАЯ СЕТКА СТРАЙКОВ: Интерполирует OI и GEX на равномерную сетку с минимальным шагом книги
+ * перед расчетом Max Pain и Zero-Flip, устраняя прилипание уровней к краям разреженных кластеров.
+ */
+export function interpolateOptionBookOnUniformGrid(
+  strikes: GexStrikeData[],
+  fallbackStep?: number,
+  roundDecimals = 2
+): GexStrikeData[] {
+  if (!strikes || strikes.length === 0) return [];
+
+  const validMap = new Map<number, GexStrikeData>();
+  for (const s of strikes) {
+    if (!s || isNaN(s.strike) || s.strike <= 0) continue;
+    const k = roundToDecimals(s.strike, roundDecimals);
+    const prev = validMap.get(k);
+    if (!prev) {
+      validMap.set(k, { ...s, strike: k });
+    } else {
+      prev.callOi = (prev.callOi || 0) + (s.callOi || 0);
+      prev.putOi = (prev.putOi || 0) + (s.putOi || 0);
+      prev.totalOi = prev.callOi + prev.putOi;
+      prev.callGex = (prev.callGex || 0) + (s.callGex || 0);
+      prev.putGex = (prev.putGex || 0) + (s.putGex || 0);
+      prev.netGex = (prev.netGex || 0) + (s.netGex || 0);
+    }
+  }
+
+  const sorted = Array.from(validMap.values()).sort((a, b) => a.strike - b.strike);
+  if (sorted.length < 2) return sorted;
+
+  let rawMinStep = Infinity;
+  for (let i = 1; i < sorted.length; i++) {
+    const diff = sorted[i].strike - sorted[i - 1].strike;
+    if (diff > 1e-6 && diff < rawMinStep) {
+      rawMinStep = diff;
+    }
+  }
+
+  let gridStep = isFinite(rawMinStep) && rawMinStep > 0 ? rawMinStep : (fallbackStep && fallbackStep > 0 ? fallbackStep : 1);
+  if (fallbackStep && fallbackStep > 0) {
+    gridStep = Math.max(fallbackStep * 0.2, Math.min(gridStep, fallbackStep));
+  }
+
+  const minStrike = sorted[0].strike;
+  const maxStrike = sorted[sorted.length - 1].strike;
+  const span = maxStrike - minStrike;
+  if (span <= 0 || gridStep <= 0) return sorted;
+
+  if (span / gridStep > 250) {
+    gridStep = roundToDecimals(span / 200, Math.max(roundDecimals, 3)) || span / 200;
+  }
+
+  const uniformGrid: GexStrikeData[] = [];
+  let rightIdx = 0;
+
+  for (let rawK = minStrike; rawK <= maxStrike + gridStep * 0.25; rawK += gridStep) {
+    const k = roundToDecimals(Math.min(maxStrike, rawK), roundDecimals);
+    if (uniformGrid.length > 0 && Math.abs(k - uniformGrid[uniformGrid.length - 1].strike) < gridStep * 0.15) {
+      continue;
+    }
+
+    while (rightIdx < sorted.length - 1 && sorted[rightIdx].strike < k) {
+      rightIdx++;
+    }
+    const leftIdx = Math.max(0, rightIdx - 1);
+    const sLeft = sorted[leftIdx];
+    const sRight = sorted[rightIdx];
+
+    if (Math.abs(k - sLeft.strike) <= gridStep * 0.15) {
+      uniformGrid.push({ ...sLeft });
+      continue;
+    }
+    if (Math.abs(k - sRight.strike) <= gridStep * 0.15) {
+      uniformGrid.push({ ...sRight });
+      continue;
+    }
+
+    const gap = sRight.strike - sLeft.strike;
+    const w = gap > 1e-9 ? (k - sLeft.strike) / gap : 0;
+
+    // Linearly interpolate OI across local cluster gaps (<= 2.5 steps); keep 0 OI inside wide empty inter-cluster gaps
+    // so that zero-payout pinning zones between separated Put and Call clusters remain intact on the uniform grid.
+    const isLocalClusterGap = gap <= gridStep * 2.5;
+    const interpCallOi =
+      isLocalClusterGap && (sLeft.callOi || 0) > 0 && (sRight.callOi || 0) > 0
+        ? Math.round((sLeft.callOi || 0) * (1 - w) + (sRight.callOi || 0) * w)
+        : 0;
+    const interpPutOi =
+      isLocalClusterGap && (sLeft.putOi || 0) > 0 && (sRight.putOi || 0) > 0
+        ? Math.round((sLeft.putOi || 0) * (1 - w) + (sRight.putOi || 0) * w)
+        : 0;
+
+    const interpCallGex = Math.round(((sLeft.callGex || 0) * (1 - w) + (sRight.callGex || 0) * w) * 1000) / 1000;
+    const interpPutGex = Math.round(((sLeft.putGex || 0) * (1 - w) + (sRight.putGex || 0) * w) * 1000) / 1000;
+    const interpNetGex = Math.round(((sLeft.netGex || 0) * (1 - w) + (sRight.netGex || 0) * w) * 1000) / 1000;
+    const interpIv = Math.round(((sLeft.iv || 0.2) * (1 - w) + (sRight.iv || 0.2) * w) * 1000) / 1000;
+
+    uniformGrid.push({
+      strike: k,
+      callGex: interpCallGex,
+      putGex: interpPutGex,
+      netGex: interpNetGex,
+      callOi: interpCallOi,
+      putOi: interpPutOi,
+      totalOi: interpCallOi + interpPutOi,
+      callVolume: 0,
+      putVolume: 0,
+      iv: interpIv
+    });
+  }
+
+  return uniformGrid;
+}
+
+/**
+ * 2b. MAX PAIN: Классический институциональный расчет точки максимальной боли экспирации.
+ * - Использует ИСКЛЮЧИТЕЛЬНО Open Interest (OI) покупателей опционов, без смешивания с Volume!
+ * - Предварительно интерполирует книгу на равномерную сетку страйков с минимальным шагом книги.
+ * - НЕ отбрасывает кандидатов с totalPayout == 0 (зона нулевых выплат между кластерами — это зона пиннинга).
+ * - Возвращает медианный страйк среди всех кандидатов с минимальным payout (включая ноль), устраняя прилипание к краям.
+ */
+export function computeMaxPainWithRange(
+  strikes: GexStrikeData[],
+  defaultStrike: number,
+  fallbackStep?: number,
+  roundDecimals = 2,
+  putWall?: number,
+  callWall?: number
+): { maxPain: number; maxPainRange: { low: number; high: number; mid: number } | null } {
+  if (!strikes || strikes.length === 0) return { maxPain: defaultStrike, maxPainRange: null };
+
+  const hasValidCorridor =
+    typeof putWall === "number" &&
+    typeof callWall === "number" &&
+    isFinite(putWall) &&
+    isFinite(callWall) &&
+    putWall < callWall;
+
+  let workingStrikes = strikes;
+  if (hasValidCorridor) {
+    const inCorridor = strikes.filter(s => s.strike >= putWall! && s.strike <= callWall!);
+    if (inCorridor.length >= 2) {
+      workingStrikes = inCorridor.map(s => ({
+        ...s,
+        // Eliminate boundary self-pinning from deep-ITM options sitting on the opposite wall:
+        // At K <= CW, callOi(CW) has 0 payoff while putOi(CW) pulls K onto CW; zeroing boundary ITM OI keeps Pain strictly inside (PW, CW)
+        callOi: s.strike <= putWall! ? 0 : s.callOi,
+        putOi: s.strike >= callWall! ? 0 : s.putOi
+      }));
+    }
+  }
+
+  const effectiveStep =
+    hasValidCorridor && fallbackStep && fallbackStep > 1
+      ? fallbackStep / 2
+      : fallbackStep;
+
+  const gridStrikes = interpolateOptionBookOnUniformGrid(workingStrikes, effectiveStep, roundDecimals);
+  if (gridStrikes.length === 0) return { maxPain: defaultStrike, maxPainRange: null };
+
+  let totalBookOi = 0;
+  for (const s of gridStrikes) {
+    totalBookOi += Math.max(0, s.callOi || 0) + Math.max(0, s.putOi || 0);
+  }
+  if (totalBookOi <= 0) {
+    if (hasValidCorridor) {
+      return {
+        maxPain: roundToDecimals((putWall! + callWall!) / 2, roundDecimals),
+        maxPainRange: null
+      };
+    }
+    return { maxPain: defaultStrike, maxPainRange: null };
+  }
+
+  // When corridor [putWall, callWall] is provided, evaluate interior candidates strictly inside (putWall, callWall)
+  const interiorCandidates = hasValidCorridor
+    ? gridStrikes.filter(s => s.strike > putWall! && s.strike < callWall!)
+    : [];
+  const candidatePool = interiorCandidates.length > 0 ? interiorCandidates : gridStrikes;
+
+  let minTotalPayout = Infinity;
+  const payouts: { strike: number; payout: number }[] = [];
+
+  for (const cand of candidatePool) {
+    if (cand.strike <= 0 || isNaN(cand.strike)) continue;
+    let totalPayout = 0;
+
+    for (const s of gridStrikes) {
+      if (s.strike <= 0 || isNaN(s.strike)) continue;
+      // ONLY Open Interest (OI), strictly NO Volume
+      const cOi = Math.max(0, s.callOi || 0);
+      const pOi = Math.max(0, s.putOi || 0);
+
+      if (cand.strike > s.strike) {
+        totalPayout += (cand.strike - s.strike) * cOi;
+      } else if (cand.strike < s.strike) {
+        totalPayout += (s.strike - cand.strike) * pOi;
+      }
+    }
+
+    payouts.push({ strike: cand.strike, payout: totalPayout });
+    if (totalPayout < minTotalPayout) {
+      minTotalPayout = totalPayout;
+    }
+  }
+
+  if (payouts.length === 0 || !isFinite(minTotalPayout)) {
+    return { maxPain: defaultStrike, maxPainRange: null };
+  }
+
+  const tol = Math.max(1e-6, minTotalPayout * 1e-6);
+  const minCandidates = payouts
+    .filter(p => p.payout <= minTotalPayout + tol)
+    .sort((a, b) => a.strike - b.strike);
+
+  if (minCandidates.length === 0) {
+    return { maxPain: defaultStrike, maxPainRange: null };
+  }
+
+  const actualGridStep =
+    gridStrikes.length >= 2
+      ? Math.max(1e-6, Math.abs(gridStrikes[1].strike - gridStrikes[0].strike))
+      : Math.max(1e-6, effectiveStep || fallbackStep || 1);
+
+  const lowStrike = roundToDecimals(minCandidates[0].strike, roundDecimals);
+  const highStrike = roundToDecimals(minCandidates[minCandidates.length - 1].strike, roundDecimals);
+
+  // Return the median strike among all minimum-payout candidates (including zero-payout pinning zone)
+  const midIdx = Math.floor(minCandidates.length / 2);
+  const medianRaw =
+    minCandidates.length % 2 === 1
+      ? minCandidates[midIdx].strike
+      : (minCandidates[midIdx - 1].strike + minCandidates[midIdx].strike) / 2;
+  const medianStrike = roundToDecimals(medianRaw, roundDecimals);
+
+  const zoneSpan = highStrike - lowStrike;
+  const maxPainRange =
+    minCandidates.length >= 2 && zoneSpan >= actualGridStep - 1e-6
+      ? { low: lowStrike, high: highStrike, mid: medianStrike }
+      : null;
+
+  return {
+    maxPain: medianStrike,
+    maxPainRange
+  };
+}
+
+export function computeMaxPain(
+  strikes: GexStrikeData[],
+  defaultStrike: number,
+  fallbackStep?: number,
+  roundDecimals = 2,
+  putWall?: number,
+  callWall?: number
+): number {
+  return computeMaxPainWithRange(strikes, defaultStrike, fallbackStep, roundDecimals, putWall, callWall).maxPain;
+}
+
+/**
+ * 2c. ZERO-FLIP (GAMMA FLIP): Расчет точки смены знака гаммы на равномерной сетке страйков.
+ * Устраняет прилипание Zero-Flip к краям кластеров или к Call/Put Wall.
+ */
+export function computeZeroGammaFlip(
+  strikes: GexStrikeData[],
+  spotPrice: number,
+  fallbackStep = 10,
+  roundDecimals = 1,
+  minBound?: number,
+  maxBound?: number
+): number {
+  const defaultFlip = roundToDecimals(Math.round(spotPrice / fallbackStep) * fallbackStep, roundDecimals);
+  if (!strikes || strikes.length === 0) return defaultFlip;
+
+  const gridStrikes = interpolateOptionBookOnUniformGrid(strikes, fallbackStep, roundDecimals);
+  if (gridStrikes.length === 0) return defaultFlip;
+
+  const lowLimit = minBound !== undefined ? minBound : spotPrice * 0.92;
+  const highLimit = maxBound !== undefined ? maxBound : spotPrice * 1.08;
+
+  const corridor = gridStrikes.filter(s => s.strike >= lowLimit && s.strike <= highLimit);
+  const searchList = corridor.length >= 2 ? corridor : gridStrikes;
+
+  const crossings: number[] = [];
+  for (let i = 0; i < searchList.length - 1; i++) {
+    const s1 = searchList[i];
+    const s2 = searchList[i + 1];
+    if (Math.abs(s1.netGex) + Math.abs(s2.netGex) <= 1e-9) continue;
+
+    if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
+      const denom = s2.netGex - s1.netGex;
+      const root =
+        Math.abs(denom) > 1e-6
+          ? roundToDecimals(s1.strike + ((0 - s1.netGex) / denom) * (s2.strike - s1.strike), roundDecimals)
+          : roundToDecimals((s1.strike + s2.strike) / 2, roundDecimals);
+      crossings.push(root);
+    }
+  }
+
+  if (crossings.length > 0) {
+    crossings.sort((a, b) => Math.abs(a - spotPrice) - Math.abs(b - spotPrice));
+    return crossings[0];
+  }
+
+  // Fallback: median among grid strikes with minimum |netGex| in corridor
+  let minAbs = Infinity;
+  for (const s of searchList) {
+    const absVal = Math.abs(s.netGex);
+    if (absVal < minAbs) minAbs = absVal;
+  }
+  const minNetCandidates = searchList
+    .filter(s => Math.abs(s.netGex) <= minAbs + Math.max(1e-6, minAbs * 1e-4))
+    .sort((a, b) => a.strike - b.strike);
+
+  if (minNetCandidates.length > 0) {
+    const mid = Math.floor(minNetCandidates.length / 2);
+    return minNetCandidates[mid].strike;
+  }
+
+  return defaultFlip;
+}
+
+/**
+ * 3 & 5. GUARD ПЛОТНОСТИ КНИГИ И ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ:
+ * - Проверяет количество страйков с ненулевым OI с каждой стороны (Call OI и Put OI).
+ * - Если страйков с OI меньше 8 с любой стороны (< 8 calls или < 8 puts), выставляет lowConfidence: true.
+ * - Логирует количество страйков с OI по каждому источнику и горизонту при каждом fetch.
+ */
+export function evaluateOptionBookDensity(
+  strikes: GexStrikeData[],
+  asset: string,
+  horizon: ExpiryHorizon | string,
+  source: string
+): {
+  lowConfidence: boolean;
+  lowConfidenceReason?: string;
+  callOiStrikesCount: number;
+  putOiStrikesCount: number;
+  totalOiStrikesCount: number;
+} {
+  const safeStrikes = Array.isArray(strikes) ? strikes : [];
+  const callOiStrikesCount = safeStrikes.filter(s => (s.callOi || 0) > 0).length;
+  const putOiStrikesCount = safeStrikes.filter(s => (s.putOi || 0) > 0).length;
+  const totalOiStrikesCount = safeStrikes.filter(s => (s.callOi || 0) > 0 || (s.putOi || 0) > 0).length;
+
+  const lowConfidence = callOiStrikesCount < 8 || putOiStrikesCount < 8;
+  const lowConfidenceReason = lowConfidence
+    ? "Мало данных OI — уровни приблизительные"
+    : undefined;
+
+  console.log(
+    `[GEX Diagnostics] asset=${asset} | horizon=${horizon} | source="${source}" | strikesWithOI=${totalOiStrikesCount} (calls=${callOiStrikesCount}, puts=${putOiStrikesCount}) | lowConfidence=${lowConfidence}`
+  );
+
+  return {
+    lowConfidence,
+    lowConfidenceReason,
+    callOiStrikesCount,
+    putOiStrikesCount,
+    totalOiStrikesCount
+  };
+}
+
+/**
+ * 3. CALL/PUT WALL: Определение стен строго по пиковому открытому интересу (Open Interest),
+ * без смешивания разнородных метрик (без Volume, коэффициентов и сторонних бонусов).
+ */
+export function findCallAndPutWalls(
+  strikes: GexStrikeData[],
+  spotPrice: number,
+  fallbackStep: number,
+  roundDecimals = 0
+): { callWall: number; putWall: number } {
+  const safeSpot = Math.max(0.0001, spotPrice);
+
+  // Calls above spot, strictly sorted by Call Open Interest (descending)
+  const callsAbove = strikes
+    .filter(s => s.strike > safeSpot && (s.callOi || 0) > 0)
+    .sort((a, b) => (b.callOi - a.callOi) || (b.callGex - a.callGex));
+
+  // Puts below spot, strictly sorted by Put Open Interest (descending)
+  const putsBelow = strikes
+    .filter(s => s.strike < safeSpot && (s.putOi || 0) > 0)
+    .sort((a, b) => (b.putOi - a.putOi) || (Math.abs(b.putGex) - Math.abs(a.putGex)));
+
+  const callWall = callsAbove.length > 0
+    ? callsAbove[0].strike
+    : roundToDecimals(Math.ceil((safeSpot * 1.03) / fallbackStep) * fallbackStep, roundDecimals);
+
+  const putWall = putsBelow.length > 0
+    ? putsBelow[0].strike
+    : roundToDecimals(Math.floor((safeSpot * 0.97) / fallbackStep) * fallbackStep, roundDecimals);
+
+  return { callWall, putWall };
+}
+
+/**
+ * 8. КЭШИРОВАНИЕ: Promise-based кэш для полного устранения Race Conditions при одновременных запросах.
+ * Если запрос уже выполняется, все последующие вызовы подписываются на существующий Promise.
+ */
+const inFlightGexRequests = new Map<string, Promise<GexMarketReport>>();
+
+export function clearGexEngineCache(): void {
+  for (const k of Object.keys(gexCache)) {
+    delete gexCache[k];
+  }
+  inFlightGexRequests.clear();
+}
+
+export function fetchWithGexDeduplication(
+  cacheKey: string,
+  ttlMs: number,
+  fetchFn: () => Promise<GexMarketReport>
+): Promise<GexMarketReport> {
+  const now = Date.now();
+  const cached = gexCache[cacheKey];
+  if (cached && (now - cached.cachedAt) < ttlMs) {
+    return Promise.resolve(cached.data);
+  }
+
+  const existingInFlight = inFlightGexRequests.get(cacheKey);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const result = await fetchFn();
+      gexCache[cacheKey] = { data: result, cachedAt: Date.now() };
+      return result;
+    } finally {
+      inFlightGexRequests.delete(cacheKey);
+    }
+  })();
+
+  inFlightGexRequests.set(cacheKey, requestPromise);
+  return requestPromise;
 }
 
 // Helper to compute exact expiration date string with Moscow Time (handles weekends & session roll)
@@ -248,7 +761,7 @@ function parseDeribitInstrument(name: string, targetAsset?: string) {
 
 export type CryptoAssetSymbol = "BTC" | "ETH" | "SOL" | "XRP";
 
-const CRYPTO_ASSET_CONFIG: Record<
+export const CRYPTO_ASSET_CONFIG: Record<
   CryptoAssetSymbol,
   {
     defaultSpot: number;
@@ -256,12 +769,13 @@ const CRYPTO_ASSET_CONFIG: Record<
     baseIv: number;
     realizedVol: number;
     roundDecimals: number;
+    contractMultiplier: number; // Official Deribit contract multiplier (BTC=1, ETH=1, SOL_USDC=10, XRP_USDC=1000)
   }
 > = {
-  BTC: { defaultSpot: 84500, step: 500, baseIv: 52.0, realizedVol: 45.8, roundDecimals: 0 },
-  ETH: { defaultSpot: 2750, step: 50, baseIv: 58.0, realizedVol: 51.0, roundDecimals: 0 },
-  SOL: { defaultSpot: 185.0, step: 5, baseIv: 64.0, realizedVol: 55.5, roundDecimals: 2 },
-  XRP: { defaultSpot: 2.45, step: 0.05, baseIv: 68.0, realizedVol: 58.0, roundDecimals: 3 }
+  BTC: { defaultSpot: 84500, step: 500, baseIv: 52.0, realizedVol: 45.8, roundDecimals: 0, contractMultiplier: 1 },
+  ETH: { defaultSpot: 2750, step: 50, baseIv: 58.0, realizedVol: 51.0, roundDecimals: 0, contractMultiplier: 1 },
+  SOL: { defaultSpot: 185.0, step: 5, baseIv: 64.0, realizedVol: 55.5, roundDecimals: 2, contractMultiplier: 10 },
+  XRP: { defaultSpot: 2.45, step: 0.05, baseIv: 68.0, realizedVol: 58.0, roundDecimals: 3, contractMultiplier: 1000 }
 };
 
 function roundToDecimals(val: number, decimals: number): number {
@@ -318,11 +832,9 @@ function calculateSyntheticCryptoGex(
     const pVol = Math.round(pOi * 0.26);
 
     const { gamma } = calculateOptionGreeks(spotPrice, k, m.tYears, baseIv / 100, true);
-    const effCall = cOi + cVol * 0.35;
-    const effPut = pOi + pVol * 0.35;
-    const scaleDivisor = asset === "XRP" ? 1000 : asset === "SOL" ? 10000 : 1000000;
-    const cGex = (gamma * effCall * spotPrice * spotPrice * 0.01) / scaleDivisor;
-    const pGex = -(gamma * effPut * spotPrice * spotPrice * 0.01) / scaleDivisor;
+    // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure Open Interest, strictly NO volume mixing, scaled to $M)
+    const cGex = (gamma * cOi * cfg.contractMultiplier * spotPrice * 0.01) / 10_000;
+    const pGex = -(gamma * pOi * cfg.contractMultiplier * spotPrice * 0.01) / 10_000;
 
     strikes.push({
       strike: k,
@@ -343,34 +855,27 @@ function calculateSyntheticCryptoGex(
     totalPutVol += pVol;
   }
 
-  // Max Pain calculation
-  let maxPain = centerStrike;
-  let minPayout = Infinity;
-  for (const cand of strikes) {
-    let payout = 0;
-    for (const s of strikes) {
-      if (cand.strike > s.strike) payout += (cand.strike - s.strike) * s.callOi;
-      else if (cand.strike < s.strike) payout += (s.strike - cand.strike) * s.putOi;
-    }
-    if (payout < minPayout && payout > 0) {
-      minPayout = payout;
-      maxPain = cand.strike;
-    }
-  }
+  // 3. Call/Put Walls strictly sorted by peak Open Interest
+  const walls = findCallAndPutWalls(strikes, spotPrice, step, decimals);
+  callWall = walls.callWall;
+  putWall = walls.putWall;
 
-  // Zero-Flip calculation
-  let gammaFlip = centerStrike;
-  let minNetAbs = Infinity;
-  for (const s of strikes) {
-    if (Math.abs(s.strike - spotPrice) <= spotPrice * 0.05 && Math.abs(s.netGex) < minNetAbs) {
-      minNetAbs = Math.abs(s.netGex);
-      gammaFlip = s.strike;
-    }
-  }
+  // 2. Max Pain calculation strictly on Open Interest (on uniform strike grid within [putWall, callWall], no volume)
+  const { maxPain, maxPainRange } = computeMaxPainWithRange(strikes, centerStrike, step, decimals, putWall, callWall);
+
+  // Zero-Flip calculation on uniform strike grid
+  const gammaFlip = computeZeroGammaFlip(strikes, spotPrice, step, decimals, putWall, callWall);
+
+  const flipOutOfCorridor = gammaFlip < putWall || gammaFlip > callWall;
+  const painOutOfCorridor = maxPain < putWall || maxPain > callWall;
+  const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
 
   const totalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
   const expectedMovePct68 = (baseIv / 100) * Math.sqrt(Math.max(1 / 365, m.tYears));
   const expectedMovePct95 = expectedMovePct68 * 2.0;
+
+  // 6. Normalization metrics for cross-asset comparability
+  const { normalizedNetGex, gexIntensity } = computeGexNormalization(strikes, spotPrice);
 
   const horizonLabels: Record<ExpiryHorizon, string> = {
     DAY: "День (0DTE/Интрадей)",
@@ -379,14 +884,27 @@ function calculateSyntheticCryptoGex(
     ALL: "Все экспирации (Total GEX)"
   };
 
+  const sourceStr = `Deribit & Binance ${asset} Options (${horizonLabels[horizon]}) • Синтетическая модель (Резервный режим)`;
+  const density = evaluateOptionBookDensity(strikes, asset, horizon, sourceStr);
+
   return {
     asset,
     horizon,
     spotPrice: roundToDecimals(spotPrice, decimals === 0 ? 2 : decimals),
     timestamp: new Date().toISOString(),
     expirationDate: getHorizonExpirationDateString(horizon),
-    source: `Deribit & Binance ${asset} Options (${horizonLabels[horizon]}) • Синтетическая модель (Резервный режим)`,
+    source: sourceStr,
+    isSynthetic: true,
+    outOfCorridor,
+    flipOutOfCorridor,
+    painOutOfCorridor,
+    lowConfidence: density.lowConfidence,
+    lowConfidenceReason: density.lowConfidenceReason,
+    callOiStrikesCount: density.callOiStrikesCount,
+    putOiStrikesCount: density.putOiStrikesCount,
     netGexTotal: Math.round(totalNetGex * 100) / 100,
+    normalizedNetGex,
+    gexIntensity,
     netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
     regimeDescription:
       totalNetGex >= 0
@@ -396,6 +914,7 @@ function calculateSyntheticCryptoGex(
     callWall,
     putWall,
     maxPain,
+    maxPainRange,
     sleeperMagnet: roundToDecimals(Math.round((callWall * 1.04) / step) * step, decimals),
     expectedMove68: {
       low: roundToDecimals(spotPrice * (1 - expectedMovePct68), decimals === 0 ? 0 : decimals),
@@ -434,382 +953,320 @@ function calculateSyntheticCryptoGex(
 // -------------------------------------------------------------
 // 1. DERIBIT LIVE CRYPTO GEX (BTC, ETH, SOL, XRP) WITH HYBRID FALLBACK
 // -------------------------------------------------------------
-export async function calculateCryptoGex(
+export function calculateCryptoGex(
   asset: CryptoAssetSymbol,
   horizon: ExpiryHorizon = "WEEK"
 ): Promise<GexMarketReport> {
   const cacheKey = `${asset}_${horizon}`;
-  const now = Date.now();
-  if (gexCache[cacheKey] && now - gexCache[cacheKey].cachedAt < CACHE_TTL_MS) {
-    return gexCache[cacheKey].data;
-  }
 
-  const cfg = CRYPTO_ASSET_CONFIG[asset] || CRYPTO_ASSET_CONFIG.BTC;
-  const step = cfg.step;
-  const decimals = cfg.roundDecimals;
+  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+    const cfg = CRYPTO_ASSET_CONFIG[asset] || CRYPTO_ASSET_CONFIG.BTC;
+    const step = cfg.step;
+    const decimals = cfg.roundDecimals;
 
-  // 1. Fetch live spot price from Binance (with strict 3.0s timeout)
-  let spotPrice = cfg.defaultSpot;
-  try {
-    const spotRes = await fetchWithTimeout(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${asset}USDT`,
-      undefined,
-      3000
-    );
-    if (spotRes.ok) {
-      const spotJson = await spotRes.json();
-      const parsed = parseFloat(spotJson.price);
-      if (parsed > 0) spotPrice = parsed;
+    // 1. Fetch live spot price from Binance (with strict 3.0s timeout)
+    let spotPrice = cfg.defaultSpot;
+    try {
+      const spotRes = await fetchWithTimeout(
+        `https://api.binance.com/api/v3/ticker/price?symbol=${asset}USDT`,
+        undefined,
+        3000
+      );
+      if (spotRes.ok) {
+        const spotJson = await spotRes.json();
+        const parsed = parseFloat(spotJson.price);
+        if (parsed > 0) spotPrice = parsed;
+      }
+    } catch (err: any) {
+      console.warn(`[GEX Engine] Notice fetching spot ${asset}USDT: ${err.message}`);
     }
-  } catch (err: any) {
-    console.warn(`[GEX Engine] Notice fetching spot ${asset}USDT: ${err.message}`);
-  }
 
-  // 2. Fetch real option chain from Deribit public REST API (with strict 3.2s timeout)
-  let rawList: any[] = [];
-  try {
-    const primaryUrl = `https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=${asset}&kind=option`;
-    const res = await fetchWithTimeout(primaryUrl, undefined, 3200);
-    if (res.ok) {
-      const json = await res.json();
-      if (Array.isArray(json?.result) && json.result.length > 0) {
-        rawList = json.result;
+    // 2. Fetch real option chain from Deribit public REST API (with strict 3.2s timeout)
+    let rawList: any[] = [];
+    try {
+      const primaryUrl = `https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=${asset}&kind=option`;
+      const res = await fetchWithTimeout(primaryUrl, undefined, 3200);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json?.result) && json.result.length > 0) {
+          rawList = json.result;
+        }
+      }
+
+      // For SOL and XRP, Deribit also hosts linear USDC-settled options under currency=USDC (e.g. SOL_USDC-..., XRP_USDC-...)
+      if (rawList.length === 0 && (asset === "SOL" || asset === "XRP")) {
+        const usdcUrl = `https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=USDC&kind=option`;
+        const usdcRes = await fetchWithTimeout(usdcUrl, undefined, 3200);
+        if (usdcRes.ok) {
+          const usdcJson = await usdcRes.json();
+          const allUsdc: any[] = Array.isArray(usdcJson?.result) ? usdcJson.result : [];
+          rawList = allUsdc.filter(item => {
+            const inst = String(item?.instrument_name || "").toUpperCase();
+            return inst.startsWith(`${asset}_USDC-`) || inst.startsWith(`${asset}-`);
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[GEX Engine] Deribit live API notice for ${asset}: ${err.message}`);
+    }
+
+    // If Deribit returned a live underlying_price and Binance spot wasn't updated, sync spotPrice
+    if (rawList.length > 0 && spotPrice === cfg.defaultSpot) {
+      const liveUnd = parseFloat(rawList[0]?.underlying_price);
+      if (liveUnd > 0) spotPrice = liveUnd;
+    }
+
+    // Parse and separate by DTE (days to expiration)
+    const parsedItems: {
+      item: any;
+      info: NonNullable<ReturnType<typeof parseDeribitInstrument>>;
+    }[] = [];
+
+    for (const it of rawList) {
+      const info = parseDeribitInstrument(it.instrument_name, asset);
+      if (info && info.dte >= -0.05) {
+        parsedItems.push({ item: it, info });
       }
     }
 
-    // For SOL and XRP, Deribit also hosts linear USDC-settled options under currency=USDC (e.g. SOL_USDC-..., XRP_USDC-...)
-    if (rawList.length === 0 && (asset === "SOL" || asset === "XRP")) {
-      const usdcUrl = `https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=USDC&kind=option`;
-      const usdcRes = await fetchWithTimeout(usdcUrl, undefined, 3200);
-      if (usdcRes.ok) {
-        const usdcJson = await usdcRes.json();
-        const allUsdc: any[] = Array.isArray(usdcJson?.result) ? usdcJson.result : [];
-        rawList = allUsdc.filter(item => {
-          const inst = String(item?.instrument_name || "").toUpperCase();
-          return inst.startsWith(`${asset}_USDC-`) || inst.startsWith(`${asset}-`);
+    // Filter strictly by the requested horizon DTE
+    let filteredItems: typeof parsedItems = [];
+    let medianT = 7 / 365;
+
+    if (parsedItems.length > 0) {
+      const positiveDtes = parsedItems.map(p => p.info.dte).filter(d => d >= 0).sort((a, b) => a - b);
+      const minDte = positiveDtes[0] ?? 0.5;
+
+      if (horizon === "DAY") {
+        filteredItems = parsedItems.filter(p => p.info.dte <= 1.5);
+        if (filteredItems.length < 6) {
+          filteredItems = parsedItems.filter(p => p.info.dte <= minDte + 0.6);
+        }
+        medianT = 1 / 365;
+      } else if (horizon === "WEEK") {
+        const weekSlice = parsedItems.filter(p => p.info.dte > 1.2 && p.info.dte <= 8.5);
+        filteredItems = weekSlice.length >= 6 ? weekSlice : parsedItems.filter(p => p.info.dte <= 8.5);
+        medianT = 5 / 365;
+      } else if (horizon === "MONTH") {
+        const monthSlice = parsedItems.filter(p => p.info.dte > 7.0 && p.info.dte <= 38.0);
+        filteredItems = monthSlice.length >= 6 ? monthSlice : parsedItems.filter(p => p.info.dte > 5.0 && p.info.dte <= 45.0);
+        medianT = 26 / 365;
+      } else {
+        filteredItems = parsedItems;
+        medianT = 60 / 365;
+      }
+
+      if (filteredItems.length < 4 && parsedItems.length >= 4) {
+        filteredItems = parsedItems;
+      }
+    }
+
+    const strikeMap = new Map<number, GexStrikeData>();
+    let totalCallOi = 0;
+    let totalPutOi = 0;
+    let totalCallVol = 0;
+    let totalPutVol = 0;
+    let totalWeightedIv = 0;
+    let totalIvWeight = 0;
+    const anomalies: GexMarketReport["oiAnomalies"] = [];
+
+    for (const { item, info } of filteredItems) {
+      const { strike: rawStrike, isCall, dte } = info;
+      const strike = roundToDecimals(rawStrike, decimals);
+      const oi = Math.max(0, parseFloat(item.open_interest) || 0);
+      const vol = Math.max(0, parseFloat(item.volume) || 0);
+      const markIv = (parseFloat(item.mark_iv) || cfg.baseIv) / 100;
+
+      if (oi <= 0 && vol <= 0) continue;
+
+      const tYears = Math.max(1 / 365, dte / 365);
+      const { gamma } = calculateOptionGreeks(spotPrice, strike, tYears, markIv, isCall);
+
+      // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure Open Interest, strictly NO volume mixing, scaled to $M)
+      const dollarGamma = (gamma * oi * cfg.contractMultiplier * spotPrice * 0.01) / 10_000;
+
+      let row = strikeMap.get(strike);
+      if (!row) {
+        row = {
+          strike,
+          callGex: 0,
+          putGex: 0,
+          netGex: 0,
+          callOi: 0,
+          putOi: 0,
+          totalOi: 0,
+          callVolume: 0,
+          putVolume: 0,
+          iv: markIv
+        };
+        strikeMap.set(strike, row);
+      }
+
+      if (isCall) {
+        row.callGex = Math.round((row.callGex + dollarGamma) * 100) / 100;
+        row.callOi += Math.round(oi);
+        row.callVolume += Math.round(vol);
+        totalCallOi += Math.round(oi);
+        totalCallVol += Math.round(vol);
+      } else {
+        row.putGex = Math.round((row.putGex - dollarGamma) * 100) / 100;
+        row.putOi += Math.round(oi);
+        row.putVolume += Math.round(vol);
+        totalPutOi += Math.round(oi);
+        totalPutVol += Math.round(vol);
+      }
+
+      row.netGex = Math.round((row.callGex + row.putGex) * 100) / 100;
+      row.totalOi = row.callOi + row.putOi;
+
+      totalWeightedIv += markIv * Math.max(1, oi);
+      totalIvWeight += Math.max(1, oi);
+
+      if (vol > 50 && oi > 10 && vol / oi > 2.2) {
+        anomalies.push({
+          strike,
+          type: isCall ? "CALL" : "PUT",
+          volume: Math.round(vol),
+          oi: Math.round(oi),
+          ratio: Math.round((vol / oi) * 10) / 10,
+          severity: vol / oi > 4.0 ? "HIGH" : "MEDIUM"
         });
       }
     }
-  } catch (err: any) {
-    console.warn(`[GEX Engine] Deribit live API notice for ${asset}: ${err.message}`);
-  }
 
-  // If Deribit returned a live underlying_price and Binance spot wasn't updated, sync spotPrice
-  if (rawList.length > 0 && spotPrice === cfg.defaultSpot) {
-    const liveUnd = parseFloat(rawList[0]?.underlying_price);
-    if (liveUnd > 0) spotPrice = liveUnd;
-  }
-
-  // Parse and separate by DTE (days to expiration)
-  const parsedItems: {
-    item: any;
-    info: NonNullable<ReturnType<typeof parseDeribitInstrument>>;
-  }[] = [];
-
-  for (const it of rawList) {
-    const info = parseDeribitInstrument(it.instrument_name, asset);
-    if (info && info.dte >= -0.05) {
-      parsedItems.push({ item: it, info });
-    }
-  }
-
-  // Filter strictly by the requested horizon DTE
-  let filteredItems: typeof parsedItems = [];
-  let medianT = 7 / 365;
-
-  if (parsedItems.length > 0) {
-    const positiveDtes = parsedItems.map(p => p.info.dte).filter(d => d >= 0).sort((a, b) => a - b);
-    const minDte = positiveDtes[0] ?? 0.5;
-
-    if (horizon === "DAY") {
-      filteredItems = parsedItems.filter(p => p.info.dte <= 1.5);
-      if (filteredItems.length < 6) {
-        filteredItems = parsedItems.filter(p => p.info.dte <= minDte + 0.6);
-      }
-      medianT = 1 / 365;
-    } else if (horizon === "WEEK") {
-      const weekSlice = parsedItems.filter(p => p.info.dte > 1.2 && p.info.dte <= 8.5);
-      filteredItems = weekSlice.length >= 6 ? weekSlice : parsedItems.filter(p => p.info.dte <= 8.5);
-      medianT = 5 / 365;
-    } else if (horizon === "MONTH") {
-      const monthSlice = parsedItems.filter(p => p.info.dte > 7.0 && p.info.dte <= 38.0);
-      filteredItems = monthSlice.length >= 6 ? monthSlice : parsedItems.filter(p => p.info.dte > 5.0 && p.info.dte <= 45.0);
-      medianT = 26 / 365;
-    } else {
-      filteredItems = parsedItems;
-      medianT = 60 / 365;
+    // FALLBACK CHECK: If Deribit API timed out, was unreachable, or returned < 4 option strikes,
+    // gracefully return the spot-anchored mathematical simulation so the UI never breaks.
+    if (strikeMap.size < 4 || totalCallOi + totalPutOi <= 0) {
+      console.warn(
+        `[GEX Engine] Deribit real options unavailable or sparse for ${asset} (${horizon}, strikes=${strikeMap.size}). Falling back to mathematical model.`
+      );
+      return calculateSyntheticCryptoGex(asset, horizon, spotPrice);
     }
 
-    // If horizon slice was still sparse but Deribit returned options across expiries, use all available contracts
-    if (filteredItems.length < 4 && parsedItems.length >= 4) {
-      filteredItems = parsedItems;
-    }
-  }
+    // 3. Process REAL Deribit Strikes
+    // Walls determined strictly by peak Open Interest (findCallAndPutWalls)
+    const { callWall, putWall } = findCallAndPutWalls(Array.from(strikeMap.values()), spotPrice, step, decimals);
 
-  const strikeMap = new Map<number, GexStrikeData>();
-  let totalCallOi = 0;
-  let totalPutOi = 0;
-  let totalCallVol = 0;
-  let totalPutVol = 0;
-  let totalWeightedIv = 0;
-  let totalIvWeight = 0;
-  const anomalies: GexMarketReport["oiAnomalies"] = [];
+    // Center strikes symmetrically around spot
+    const allStrikes = Array.from(strikeMap.values()).sort((a, b) => a.strike - b.strike);
+    const belowStrikes = allStrikes.filter(s => s.strike < spotPrice).slice(-18);
+    const aboveStrikes = allStrikes.filter(s => s.strike >= spotPrice).slice(0, 18);
 
-  for (const { item, info } of filteredItems) {
-    const { strike: rawStrike, isCall, dte } = info;
-    const strike = roundToDecimals(rawStrike, decimals);
-    const oi = parseFloat(item.open_interest) || 0;
-    const vol = parseFloat(item.volume) || 0;
-    const markIv = (parseFloat(item.mark_iv) || cfg.baseIv) / 100;
+    const strikeSet = new Map<number, GexStrikeData>();
+    [...belowStrikes, ...aboveStrikes].forEach(s => strikeSet.set(s.strike, s));
+    if (strikeMap.has(callWall)) strikeSet.set(callWall, strikeMap.get(callWall)!);
+    if (strikeMap.has(putWall)) strikeSet.set(putWall, strikeMap.get(putWall)!);
 
-    if (oi <= 0 && vol <= 0) continue;
+    const filteredStrikes = Array.from(strikeSet.values()).sort((a, b) => b.strike - a.strike);
 
-    const tYears = Math.max(1 / 365, dte / 365);
-    const { gamma } = calculateOptionGreeks(spotPrice, strike, tYears, markIv, isCall);
-    // Weight GEX by Open Interest + 35% Intraday Volume Flow
-    const effectivePosition = oi + vol * 0.35;
-    const scaleDivisor = asset === "XRP" ? 1000 : asset === "SOL" ? 10000 : 1000000;
-    const dollarGamma = (gamma * effectivePosition * spotPrice * spotPrice * 0.01) / scaleDivisor;
+    // Zero-Flip on uniform strike grid (eliminates sticking to sparse cluster edges)
+    const gammaFlip = computeZeroGammaFlip(filteredStrikes, spotPrice, step, decimals, putWall, callWall);
 
-    let row = strikeMap.get(strike);
-    if (!row) {
-      row = {
-        strike,
-        callGex: 0,
-        putGex: 0,
-        netGex: 0,
-        callOi: 0,
-        putOi: 0,
-        totalOi: 0,
-        callVolume: 0,
-        putVolume: 0,
-        iv: markIv
-      };
-      strikeMap.set(strike, row);
-    }
+    const totalNetGex = filteredStrikes.reduce((acc, s) => acc + s.netGex, 0);
 
-    if (isCall) {
-      row.callGex = Math.round((row.callGex + dollarGamma) * 100) / 100;
-      row.callOi += Math.round(oi);
-      row.callVolume += Math.round(vol);
-      totalCallOi += Math.round(oi);
-      totalCallVol += Math.round(vol);
-    } else {
-      row.putGex = Math.round((row.putGex - dollarGamma) * 100) / 100;
-      row.putOi += Math.round(oi);
-      row.putVolume += Math.round(vol);
-      totalPutOi += Math.round(oi);
-      totalPutVol += Math.round(vol);
-    }
-
-    row.netGex = Math.round((row.callGex + row.putGex) * 100) / 100;
-    row.totalOi = row.callOi + row.putOi;
-
-    totalWeightedIv += markIv * Math.max(1, oi);
-    totalIvWeight += Math.max(1, oi);
-
-    if (vol > 50 && oi > 10 && vol / oi > 2.2) {
-      anomalies.push({
-        strike,
-        type: isCall ? "CALL" : "PUT",
-        volume: Math.round(vol),
-        oi: Math.round(oi),
-        ratio: Math.round((vol / oi) * 10) / 10,
-        severity: vol / oi > 4.0 ? "HIGH" : "MEDIUM"
-      });
-    }
-  }
-
-  // FALLBACK CHECK: If Deribit API timed out, was unreachable, or returned < 4 option strikes,
-  // gracefully return the spot-anchored mathematical simulation so the UI never breaks.
-  if (strikeMap.size < 4 || totalCallOi + totalPutOi <= 0) {
-    console.warn(
-      `[GEX Engine] Deribit real options unavailable or sparse for ${asset} (${horizon}, strikes=${strikeMap.size}). Falling back to mathematical model.`
+    // 2. Max Pain calculation strictly on Open Interest on uniform strike grid (no volume)
+    const { maxPain, maxPainRange } = computeMaxPainWithRange(
+      filteredStrikes,
+      roundToDecimals(Math.round(spotPrice / step) * step, decimals),
+      step,
+      decimals,
+      putWall,
+      callWall
     );
-    const fallbackReport = calculateSyntheticCryptoGex(asset, horizon, spotPrice);
-    gexCache[cacheKey] = { data: fallbackReport, cachedAt: now };
-    return fallbackReport;
-  }
 
-  // 3. Process REAL Deribit Strikes
-  const callMinOffset = horizon === "DAY" ? 1.001 : horizon === "WEEK" ? 1.01 : 1.02;
-  const callMaxOffset = horizon === "DAY" ? 1.08 : horizon === "WEEK" ? 1.18 : 1.35;
-  const putMinOffset = horizon === "DAY" ? 0.92 : horizon === "WEEK" ? 0.82 : 0.65;
-  const putMaxOffset = horizon === "DAY" ? 0.999 : horizon === "WEEK" ? 0.99 : 0.98;
+    const flipOutOfCorridor = gammaFlip < putWall || gammaFlip > callWall;
+    const painOutOfCorridor = maxPain < putWall || maxPain > callWall;
+    const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
 
-  const callsAboveSpot = Array.from(strikeMap.values()).filter(
-    s => s.strike > spotPrice && s.strike >= spotPrice * callMinOffset && s.strike <= spotPrice * callMaxOffset && (s.callOi > 0 || s.callGex > 0)
-  );
-  const putsBelowSpot = Array.from(strikeMap.values()).filter(
-    s => s.strike < spotPrice && s.strike <= spotPrice * putMaxOffset && s.strike >= spotPrice * putMinOffset && (s.putOi > 0 || s.putGex !== 0)
-  );
+    // 6. GEX Normalization metrics
+    const { normalizedNetGex, gexIntensity } = computeGexNormalization(filteredStrikes, spotPrice);
 
-  const wallMultipliers = {
-    DAY: { call: 1.020, put: 0.980 },
-    WEEK: { call: 1.055, put: 0.945 },
-    MONTH: { call: 1.140, put: 0.860 },
-    ALL: { call: 1.250, put: 0.750 }
-  };
-  const m = wallMultipliers[horizon] || wallMultipliers.WEEK;
+    const avgIv = totalIvWeight > 0 ? (totalWeightedIv / totalIvWeight) * 100 : cfg.baseIv;
+    const expectedMovePct68 = (avgIv / 100) * Math.sqrt(Math.max(1 / 365, medianT));
+    const expectedMovePct95 = expectedMovePct68 * 2.0;
 
-  let callWall = roundToDecimals(Math.round((spotPrice * m.call) / step) * step, decimals);
-  let maxCallStrength = -Infinity;
-  for (const s of callsAboveSpot) {
-    const strength = s.callGex * 5000 + s.callOi + s.callVolume * 0.5;
-    if (strength > maxCallStrength) {
-      maxCallStrength = strength;
-      callWall = s.strike;
-    }
-  }
+    const horizonLabels: Record<ExpiryHorizon, string> = {
+      DAY: "День (0DTE/Интрадей)",
+      WEEK: "Неделя (Пятничная серия)",
+      MONTH: "Месяц (Месячная серия)",
+      ALL: "Все экспирации (Total GEX)"
+    };
 
-  let putWall = roundToDecimals(Math.round((spotPrice * m.put) / step) * step, decimals);
-  let maxPutStrength = -Infinity;
-  for (const s of putsBelowSpot) {
-    const strength = Math.abs(s.putGex) * 5000 + s.putOi + s.putVolume * 0.5;
-    if (strength > maxPutStrength) {
-      maxPutStrength = strength;
-      putWall = s.strike;
-    }
-  }
+    const liveDateStr = filteredItems[0]?.info?.dateStr;
+    const exactExpirationDate = liveDateStr
+      ? `${liveDateStr}, 11:00 MSK (${horizon === "DAY" ? "0DTE" : horizon === "WEEK" ? "Неделя" : "Месяц"})`
+      : getHorizonExpirationDateString(horizon);
 
-  if (callWall <= spotPrice) callWall = roundToDecimals(Math.round((spotPrice * m.call) / step) * step, decimals);
-  if (putWall >= spotPrice) putWall = roundToDecimals(Math.round((spotPrice * m.put) / step) * step, decimals);
+    const sourceStr = `Deribit Real Options API (${asset} ${horizonLabels[horizon]}) + Binance Spot Orderbook`;
+    const density = evaluateOptionBookDensity(filteredStrikes, asset, horizon, sourceStr);
 
-  // Center strikes symmetrically around spot
-  const allStrikes = Array.from(strikeMap.values()).sort((a, b) => a.strike - b.strike);
-  const belowStrikes = allStrikes.filter(s => s.strike < spotPrice).slice(-18);
-  const aboveStrikes = allStrikes.filter(s => s.strike >= spotPrice).slice(0, 18);
+    const report: GexMarketReport = {
+      asset,
+      horizon,
+      spotPrice: roundToDecimals(spotPrice, decimals === 0 ? 2 : decimals),
+      timestamp: new Date().toISOString(),
+      expirationDate: exactExpirationDate,
+      source: sourceStr,
+      isSynthetic: false,
+      outOfCorridor,
+      flipOutOfCorridor,
+      painOutOfCorridor,
+      lowConfidence: density.lowConfidence,
+      lowConfidenceReason: density.lowConfidenceReason,
+      callOiStrikesCount: density.callOiStrikesCount,
+      putOiStrikesCount: density.putOiStrikesCount,
+      netGexTotal: Math.round(totalNetGex * 100) / 100,
+      normalizedNetGex,
+      gexIntensity,
+      netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
+      regimeDescription:
+        totalNetGex >= 0
+          ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Маркетмейкеры гасят волатильность между $${putWall} и $${callWall}.`
+          : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Риск резкого выхода из диапазона.`,
+      gammaFlip,
+      callWall,
+      putWall,
+      maxPain,
+      maxPainRange,
+      sleeperMagnet: roundToDecimals(Math.round((callWall * 1.05) / step) * step, decimals),
+      expectedMove68: {
+        low: roundToDecimals(spotPrice * (1 - expectedMovePct68), decimals === 0 ? 0 : decimals),
+        high: roundToDecimals(spotPrice * (1 + expectedMovePct68), decimals === 0 ? 0 : decimals),
+        rangePct: Math.round(expectedMovePct68 * 1000) / 10
+      },
+      expectedMove95: {
+        low: roundToDecimals(spotPrice * (1 - expectedMovePct95), decimals === 0 ? 0 : decimals),
+        high: roundToDecimals(spotPrice * (1 + expectedMovePct95), decimals === 0 ? 0 : decimals),
+        rangePct: Math.round(expectedMovePct95 * 1000) / 10
+      },
+      dealerGreeks: {
+        charm: Math.round((totalCallOi - totalPutOi) * 0.015 * 10) / 10,
+        vanna: Math.round(totalNetGex * 0.12 * 100) / 100,
+        aggregateDelta: Math.round(totalCallOi * 0.5 - totalPutOi * 0.5)
+      },
+      pcrOi: totalCallOi > 0 ? Math.round((totalPutOi / totalCallOi) * 100) / 100 : 0.85,
+      pcrVol: totalCallVol > 0 ? Math.round((totalPutVol / totalCallVol) * 100) / 100 : 0.92,
+      impliedVolAvg: Math.round(avgIv * 10) / 10,
+      realizedVol30d: Math.round(avgIv * 0.88 * 10) / 10,
+      volSpreadIvRv: Math.round((avgIv - avgIv * 0.88) * 10) / 10,
+      strikes: filteredStrikes,
+      oiAnomalies:
+        anomalies.length > 0
+          ? anomalies.slice(0, 8)
+          : [
+              {
+                strike: callWall,
+                type: "CALL",
+                volume: strikeMap.get(callWall)?.callVolume || 1200,
+                oi: strikeMap.get(callWall)?.callOi || 4500,
+                ratio: 2.1,
+                severity: "MEDIUM"
+              }
+            ]
+    };
 
-  const strikeSet = new Map<number, GexStrikeData>();
-  [...belowStrikes, ...aboveStrikes].forEach(s => strikeSet.set(s.strike, s));
-  if (strikeMap.has(callWall)) strikeSet.set(callWall, strikeMap.get(callWall)!);
-  if (strikeMap.has(putWall)) strikeSet.set(putWall, strikeMap.get(putWall)!);
-
-  const filteredStrikes = Array.from(strikeSet.values()).sort((a, b) => b.strike - a.strike);
-
-  // Zero-Flip: linear interpolation of zero-crossing near spot, or minimum |netGex|
-  const sortedAsc = filteredStrikes.slice().sort((a, b) => a.strike - b.strike);
-  let gammaFlip = roundToDecimals(Math.round(spotPrice / step) * step, decimals);
-  let foundCross = false;
-  for (let i = 0; i < sortedAsc.length - 1; i++) {
-    const s1 = sortedAsc[i];
-    const s2 = sortedAsc[i + 1];
-    if (Math.abs(s1.strike - spotPrice) > spotPrice * 0.08) continue;
-    if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
-      const denom = s2.netGex - s1.netGex;
-      if (Math.abs(denom) > 0.0001) {
-        gammaFlip = roundToDecimals(s1.strike + ((0 - s1.netGex) / denom) * (s2.strike - s1.strike), decimals);
-      } else {
-        gammaFlip = s1.strike;
-      }
-      foundCross = true;
-      break;
-    }
-  }
-  if (!foundCross) {
-    let minDiff = Infinity;
-    for (const s of filteredStrikes) {
-      if (Math.abs(s.strike - spotPrice) <= spotPrice * 0.08 && Math.abs(s.netGex) < minDiff) {
-        minDiff = Math.abs(s.netGex);
-        gammaFlip = s.strike;
-      }
-    }
-  }
-
-  const totalNetGex = filteredStrikes.reduce((acc, s) => acc + s.netGex, 0);
-
-  // Calculate Max Pain for THIS slice (weighted by OI + 25% Volume)
-  let maxPain = roundToDecimals(Math.round(spotPrice / step) * step, decimals);
-  let minTotalPayout = Infinity;
-  for (const candidate of filteredStrikes) {
-    let payout = 0;
-    for (const s of filteredStrikes) {
-      const cWeight = s.callOi + s.callVolume * 0.25;
-      const pWeight = s.putOi + s.putVolume * 0.25;
-      if (candidate.strike > s.strike) {
-        payout += (candidate.strike - s.strike) * cWeight;
-      } else if (candidate.strike < s.strike) {
-        payout += (s.strike - candidate.strike) * pWeight;
-      }
-    }
-    if (payout < minTotalPayout && payout > 0) {
-      minTotalPayout = payout;
-      maxPain = candidate.strike;
-    }
-  }
-
-  const avgIv = totalIvWeight > 0 ? (totalWeightedIv / totalIvWeight) * 100 : cfg.baseIv;
-  const expectedMovePct68 = (avgIv / 100) * Math.sqrt(Math.max(1 / 365, medianT));
-  const expectedMovePct95 = expectedMovePct68 * 2.0;
-
-  const horizonLabels: Record<ExpiryHorizon, string> = {
-    DAY: "День (0DTE/Интрадей)",
-    WEEK: "Неделя (Пятничная серия)",
-    MONTH: "Месяц (Месячная серия)",
-    ALL: "Все экспирации (Total GEX)"
-  };
-
-  const liveDateStr = filteredItems[0]?.info?.dateStr;
-  const exactExpirationDate = liveDateStr
-    ? `${liveDateStr}, 11:00 MSK (${horizon === "DAY" ? "0DTE" : horizon === "WEEK" ? "Неделя" : "Месяц"})`
-    : getHorizonExpirationDateString(horizon);
-
-  const report: GexMarketReport = {
-    asset,
-    horizon,
-    spotPrice: roundToDecimals(spotPrice, decimals === 0 ? 2 : decimals),
-    timestamp: new Date().toISOString(),
-    expirationDate: exactExpirationDate,
-    source: `Deribit Real Options API (${asset} ${horizonLabels[horizon]}) + Binance Spot Orderbook`,
-    netGexTotal: Math.round(totalNetGex * 100) / 100,
-    netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
-    regimeDescription:
-      totalNetGex >= 0
-        ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Маркетмейкеры гасят волатильность между $${putWall} и $${callWall}.`
-        : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Риск резкого выхода из диапазона.`,
-    gammaFlip,
-    callWall,
-    putWall,
-    maxPain,
-    sleeperMagnet: roundToDecimals(Math.round((callWall * 1.05) / step) * step, decimals),
-    expectedMove68: {
-      low: roundToDecimals(spotPrice * (1 - expectedMovePct68), decimals === 0 ? 0 : decimals),
-      high: roundToDecimals(spotPrice * (1 + expectedMovePct68), decimals === 0 ? 0 : decimals),
-      rangePct: Math.round(expectedMovePct68 * 1000) / 10
-    },
-    expectedMove95: {
-      low: roundToDecimals(spotPrice * (1 - expectedMovePct95), decimals === 0 ? 0 : decimals),
-      high: roundToDecimals(spotPrice * (1 + expectedMovePct95), decimals === 0 ? 0 : decimals),
-      rangePct: Math.round(expectedMovePct95 * 1000) / 10
-    },
-    dealerGreeks: {
-      charm: Math.round((totalCallOi - totalPutOi) * 0.015 * 10) / 10,
-      vanna: Math.round(totalNetGex * 0.12 * 100) / 100,
-      aggregateDelta: Math.round(totalCallOi * 0.5 - totalPutOi * 0.5)
-    },
-    pcrOi: totalCallOi > 0 ? Math.round((totalPutOi / totalCallOi) * 100) / 100 : 0.85,
-    pcrVol: totalCallVol > 0 ? Math.round((totalPutVol / totalCallVol) * 100) / 100 : 0.92,
-    impliedVolAvg: Math.round(avgIv * 10) / 10,
-    realizedVol30d: Math.round(avgIv * 0.88 * 10) / 10,
-    volSpreadIvRv: Math.round((avgIv - avgIv * 0.88) * 10) / 10,
-    strikes: filteredStrikes,
-    oiAnomalies:
-      anomalies.length > 0
-        ? anomalies.slice(0, 8)
-        : [
-            {
-              strike: callWall,
-              type: "CALL",
-              volume: strikeMap.get(callWall)?.callVolume || 1200,
-              oi: strikeMap.get(callWall)?.callOi || 4500,
-              ratio: 2.1,
-              severity: "MEDIUM"
-            }
-          ]
-  };
-
-  gexCache[cacheKey] = { data: report, cachedAt: now };
-  return report;
+    return report;
+  });
 }
 
 // -------------------------------------------------------------
@@ -832,11 +1289,36 @@ const REAL_BROWSER_HEADERS: Record<string, string> = {
   "Sec-Fetch-User": "?1"
 };
 
+const OPTION_DATA_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour freshness threshold
+const YAHOO_SESSION_TTL_MS = 30 * 60 * 1000;   // 30 minutes Yahoo crumb session cache TTL
+
+export function parseOptionChainTimestampMs(rawTs: unknown): number | null {
+  if (!rawTs) return null;
+  if (typeof rawTs === "number" && isFinite(rawTs) && rawTs > 0) {
+    // Distinguish Unix seconds vs milliseconds
+    return rawTs < 10_000_000_000 ? rawTs * 1000 : rawTs;
+  }
+  if (typeof rawTs === "string") {
+    const trimmed = rawTs.trim();
+    if (!trimmed) return null;
+    const asNum = Number(trimmed);
+    if (!isNaN(asNum) && asNum > 0) {
+      return asNum < 10_000_000_000 ? asNum * 1000 : asNum;
+    }
+    const parsed = Date.parse(trimmed.includes("T") ? trimmed : `${trimmed.replace(" ", "T")}Z`);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+export function isOptionTimestampStale(timestampMs: number | null | undefined, nowMs = Date.now()): boolean {
+  if (!timestampMs || !isFinite(timestampMs) || timestampMs <= 0) return true;
+  return (nowMs - timestampMs) > OPTION_DATA_MAX_AGE_MS;
+}
+
 // ============================================================================
-// 🏛️ SOURCE 1: CBOE (CHICAGO BOARD OPTIONS EXCHANGE) INSTITUTIONAL OPTIONS
+// 🏛️ SOURCE 1: DELAYED GLD ETF OPTIONS FEED (YAHOO / DELAYED QUOTES CDN)
 // ============================================================================
-// Provides 7,000+ real institutional option contracts with open interest and Greeks
-// Directly accessible, reliable, with zero Cloudflare or rate-limit friction.
 async function fetchCboeGoldOptionChain(
   horizon: ExpiryHorizon,
   spotPrice: number
@@ -845,6 +1327,8 @@ async function fetchCboeGoldOptionChain(
   sourceName: string;
   expirationDateStr: string;
   tYears: number;
+  dataTimestampMs: number | null;
+  isStale: boolean;
 } | null> {
   try {
     let cboeRes: Response | null = null;
@@ -861,7 +1345,7 @@ async function fetchCboeGoldOptionChain(
         });
 
         if (cboeRes.status === 429 || cboeRes.status === 503) {
-          console.warn(`[PM2 GEX Engine] CBOE API returned HTTP ${cboeRes.status} on attempt ${attempt}/3`);
+          console.warn(`[PM2 GEX Engine] GLD delayed options API returned HTTP ${cboeRes.status} on attempt ${attempt}/3`);
           if (attempt < 3) {
             await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
             continue;
@@ -869,7 +1353,7 @@ async function fetchCboeGoldOptionChain(
         }
         break;
       } catch (err: any) {
-        console.warn(`[PM2 GEX Engine] CBOE fetch error on attempt ${attempt}/3:`, err.message);
+        console.warn(`[PM2 GEX Engine] GLD delayed options fetch error on attempt ${attempt}/3:`, err.message);
         if (attempt < 3) {
           await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
         }
@@ -877,7 +1361,7 @@ async function fetchCboeGoldOptionChain(
     }
 
     if (!cboeRes || !cboeRes.ok) {
-      console.warn(`[PM2 GEX Engine] CBOE API returned status ${cboeRes?.status || "network failure"} after 3 attempts`);
+      console.warn(`[PM2 GEX Engine] GLD delayed options API returned status ${cboeRes?.status || "network failure"} after 3 attempts`);
       return null;
     }
 
@@ -885,6 +1369,16 @@ async function fetchCboeGoldOptionChain(
     const gldSpot = Number(json.data?.current_price) || 371.6;
     const options: any[] = json.data?.options || [];
     if (options.length === 0) return null;
+
+    // Extract option feed timestamp and check 1-hour freshness
+    const rawFeedTs =
+      json.timestamp ||
+      json.data?.timestamp ||
+      json.data?.last_trade_time ||
+      options[0]?.last_trade_time ||
+      null;
+    const dataTimestampMs = parseOptionChainTimestampMs(rawFeedTs);
+    const isStale = isOptionTimestampStale(dataTimestampMs);
 
     // Quantize reference spot to $20 institutional clearing grid so GLD->XAUUSD strike mapping
     // is 100% deterministic across servers and does not shift on intraday $1-$15 ticks
@@ -920,8 +1414,8 @@ async function fetchCboeGoldOptionChain(
     const activeDates = dates.filter(d => (expOiMap.get(d) || 0) >= 5000);
     const candidateDates = activeDates.length > 0 ? activeDates : dates;
 
-    // Anchor relative days to the front active expiration (immune to any server clock drift)
-    const frontDate = candidateDates.find(d => (expOiMap.get(d) || 0) >= 50000) || candidateDates[0];
+    // Anchor relative days to the front active expiration (0DTE / nearest active series with >=5,000 OI)
+    const frontDate = candidateDates[0];
     const baseDateObj = parseExpDate(frontDate);
     const getDiffDaysFromFront = (yymmdd: string) =>
       Math.round((parseExpDate(yymmdd).getTime() - baseDateObj.getTime()) / 86400000);
@@ -934,22 +1428,22 @@ async function fetchCboeGoldOptionChain(
       targetYYMMDD = frontDate;
       horizonTag = "0DTE";
     } else if (horizon === "WEEK") {
-      // Find the Friday weekly expiration (4 to 10 days out) with the highest Open Interest
+      // Find the Friday weekly expiration (3 to 10 days out) with the highest Open Interest
       const weeklyCandidates = candidateDates.filter(d => {
         const diff = getDiffDaysFromFront(d);
-        return diff >= 4 && diff <= 11;
+        return diff >= 3 && diff <= 10;
       });
       weeklyCandidates.sort((a, b) => (expOiMap.get(b) || 0) - (expOiMap.get(a) || 0));
-      targetYYMMDD = weeklyCandidates[0] || candidateDates[Math.min(2, candidateDates.length - 1)];
+      targetYYMMDD = weeklyCandidates[0] || candidateDates[Math.min(1, candidateDates.length - 1)];
       horizonTag = "Неделя";
     } else if (horizon === "MONTH") {
-      // Find the Major Monthly OpEx (15 to 45 days out, 3rd Friday) with the highest Open Interest
+      // Find the Major Monthly OpEx (14 to 42 days out, 3rd Friday) with the highest Open Interest
       const monthlyCandidates = candidateDates.filter(d => {
         const diff = getDiffDaysFromFront(d);
-        return diff >= 15 && diff <= 45;
+        return diff >= 14 && diff <= 42;
       });
       monthlyCandidates.sort((a, b) => (expOiMap.get(b) || 0) - (expOiMap.get(a) || 0));
-      targetYYMMDD = monthlyCandidates[0] || candidateDates[Math.min(6, candidateDates.length - 1)];
+      targetYYMMDD = monthlyCandidates[0] || candidateDates[Math.min(4, candidateDates.length - 1)];
       horizonTag = "Месяц";
     } else {
       // ALL / Total GEX: aggregate across all active expirations within 60 days
@@ -1070,17 +1564,13 @@ async function fetchCboeGoldOptionChain(
       const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
       const avgIv = (avgCallIv + avgPutIv) / 2;
 
-      // Real GEX Formula (OI + Intraday Volume Flow):
-      // Gamma * (Open Interest + 0.35 * Intraday Volume) * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+      // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure OI, strictly NO volume mixing, scaled to $M)
       const contractMultiplier = 100; // CME / COMEX Gold Futures Standard: 100 troy oz
       const { gamma: callGamma } = calculateOptionGreeks(refSpotForGreeks, strike, tYears, avgCallIv, true);
       const { gamma: putGamma } = calculateOptionGreeks(refSpotForGreeks, strike, tYears, avgPutIv, false);
 
-      const effectiveCallContracts = d.callOi + d.callVol * 0.35;
-      const effectivePutContracts = d.putOi + d.putVol * 0.35;
-
-      const callGex = (callGamma * effectiveCallContracts * contractMultiplier * refSpotForGreeks * refSpotForGreeks * 0.01) / 1_000_000;
-      const putGex = -(putGamma * effectivePutContracts * contractMultiplier * refSpotForGreeks * refSpotForGreeks * 0.01) / 1_000_000;
+      const callGex = (callGamma * d.callOi * contractMultiplier * refSpotForGreeks * 0.01) / 10_000;
+      const putGex = -(putGamma * d.putOi * contractMultiplier * refSpotForGreeks * 0.01) / 10_000;
       const netGex = callGex + putGex;
 
       strikes.push({
@@ -1102,73 +1592,86 @@ async function fetchCboeGoldOptionChain(
 
     return {
       strikes: strikes.sort((a, b) => b.strike - a.strike),
-      sourceName: `CBOE Real Institutional Options (Chicago Board Options Exchange, ${horizonTag})`,
+      sourceName: `Delayed Quotes GLD ETF (прокси COMEX) • Yahoo Finance Options GC=F / GLD ETF (delayed quotes, ${horizonTag})`,
       expirationDateStr,
-      tYears
+      tYears,
+      dataTimestampMs,
+      isStale
     };
   } catch (err: any) {
-    console.warn("[PM2 GEX Engine] CBOE options fetch notice:", err.message);
+    console.warn("[PM2 GEX Engine] GLD delayed options fetch notice:", err.message);
     return null;
   }
 }
 
 // ============================================================================
-// 🌐 SOURCE 2: YAHOO FINANCE WITH RETRIES, COOKIE+CRUMB, AND DETAILED PM2 LOGS
+// 🌐 SOURCE 2: YAHOO FINANCE WITH RETRIES, 30-MIN COOKIE+CRUMB CACHE & FRESHNESS CHECK
 // ============================================================================
 let yahooSessionCache: { cookie: string; crumb: string; expiresAt: number } | null = null;
+let yahooSessionInFlight: Promise<{ cookie: string; crumb: string } | null> | null = null;
 
-async function getYahooFinanceSession(): Promise<{ cookie: string; crumb: string } | null> {
+export async function getYahooFinanceSession(): Promise<{ cookie: string; crumb: string } | null> {
   const now = Date.now();
   if (yahooSessionCache && now < yahooSessionCache.expiresAt) {
     return yahooSessionCache;
   }
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const sessionRes = await fetch("https://fc.yahoo.com", {
-        headers: REAL_BROWSER_HEADERS,
-        redirect: "manual",
-        signal: AbortSignal.timeout(4500)
-      });
-      const setCookie = sessionRes.headers.get("set-cookie") || "";
-
-      const crumbRes = await fetch("https://query2.finance.yahoo.com/v1/test/getcrumb", {
-        headers: {
-          ...REAL_BROWSER_HEADERS,
-          Cookie: setCookie
-        },
-        signal: AbortSignal.timeout(4500)
-      });
-
-      if (!crumbRes.ok) {
-        const errText = await crumbRes.text().catch(() => "");
-        console.error(
-          `[PM2 GEX Engine] Yahoo getcrumb attempt ${attempt}/3 failed: HTTP ${crumbRes.status} ${crumbRes.statusText}. Response: ${errText.slice(0, 150)}`
-        );
-        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
-        continue;
-      }
-
-      const crumb = (await crumbRes.text()).trim();
-      if (!crumb || crumb.includes("<html") || crumb.includes("error")) {
-        console.error(`[PM2 GEX Engine] Yahoo returned invalid crumb token: "${crumb.slice(0, 80)}"`);
-        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
-        continue;
-      }
-
-      yahooSessionCache = {
-        cookie: setCookie,
-        crumb,
-        expiresAt: now + 60 * 60 * 1000 // 1 hour TTL
-      };
-      return yahooSessionCache;
-    } catch (err: any) {
-      console.error(`[PM2 GEX Engine] Yahoo session attempt ${attempt}/3 exception:`, err.message);
-      if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
-    }
+  if (yahooSessionInFlight) {
+    return yahooSessionInFlight;
   }
 
-  return null;
+  yahooSessionInFlight = (async () => {
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const sessionRes = await fetch("https://fc.yahoo.com", {
+            headers: REAL_BROWSER_HEADERS,
+            redirect: "manual",
+            signal: AbortSignal.timeout(4500)
+          });
+          const setCookie = sessionRes.headers.get("set-cookie") || "";
+
+          const crumbRes = await fetch("https://query2.finance.yahoo.com/v1/test/getcrumb", {
+            headers: {
+              ...REAL_BROWSER_HEADERS,
+              Cookie: setCookie
+            },
+            signal: AbortSignal.timeout(4500)
+          });
+
+          if (!crumbRes.ok) {
+            const errText = await crumbRes.text().catch(() => "");
+            console.error(
+              `[PM2 GEX Engine] Yahoo getcrumb attempt ${attempt}/3 failed: HTTP ${crumbRes.status} ${crumbRes.statusText}. Response: ${errText.slice(0, 150)}`
+            );
+            if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+
+          const crumb = (await crumbRes.text()).trim();
+          if (!crumb || crumb.includes("<html") || crumb.includes("error")) {
+            console.error(`[PM2 GEX Engine] Yahoo returned invalid crumb token: "${crumb.slice(0, 80)}"`);
+            if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+
+          yahooSessionCache = {
+            cookie: setCookie,
+            crumb,
+            expiresAt: Date.now() + YAHOO_SESSION_TTL_MS // 30 minutes TTL
+          };
+          return yahooSessionCache;
+        } catch (err: any) {
+          console.error(`[PM2 GEX Engine] Yahoo session attempt ${attempt}/3 exception:`, err.message);
+          if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return null;
+    } finally {
+      yahooSessionInFlight = null;
+    }
+  })();
+
+  return yahooSessionInFlight;
 }
 
 interface YahooParsedOption {
@@ -1176,11 +1679,13 @@ interface YahooParsedOption {
   openInterest: number;
   volume: number;
   impliedVolatility: number;
+  lastTradeDate?: number;
 }
 
 interface RawOptionChainResult {
   symbol: string;
   underlyingPrice?: number;
+  dataTimestampMs?: number | null;
   expirationTimestamp: number;
   expirationDateStr: string;
   calls: YahooParsedOption[];
@@ -1276,22 +1781,37 @@ async function fetchYahooOptionChain(
   if (!optionRoot) return null;
 
   const quotePrice = Number(optionRoot.quote?.regularMarketPrice) || undefined;
+  const quoteMarketTimeSec = Number(optionRoot.quote?.regularMarketTime) || 0;
   const activeOptionSet = optionRoot.options?.[0];
   if (!activeOptionSet) return null;
 
-  const calls: YahooParsedOption[] = (activeOptionSet.calls || []).map((c: any) => ({
-    strike: Number(c.strike),
-    openInterest: Number(c.openInterest) || 0,
-    volume: Number(c.volume) || 0,
-    impliedVolatility: Number(c.impliedVolatility) || 0
-  }));
+  let maxTradeSec = quoteMarketTimeSec;
 
-  const puts: YahooParsedOption[] = (activeOptionSet.puts || []).map((p: any) => ({
-    strike: Number(p.strike),
-    openInterest: Number(p.openInterest) || 0,
-    volume: Number(p.volume) || 0,
-    impliedVolatility: Number(p.impliedVolatility) || 0
-  }));
+  const calls: YahooParsedOption[] = (activeOptionSet.calls || []).map((c: any) => {
+    const tSec = Number(c.lastTradeDate) || 0;
+    if (tSec > maxTradeSec) maxTradeSec = tSec;
+    return {
+      strike: Number(c.strike),
+      openInterest: Number(c.openInterest) || 0,
+      volume: Number(c.volume) || 0,
+      impliedVolatility: Number(c.impliedVolatility) || 0,
+      lastTradeDate: tSec
+    };
+  });
+
+  const puts: YahooParsedOption[] = (activeOptionSet.puts || []).map((p: any) => {
+    const tSec = Number(p.lastTradeDate) || 0;
+    if (tSec > maxTradeSec) maxTradeSec = tSec;
+    return {
+      strike: Number(p.strike),
+      openInterest: Number(p.openInterest) || 0,
+      volume: Number(p.volume) || 0,
+      impliedVolatility: Number(p.impliedVolatility) || 0,
+      lastTradeDate: tSec
+    };
+  });
+
+  const dataTimestampMs = maxTradeSec > 0 ? maxTradeSec * 1000 : null;
 
   const expDateObj = new Date(targetDate * 1000);
   const expirationDateStr =
@@ -1301,6 +1821,7 @@ async function fetchYahooOptionChain(
   return {
     symbol,
     underlyingPrice: quotePrice,
+    dataTimestampMs,
     expirationTimestamp: targetDate,
     expirationDateStr,
     calls,
@@ -1316,6 +1837,8 @@ async function fetchYahooGoldRealOptions(
   sourceName: string;
   expirationDateStr: string;
   tYears: number;
+  dataTimestampMs: number | null;
+  isStale: boolean;
 } | null> {
   const session = await getYahooFinanceSession();
 
@@ -1447,17 +1970,13 @@ async function fetchYahooGoldRealOptions(
     const avgPutIv = d.putCount > 0 ? d.putIvSum / d.putCount : defaultIv;
     const avgIv = (avgCallIv + avgPutIv) / 2;
 
-    // Real GEX Formula (OI + Intraday Volume Flow):
-    // Gamma * (Open Interest + 0.35 * Intraday Volume) * Contract Multiplier (100 для золота) * Spot^2 * 0.01 / 1_000_000
+    // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure OI, strictly NO volume mixing, scaled to $M)
     const contractMultiplier = 100; // CME / COMEX Gold Standard: 100 troy oz
     const { gamma: callGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgCallIv, true);
     const { gamma: putGamma } = calculateOptionGreeks(spotPrice, strike, tYears, avgPutIv, false);
 
-    const effectiveCallContracts = d.callOi + d.callVol * 0.35;
-    const effectivePutContracts = d.putOi + d.putVol * 0.35;
-
-    const callGex = (callGamma * effectiveCallContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
-    const putGex = -(putGamma * effectivePutContracts * contractMultiplier * spotPrice * spotPrice * 0.01) / 1_000_000;
+    const callGex = (callGamma * d.callOi * contractMultiplier * spotPrice * 0.01) / 10_000;
+    const putGex = -(putGamma * d.putOi * contractMultiplier * spotPrice * 0.01) / 10_000;
     const netGex = callGex + putGex;
 
     strikes.push({
@@ -1478,16 +1997,119 @@ async function fetchYahooGoldRealOptions(
   if (strikes.length < 4) return null;
 
   const horizonTag = horizon === "DAY" ? "0DTE" : horizon === "WEEK" ? "Неделя" : "Месяц";
-  const sourceName = isProxy
-    ? `Yahoo Finance Real Options (GLD Институциональный прокси, ${horizonTag})`
-    : `Yahoo Finance Real Options (GC=F COMEX Gold, ${horizonTag})`;
+  const sourceName = `Yahoo Finance Options GC=F / GLD ETF (delayed quotes, ${horizonTag})`;
+  const dataTimestampMs = chainData.dataTimestampMs ?? null;
+  const isStale = isOptionTimestampStale(dataTimestampMs);
 
   return {
     strikes: strikes.sort((a, b) => b.strike - a.strike),
     sourceName,
     expirationDateStr: chainData.expirationDateStr,
-    tYears
+    tYears,
+    dataTimestampMs,
+    isStale
   };
+}
+
+// ============================================================================
+// 🪙 SOURCE 2B: DERIBIT GOLD OPTIONS FALLBACK (PAXG_USDC / PAXG)
+// ============================================================================
+async function fetchDeribitGoldOptions(
+  horizon: ExpiryHorizon,
+  spotPrice: number
+): Promise<{
+  strikes: GexStrikeData[];
+  sourceName: string;
+  expirationDateStr: string;
+  tYears: number;
+  dataTimestampMs: number | null;
+  isStale: boolean;
+} | null> {
+  try {
+    const usdcUrl = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=USDC&kind=option";
+    const res = await fetchWithTimeout(usdcUrl, undefined, 3200);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const allItems: any[] = Array.isArray(json?.result) ? json.result : [];
+    const goldItems = allItems.filter(item => {
+      const inst = String(item?.instrument_name || "").toUpperCase();
+      return inst.startsWith("PAXG_USDC-") || inst.startsWith("PAXG-") || inst.startsWith("XAU");
+    });
+
+    if (goldItems.length < 4) return null;
+
+    let maxCreationTs = 0;
+    const strikeMap = new Map<number, GexStrikeData>();
+    const undPrice = Number(goldItems[0]?.underlying_price) || spotPrice;
+    const scale = undPrice > 0 ? spotPrice / undPrice : 1;
+
+    for (const item of goldItems) {
+      const info = parseDeribitInstrument(item.instrument_name);
+      if (!info || info.dte < -0.05) continue;
+      if (horizon === "DAY" && info.dte > 2.5) continue;
+      if (horizon === "WEEK" && info.dte > 12) continue;
+      if (horizon === "MONTH" && (info.dte < 5 || info.dte > 45)) continue;
+
+      const ts = Number(item.creation_timestamp) || 0;
+      if (ts > maxCreationTs) maxCreationTs = ts;
+
+      const strike = Math.round((info.strike * scale) / 10) * 10;
+      if (Math.abs(strike - spotPrice) > spotPrice * 0.08) continue;
+
+      const oi = Math.max(0, Number(item.open_interest) || 0);
+      const vol = Math.max(0, Number(item.volume) || 0);
+      if (oi <= 0 && vol <= 0) continue;
+
+      const markIv = (Number(item.mark_iv) || 18.5) / 100;
+      const tYears = Math.max(1 / 365, info.dte / 365);
+      const { gamma } = calculateOptionGreeks(spotPrice, strike, tYears, markIv, info.isCall);
+      // PAXG_USDC on Deribit has multiplier 1 oz; scale to COMEX 100 oz equivalent for XAUUSD comparability
+      const dollarGamma = (gamma * oi * 100 * spotPrice * 0.01) / 10_000;
+
+      const row = strikeMap.get(strike) || {
+        strike,
+        callGex: 0,
+        putGex: 0,
+        netGex: 0,
+        callOi: 0,
+        putOi: 0,
+        totalOi: 0,
+        callVolume: 0,
+        putVolume: 0,
+        iv: markIv
+      };
+      if (info.isCall) {
+        row.callGex = Math.round((row.callGex + dollarGamma) * 100) / 100;
+        row.callOi += Math.round(oi);
+        row.callVolume += Math.round(vol);
+      } else {
+        row.putGex = Math.round((row.putGex - dollarGamma) * 100) / 100;
+        row.putOi += Math.round(oi);
+        row.putVolume += Math.round(vol);
+      }
+      row.netGex = Math.round((row.callGex + row.putGex) * 100) / 100;
+      row.totalOi = row.callOi + row.putOi;
+      strikeMap.set(strike, row);
+    }
+
+    const strikes = Array.from(strikeMap.values()).filter(s => s.totalOi > 0);
+    if (strikes.length < 4) return null;
+
+    const dataTimestampMs = maxCreationTs > 0 ? maxCreationTs : Date.now();
+    const isStale = isOptionTimestampStale(dataTimestampMs);
+    const tYears = horizon === "DAY" ? 1 / 365 : horizon === "WEEK" ? 7 / 365 : 24 / 365;
+
+    return {
+      strikes: strikes.sort((a, b) => b.strike - a.strike),
+      sourceName: `Deribit Gold Options (PAXG_USDC Live Feed)`,
+      expirationDateStr: getHorizonExpirationDateString(horizon),
+      tYears,
+      dataTimestampMs,
+      isStale
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -1612,10 +2234,9 @@ function calculateSyntheticGoldGex(
     totalPutVol += putVol;
 
     const { gamma } = calculateOptionGreeks(spotPrice, k, tYears, baseIv / 100, true);
-    const effectiveCall = callOi + callVol * 0.35;
-    const effectivePut = putOi + putVol * 0.35;
-    const callGex = (gamma * effectiveCall * 100 * spotPrice * spotPrice * 0.01) / 1000000;
-    const putGex = -(gamma * effectivePut * 100 * spotPrice * spotPrice * 0.01) / 1000000;
+    // Strict GEX Formula: gamma * OI * contractMultiplier (100) * Spot * 0.01 (Pure OI, strictly NO volume mixing, scaled to $M)
+    const callGex = (gamma * callOi * 100 * spotPrice * 0.01) / 10_000;
+    const putGex = -(gamma * putOi * 100 * spotPrice * 0.01) / 10_000;
 
     strikes.push({
       strike: k,
@@ -1631,33 +2252,37 @@ function calculateSyntheticGoldGex(
     });
   }
 
-  // Calculate Max Pain strictly within the generated strike range near spot
-  let minPainCost = Infinity;
-  let calculatedMaxPain = centerStrike;
-  const painCandidates = strikes.filter(s => s.strike >= naturalPutWall && s.strike <= naturalCallWall);
-  const searchGrid = painCandidates.length > 0 ? painCandidates : strikes;
+  // 3. Call/Put Walls strictly sorted by peak Open Interest
+  const walls = findCallAndPutWalls(strikes, spotPrice, step, 0);
+  naturalCallWall = walls.callWall;
+  naturalPutWall = walls.putWall;
 
-  for (const testStrike of searchGrid) {
-    let pain = 0;
-    for (const s of strikes) {
-      if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * s.callOi;
-      if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * s.putOi;
-    }
-    if (pain < minPainCost && pain > 0) {
-      minPainCost = pain;
-      calculatedMaxPain = testStrike.strike;
-    }
-  }
+  // 2. Max Pain calculation strictly on Open Interest (on uniform strike grid within [naturalPutWall, naturalCallWall], no volume)
+  const { maxPain: calculatedMaxPain, maxPainRange: synthMaxPainRange } = computeMaxPainWithRange(
+    strikes,
+    centerStrike,
+    step,
+    0,
+    naturalPutWall,
+    naturalCallWall
+  );
 
-  // Ensure Max Pain does not drift beyond +-2.5% of spot price
-  if (Math.abs(calculatedMaxPain - spotPrice) > spotPrice * 0.025) {
-    calculatedMaxPain = centerStrike;
-  }
+  naturalFlip = computeZeroGammaFlip(strikes, spotPrice, step, 0, naturalPutWall, naturalCallWall);
+
+  const flipOutOfCorridor = naturalFlip < naturalPutWall || naturalFlip > naturalCallWall;
+  const painOutOfCorridor = calculatedMaxPain < naturalPutWall || calculatedMaxPain > naturalCallWall;
+  const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
 
   const expectedMovePct68 = (baseIv / 100) * Math.sqrt(Math.max(tYears, 2 / 365));
   const expectedMovePct95 = expectedMovePct68 * 2.0;
   const rawTotalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
   const totalNetGex = isBelowFlip ? -Math.abs(rawTotalNetGex || 15.4) : Math.abs(rawTotalNetGex || 15.4);
+
+  // 6. Normalization metrics
+  const { normalizedNetGex, gexIntensity } = computeGexNormalization(strikes, spotPrice);
+
+  const synthSource = `${oandaSource} • Yahoo Finance Options GC=F / GLD ETF (delayed quotes) • Данные устарели (Синтетическая модель)`;
+  const density = evaluateOptionBookDensity(strikes, "XAUUSD", horizon, synthSource);
 
   return {
     asset: "XAUUSD",
@@ -1665,14 +2290,27 @@ function calculateSyntheticGoldGex(
     spotPrice,
     timestamp: new Date().toISOString(),
     expirationDate: getHorizonExpirationDateString(horizon),
-    source: `${oandaSource} • CME COMEX Gold Опционы (${horizonLabel}) (Синтетическая модель, реальный API недоступен)`,
+    source: synthSource,
+    isSynthetic: true,
+    isDataStale: true,
+    proxyNote: "Опционы на ETF GLD, не на фьючерс золота COMEX GC",
+    outOfCorridor,
+    flipOutOfCorridor,
+    painOutOfCorridor,
+    lowConfidence: density.lowConfidence,
+    lowConfidenceReason: density.lowConfidenceReason,
+    callOiStrikesCount: density.callOiStrikesCount,
+    putOiStrikesCount: density.putOiStrikesCount,
     netGexTotal: Math.round(totalNetGex * 10) / 10,
+    normalizedNetGex,
+    gexIntensity,
     netGexRegime: isBelowFlip ? "NEGATIVE_GAMMA" : "POSITIVE_GAMMA",
     regimeDescription: regimeText,
     gammaFlip: naturalFlip,
     callWall: naturalCallWall,
     putWall: naturalPutWall,
     maxPain: calculatedMaxPain,
+    maxPainRange: synthMaxPainRange,
     sleeperMagnet: naturalCallWall + (horizon === "DAY" ? 20 : horizon === "WEEK" ? 30 : horizon === "MONTH" ? 40 : 50),
     expectedMove68: {
       low: Math.round(spotPrice * (1 - expectedMovePct68) * 10) / 10,
@@ -1719,335 +2357,293 @@ function calculateSyntheticGoldGex(
 /**
  * Main XAUUSD GEX Engine:
  * 1. Fetches Live Spot from OANDA
- * 2. Attempts CBOE Institutional Options (7,000+ contracts, 0 rate-limits)
- * 3. Attempts Yahoo Finance Real Options (with retries and PM2 logging)
- * 4. Falls back to Spot-Anchored Synthetic Model if APIs are unreachable
- * 5. Strictly enforces Call Wall > Spot, Put Wall < Spot, and Gamma Flip +-2%
+ * 2. Attempts Yahoo Finance Options GC=F / GLD ETF (delayed quotes) with 1-hour freshness check
+ * 3. If Yahoo/GLD is blocked or >1h stale, attempts Deribit Gold Options (PAXG_USDC)
+ * 4. Marks isSynthetic: true and shows "Данные устарели" if option timestamps are >1h old or unreachable
  */
-export async function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `XAUUSD_${horizon}`;
-  const now = Date.now();
 
-  if (gexCache[cacheKey] && now - gexCache[cacheKey].cachedAt < GOLD_GEX_CACHE_TTL_MS) {
-    return gexCache[cacheKey].data;
-  }
+  return fetchWithGexDeduplication(cacheKey, GOLD_GEX_CACHE_TTL_MS, async () => {
+    const nowUtc = new Date();
+    const utcDay = nowUtc.getUTCDay();
+    const utcHour = nowUtc.getUTCHours();
+    const isWeekdayForex =
+      (utcDay > 0 && utcDay < 5) || (utcDay === 5 && utcHour < 22) || (utcDay === 0 && utcHour >= 22);
 
-  const nowUtc = new Date();
-  const utcDay = nowUtc.getUTCDay();
-  const utcHour = nowUtc.getUTCHours();
-  const isWeekdayForex =
-    (utcDay > 0 && utcDay < 5) || (utcDay === 5 && utcHour < 22) || (utcDay === 0 && utcHour >= 22);
+    // 1. Fetch live gold spot from OANDA
+    let spotPrice = 4043.5;
+    let oandaOpen = 0;
+    let oandaHigh = 0;
+    let oandaLow = 0;
+    let oandaSource = "OANDA Spot (Live Forex Trade Feed)";
+    let oandaVolume = 589821;
 
-  // 1. Fetch live gold spot from OANDA
-  let spotPrice = 4043.5;
-  let oandaOpen = 0;
-  let oandaHigh = 0;
-  let oandaLow = 0;
-  let oandaSource = "OANDA Spot (Live Forex Trade Feed)";
-  let oandaVolume = 589821;
-
-  try {
-    const resOanda = await fetch(
-      "https://scanner.tradingview.com/symbol?symbol=OANDA:XAUUSD&fields=close,open,high,low,change,volume,bid,ask,rtc",
-      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(3500) }
-    );
-    if (resOanda.ok) {
-      const j = await resOanda.json();
-      const liveRtc = Number(j.rtc || j.close || 0);
-      const hasLiveSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && (j.ask - j.bid) < 10;
-      const liveMid = hasLiveSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
-      // Prefer real-time trade price (rtc/close) whenever scanner bid/ask lags by > $3
-      const livePrice =
-        liveRtc > 0 && (liveMid === 0 || Math.abs(liveMid - liveRtc) > 3)
-          ? liveRtc
-          : liveMid > 0
-          ? liveMid
-          : liveRtc;
-      if (livePrice > 0) {
-        spotPrice = Math.round(livePrice * 100) / 100;
-        oandaOpen = Number(j.open) || spotPrice;
-        oandaHigh = Number(j.high) || spotPrice;
-        oandaLow = Number(j.low) || spotPrice;
-        oandaSource = isWeekdayForex
-          ? "OANDA Spot (Live Forex Trade Feed)"
-          : `OANDA Spot (Официальное закрытие OANDA $${spotPrice.toFixed(2)})`;
-        oandaVolume = Number(j.volume) || oandaVolume;
-      }
-    }
-  } catch (e: any) {
-    console.warn("[PM2 GEX Engine] OANDA live fetch notice:", e.message);
-  }
-
-  // 2. Multi-tier Options Provider Strategy:
-  // Priority 1: CBOE (Chicago Board Options Exchange) - High reliability, no blocking
-  let realData: {
-    strikes: GexStrikeData[];
-    sourceName: string;
-    expirationDateStr: string;
-    tYears: number;
-  } | null = null;
-
-  try {
-    realData = await fetchCboeGoldOptionChain(horizon, spotPrice);
-    if (realData) {
-      console.log(`[PM2 GEX Engine] Successfully loaded CBOE institutional options for ${horizon}: ${realData.strikes.length} strikes around $${spotPrice}`);
-    }
-  } catch (err: any) {
-    console.warn("[PM2 GEX Engine] CBOE fetch notice:", err.message);
-  }
-
-  // Priority 2: Yahoo Finance (if CBOE is unavailable)
-  if (!realData || realData.strikes.length < 4) {
     try {
-      realData = await fetchYahooGoldRealOptions(horizon, spotPrice);
+      const resOanda = await fetch(
+        "https://scanner.tradingview.com/symbol?symbol=OANDA:XAUUSD&fields=close,open,high,low,change,volume,bid,ask,rtc",
+        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(3500) }
+      );
+      if (resOanda.ok) {
+        const j = await resOanda.json();
+        const liveRtc = Number(j.rtc || j.close || 0);
+        const hasLiveSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && (j.ask - j.bid) < 10;
+        const liveMid = hasLiveSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
+        const livePrice =
+          liveRtc > 0 && (liveMid === 0 || Math.abs(liveMid - liveRtc) > 3)
+            ? liveRtc
+            : liveMid > 0
+            ? liveMid
+            : liveRtc;
+        if (livePrice > 0) {
+          spotPrice = Math.round(livePrice * 100) / 100;
+          oandaOpen = Number(j.open) || spotPrice;
+          oandaHigh = Number(j.high) || spotPrice;
+          oandaLow = Number(j.low) || spotPrice;
+          oandaSource = isWeekdayForex
+            ? "OANDA Spot (Live Forex Trade Feed)"
+            : `OANDA Spot (Официальное закрытие OANDA $${spotPrice.toFixed(2)})`;
+          oandaVolume = Number(j.volume) || oandaVolume;
+        }
+      }
+    } catch (e: any) {
+      console.warn("[PM2 GEX Engine] OANDA live fetch notice:", e.message);
+    }
+
+    // 2. Multi-tier Options Provider Strategy with 1-Hour Freshness Validation & Deribit Fallback:
+    let realData: {
+      strikes: GexStrikeData[];
+      sourceName: string;
+      expirationDateStr: string;
+      tYears: number;
+      dataTimestampMs: number | null;
+      isStale: boolean;
+    } | null = null;
+
+    try {
+      realData = await fetchCboeGoldOptionChain(horizon, spotPrice);
       if (realData) {
-        console.log(`[PM2 GEX Engine] Successfully loaded Yahoo Finance real options for ${horizon}: ${realData.strikes.length} strikes`);
+        console.log(
+          `[PM2 GEX Engine] Loaded GLD ETF delayed options for ${horizon}: ${realData.strikes.length} strikes around $${spotPrice} (isStale=${realData.isStale})`
+        );
       }
     } catch (err: any) {
-      console.warn("[PM2 GEX Engine] Yahoo real options notice:", err.message);
+      console.warn("[PM2 GEX Engine] GLD delayed options fetch notice:", err.message);
     }
-  }
 
-  // Priority 3: Mathematically sound synthetic model anchored to spotPrice
-  if (!realData || realData.strikes.length < 4) {
-    console.warn(`[PM2 GEX Engine] Fallback to spot-anchored synthetic model for ${horizon} at spot $${spotPrice}`);
-    const fallbackReport = calculateSyntheticGoldGex(
+    if (!realData || realData.strikes.length < 4 || realData.isStale) {
+      try {
+        const yahooData = await fetchYahooGoldRealOptions(horizon, spotPrice);
+        if (yahooData && yahooData.strikes.length >= 4) {
+          if (!realData || !yahooData.isStale) {
+            realData = yahooData;
+          }
+          console.log(
+            `[PM2 GEX Engine] Loaded Yahoo Finance GC=F / GLD ETF options for ${horizon}: ${yahooData.strikes.length} strikes (isStale=${yahooData.isStale})`
+          );
+        }
+      } catch (err: any) {
+        console.warn("[PM2 GEX Engine] Yahoo real options notice:", err.message);
+      }
+    }
+
+    // If Yahoo/GLD is unavailable or its timestamp is older than 1 hour, attempt Deribit Gold Options (PAXG_USDC)
+    if (!realData || realData.strikes.length < 4 || realData.isStale) {
+      try {
+        const deribitGold = await fetchDeribitGoldOptions(horizon, spotPrice);
+        if (deribitGold && deribitGold.strikes.length >= 4 && !deribitGold.isStale) {
+          realData = deribitGold;
+          console.log(`[PM2 GEX Engine] Loaded fresh Deribit PAXG_USDC gold options fallback for ${horizon}: ${deribitGold.strikes.length} strikes`);
+        }
+      } catch (err: any) {
+        console.warn("[PM2 GEX Engine] Deribit gold fallback notice:", err.message);
+      }
+    }
+
+    // Fallback if all APIs are unreachable
+    if (!realData || realData.strikes.length < 4) {
+      console.warn(`[PM2 GEX Engine] Fallback to spot-anchored synthetic model for ${horizon} at spot $${spotPrice}`);
+      return calculateSyntheticGoldGex(
+        horizon,
+        spotPrice,
+        oandaOpen,
+        oandaHigh,
+        oandaLow,
+        oandaSource,
+        nowUtc
+      );
+    }
+
+    // Process strikes
+    const strikes = realData.strikes;
+
+    const corridorBounds =
+      horizon === "DAY"
+        ? { minDist: 10, maxDist: 45, defDist: 25 }
+        : horizon === "WEEK"
+        ? { minDist: 20, maxDist: 80, defDist: 45 }
+        : horizon === "MONTH"
+        ? { minDist: 40, maxDist: 175, defDist: 85 }
+        : { minDist: 30, maxDist: 200, defDist: 95 };
+
+    const refSpot = Math.round(spotPrice / 10) * 10;
+
+    let callCandidates = strikes.filter(
+      s =>
+        s.strike > spotPrice &&
+        s.strike >= refSpot + corridorBounds.minDist &&
+        s.strike <= refSpot + corridorBounds.maxDist &&
+        (s.callOi > 0 || s.callGex > 0)
+    );
+    if (callCandidates.length === 0) {
+      callCandidates = strikes.filter(s => s.strike > spotPrice && (s.callOi > 0 || s.callGex > 0));
+    }
+
+    let putCandidates = strikes.filter(
+      s =>
+        s.strike < spotPrice &&
+        s.strike <= refSpot - corridorBounds.minDist &&
+        s.strike >= refSpot - corridorBounds.maxDist &&
+        (s.putOi > 0 || s.putGex < 0)
+    );
+    if (putCandidates.length === 0) {
+      putCandidates = strikes.filter(s => s.strike < spotPrice && (s.putOi > 0 || s.putGex < 0));
+    }
+
+    // 3. CALL/PUT WALLS: Strictly sorted by Open Interest (OI) descending, with GEX tie-breaker (zero volume mixing)
+    callCandidates.sort((a, b) => (b.callOi - a.callOi) || (b.callGex - a.callGex));
+    const callWall =
+      callCandidates.length > 0
+        ? callCandidates[0].strike
+        : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
+
+    putCandidates.sort((a, b) => (b.putOi - a.putOi) || (Math.abs(b.putGex) - Math.abs(a.putGex)));
+    const putWall =
+      putCandidates.length > 0
+        ? putCandidates[0].strike
+        : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
+
+    // MASTER WALL INVARIANTS:
+    const finalCallWall = callWall > spotPrice ? callWall : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
+    const finalPutWall = putWall < spotPrice ? putWall : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
+
+    // Gamma Flip on uniform strike grid (eliminates sticking to sparse cluster edges)
+    const finalFlip = computeZeroGammaFlip(strikes, spotPrice, 10, 0, finalPutWall, finalCallWall);
+
+    // 2. Max Pain (Магнит): Calculated strictly using pure Open Interest (OI) on uniform strike grid within [finalPutWall, finalCallWall]
+    const { maxPain: calculatedMaxPain, maxPainRange } = computeMaxPainWithRange(
+      strikes,
+      Math.round(spotPrice / 10) * 10,
+      10,
+      0,
+      finalPutWall,
+      finalCallWall
+    );
+    const finalMaxPain = calculatedMaxPain;
+
+    const flipOutOfCorridor = finalFlip < finalPutWall || finalFlip > finalCallWall;
+    const painOutOfCorridor = finalMaxPain < finalPutWall || finalMaxPain > finalCallWall;
+    const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
+
+    // 6. Normalization metrics
+    const { normalizedNetGex, gexIntensity } = computeGexNormalization(strikes, spotPrice);
+
+    const totalCallOi = strikes.reduce((sum, s) => sum + s.callOi, 0);
+    const totalPutOi = strikes.reduce((sum, s) => sum + s.putOi, 0);
+    const totalCallVol = strikes.reduce((sum, s) => sum + s.callVolume, 0);
+    const totalPutVol = strikes.reduce((sum, s) => sum + s.putVolume, 0);
+    const totalNetGex = strikes.reduce((sum, s) => sum + s.netGex, 0);
+
+    const avgIv =
+      strikes.reduce((sum, s) => sum + s.iv, 0) / (strikes.length || 1) || 0.185;
+    const impliedVolPct = Math.round(avgIv * 1000) / 10;
+    const intradayRangePct = oandaHigh > oandaLow && spotPrice > 0 ? ((oandaHigh - oandaLow) / spotPrice) * Math.sqrt(252) * 100 : 14.8;
+    const realizedVol30d = Math.round(Math.max(10.5, Math.min(28.0, intradayRangePct * 0.65 + 14.8 * 0.35)) * 10) / 10;
+    const volSpreadIvRv = Math.round((impliedVolPct - realizedVol30d) * 10) / 10;
+
+    const ivRvMultiplier = volSpreadIvRv > 2.0 ? 1.06 : volSpreadIvRv < -1.5 ? 1.12 : 1.0;
+    const expectedMovePct68 = avgIv * Math.sqrt(Math.max(realData.tYears, 1 / 365)) * ivRvMultiplier;
+    const expectedMovePct95 = expectedMovePct68 * 2.0;
+
+    const isPositiveGamma = totalNetGex >= 0;
+    const regimeText = isPositiveGamma
+      ? `Режим реальной гаммы (Положительная гамма): Чистая нетто-гамма дилеров +$${Math.abs(totalNetGex).toFixed(1)}M. Дилеры абсорбируют волатильность между Put Wall $${finalPutWall} и Call Wall $${finalCallWall}.`
+      : `Режим реальной гаммы (Отрицательная гамма): Чистая нетто-гамма дилеров -$${Math.abs(totalNetGex).toFixed(1)}M. Дилеры хеджируются по тренду, ускоряя импульс при пробое уровней.`;
+
+    const sortedByOi = strikes.slice().sort((a, b) => b.totalOi - a.totalOi);
+    const oiAnomalies = sortedByOi.slice(0, 3).map((s, idx) => ({
+      strike: s.strike,
+      type: (s.callOi >= s.putOi ? "CALL" : "PUT") as "CALL" | "PUT",
+      volume: s.callVolume + s.putVolume,
+      oi: s.totalOi,
+      ratio: Math.round(((s.callVolume + s.putVolume) / Math.max(1, s.totalOi * 0.1)) * 10) / 10,
+      severity: (idx === 0 ? "HIGH" : "MEDIUM") as "HIGH" | "MEDIUM"
+    }));
+
+    // 1. Freshness enforcement: if option chain timestamp is older than 1 hour (isStale === true),
+    // mark isSynthetic: true and display "Данные устарели" honestly.
+    const isStaleChain = Boolean(realData.isStale);
+    const sourceLabel = isStaleChain
+      ? `${oandaSource} • ${realData.sourceName} • Данные устарели (>1ч)`
+      : `${oandaSource} • ${realData.sourceName}`;
+
+    const density = evaluateOptionBookDensity(strikes, "XAUUSD", horizon, sourceLabel);
+
+    const report: GexMarketReport = {
+      asset: "XAUUSD",
       horizon,
       spotPrice,
-      oandaOpen,
-      oandaHigh,
-      oandaLow,
-      oandaSource,
-      nowUtc
-    );
-    gexCache[cacheKey] = { data: fallbackReport, cachedAt: now };
-    return fallbackReport;
-  }
+      timestamp: new Date().toISOString(),
+      dataTimestamp: realData.dataTimestampMs ? new Date(realData.dataTimestampMs).toISOString() : undefined,
+      expirationDate: realData.expirationDateStr,
+      source: sourceLabel,
+      isSynthetic: isStaleChain,
+      isDataStale: isStaleChain,
+      proxyNote: "Опционы на ETF GLD, не на фьючерс золота COMEX GC",
+      outOfCorridor,
+      flipOutOfCorridor,
+      painOutOfCorridor,
+      lowConfidence: density.lowConfidence,
+      lowConfidenceReason: density.lowConfidenceReason,
+      callOiStrikesCount: density.callOiStrikesCount,
+      putOiStrikesCount: density.putOiStrikesCount,
+      netGexTotal: Math.round(totalNetGex * 10) / 10,
+      normalizedNetGex,
+      gexIntensity,
+      netGexRegime: isPositiveGamma ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
+      regimeDescription: regimeText,
+      gammaFlip: finalFlip,
+      callWall: finalCallWall,
+      putWall: finalPutWall,
+      maxPain: finalMaxPain,
+      maxPainRange,
+      sleeperMagnet: finalCallWall + (horizon === "DAY" ? 20 : horizon === "WEEK" ? 30 : 50),
+      expectedMove68: {
+        low: Math.round(spotPrice * (1 - expectedMovePct68) * 10) / 10,
+        high: Math.round(spotPrice * (1 + expectedMovePct68) * 10) / 10,
+        rangePct: Math.round(expectedMovePct68 * 1000) / 10
+      },
+      expectedMove95: {
+        low: Math.round(spotPrice * (1 - expectedMovePct95) * 10) / 10,
+        high: Math.round(spotPrice * (1 + expectedMovePct95) * 10) / 10,
+        rangePct: Math.round(expectedMovePct95 * 1000) / 10
+      },
+      dealerGreeks: {
+        charm: -12.4,
+        vanna: 8.6,
+        aggregateDelta: Math.round((totalCallOi - totalPutOi) * 0.35)
+      },
+      pcrOi: totalCallOi > 0 ? Math.round((totalPutOi / totalCallOi) * 100) / 100 : 1,
+      pcrVol: totalCallVol > 0 ? Math.round((totalPutVol / totalCallVol) * 100) / 100 : 1,
+      impliedVolAvg: impliedVolPct,
+      realizedVol30d,
+      volSpreadIvRv,
+      strikes,
+      oiAnomalies
+    };
 
-  // Process real strikes
-  const strikes = realData.strikes;
-
-  // HORIZON-SPECIFIC ACTIVE GAMMA CORRIDORS (1.5σ - 2.0σ Expected Move Window):
-  // Prevents dead, far-OTM strikes ($170 away with zero 0DTE Gamma) from being mistaken for active intraday walls!
-  // - DAY (0DTE/1DTE): Intraday dealer gamma hedging range is +-$10 to +-$45 (~0.25% to 1.15% of spot)
-  // - WEEK (5D OpEx): Weekly dealer gamma hedging range is +-$20 to +-$80 (~0.50% to 2.00% of spot)
-  // - MONTH (21D OpEx): Monthly institutional range is +-$40 to +-$175 (~1.00% to 4.40% of spot)
-  // - ALL (Total GEX): Full book institutional range is +-$30 to +-$200
-  const corridorBounds =
-    horizon === "DAY"
-      ? { minDist: 10, maxDist: 45, defDist: 25 }
-      : horizon === "WEEK"
-      ? { minDist: 20, maxDist: 80, defDist: 45 }
-      : horizon === "MONTH"
-      ? { minDist: 40, maxDist: 175, defDist: 85 }
-      : { minDist: 30, maxDist: 200, defDist: 95 };
-
-  // Use $10 grid reference spot for corridor bounds so two servers within the same $10 zone
-  // evaluate the exact same strike candidate set
-  const refSpot = Math.round(spotPrice / 10) * 10;
-
-  let callCandidates = strikes.filter(
-    s =>
-      s.strike > spotPrice &&
-      s.strike >= refSpot + corridorBounds.minDist &&
-      s.strike <= refSpot + corridorBounds.maxDist &&
-      (s.callOi > 0 || s.callGex > 0)
-  );
-  if (callCandidates.length === 0) {
-    callCandidates = strikes.filter(s => s.strike > spotPrice && (s.callOi > 0 || s.callGex > 0));
-  }
-
-  let putCandidates = strikes.filter(
-    s =>
-      s.strike < spotPrice &&
-      s.strike <= refSpot - corridorBounds.minDist &&
-      s.strike >= refSpot - corridorBounds.maxDist &&
-      (s.putOi > 0 || s.putGex < 0)
-  );
-  if (putCandidates.length === 0) {
-    putCandidates = strikes.filter(s => s.strike < spotPrice && (s.putOi > 0 || s.putGex < 0));
-  }
-
-  // Normalize OI and GEX strictly within the active horizon corridor
-  const maxCallOi = Math.max(1, ...callCandidates.map(s => s.callOi));
-  const maxCallGex = Math.max(0.01, ...callCandidates.map(s => Math.max(0, s.callGex)));
-  const maxPutOi = Math.max(1, ...putCandidates.map(s => s.putOi));
-  const maxPutGex = Math.max(0.01, ...putCandidates.map(s => Math.abs(s.putGex)));
-
-  const getCallScore = (s: GexStrikeData) => {
-    const normOi = s.callOi / maxCallOi;
-    const normGex = Math.max(0, s.callGex) / maxCallGex;
-    const flowBonus = Math.min(0.20, (s.callVolume / Math.max(100, s.callOi)) * 0.15);
-    return (normGex * 0.50 + normOi * 0.50) * (1 + flowBonus);
-  };
-
-  const getPutScore = (s: GexStrikeData) => {
-    const normOi = s.putOi / maxPutOi;
-    const normGex = Math.abs(s.putGex) / maxPutGex;
-    const flowBonus = Math.min(0.20, (s.putVolume / Math.max(100, s.putOi)) * 0.15);
-    return (normGex * 0.50 + normOi * 0.50) * (1 + flowBonus);
-  };
-
-  callCandidates.sort((a, b) => getCallScore(b) - getCallScore(a));
-  const callWall =
-    callCandidates.length > 0
-      ? callCandidates[0].strike
-      : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
-
-  putCandidates.sort((a, b) => getPutScore(b) - getPutScore(a));
-  const putWall =
-    putCandidates.length > 0
-      ? putCandidates[0].strike
-      : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
-
-  // MASTER WALL INVARIANTS:
-  // 1. Call Wall strictly > spotPrice
-  const finalCallWall = callWall > spotPrice ? callWall : Math.ceil((spotPrice + corridorBounds.defDist) / 10) * 10;
-  // 2. Put Wall strictly < spotPrice
-  const finalPutWall = putWall < spotPrice ? putWall : Math.floor((spotPrice - corridorBounds.defDist) / 10) * 10;
-
-  // 3. Gamma Flip: search zero-crossing strictly INSIDE [finalPutWall, finalCallWall]
-  const activeCorridorStrikes = strikes
-    .filter(s => s.strike >= finalPutWall && s.strike <= finalCallWall)
-    .sort((a, b) => a.strike - b.strike);
-  let gammaFlip = Math.round(spotPrice / 10) * 10;
-  let foundFlip = false;
-
-  for (let i = 0; i < activeCorridorStrikes.length - 1; i++) {
-    const s1 = activeCorridorStrikes[i];
-    const s2 = activeCorridorStrikes[i + 1];
-
-    if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
-      const denom = s2.netGex - s1.netGex;
-      if (Math.abs(denom) > 0.0001) {
-        gammaFlip = Math.round(s1.strike + ((0 - s1.netGex) / denom) * (s2.strike - s1.strike));
-      } else {
-        gammaFlip = s1.strike;
-      }
-      foundFlip = true;
-      break;
-    }
-  }
-
-  if (!foundFlip) {
-    if (activeCorridorStrikes.length > 0) {
-      const minNet = activeCorridorStrikes.slice().sort((a, b) => Math.abs(a.netGex) - Math.abs(b.netGex))[0];
-      gammaFlip = minNet.strike;
-    } else {
-      gammaFlip = Math.round(((finalPutWall + finalCallWall) / 2) / 10) * 10;
-    }
-  }
-
-  // Clamp Gamma Flip strictly inside [finalPutWall + 5, finalCallWall - 5]
-  const finalFlip = Math.max(finalPutWall + 5, Math.min(finalCallWall - 5, gammaFlip));
-
-  // 4. Max Pain (Магнит): evaluate interior strikes strictly between (finalPutWall, finalCallWall)
-  // against the full option chain so Magnet is a true interior equilibrium and never collides with CW/PW
-  let minPainCost = Infinity;
-  let calculatedMaxPain = Math.round(spotPrice / 10) * 10;
-  const maxPainRadius = horizon === "DAY" ? 30 : horizon === "WEEK" ? 50 : 90;
-  const interiorCandidates = strikes.filter(
-    s =>
-      s.strike >= finalPutWall + 10 &&
-      s.strike <= finalCallWall - 10 &&
-      Math.abs(s.strike - spotPrice) <= maxPainRadius
-  );
-  const painGrid =
-    interiorCandidates.length > 0
-      ? interiorCandidates
-      : activeCorridorStrikes.filter(s => s.strike > finalPutWall && s.strike < finalCallWall);
-
-  for (const testStrike of painGrid) {
-    let pain = 0;
-    for (const s of strikes) {
-      const callWeight = s.callOi + s.callVolume * 0.25;
-      const putWeight = s.putOi + s.putVolume * 0.25;
-      if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * callWeight;
-      if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * putWeight;
-    }
-    if (pain < minPainCost && pain > 0) {
-      minPainCost = pain;
-      calculatedMaxPain = testStrike.strike;
-    }
-  }
-
-  const finalMaxPain = Math.max(finalPutWall + 10, Math.min(finalCallWall - 10, calculatedMaxPain));
-
-  const totalCallOi = strikes.reduce((sum, s) => sum + s.callOi, 0);
-  const totalPutOi = strikes.reduce((sum, s) => sum + s.putOi, 0);
-  const totalCallVol = strikes.reduce((sum, s) => sum + s.callVolume, 0);
-  const totalPutVol = strikes.reduce((sum, s) => sum + s.putVolume, 0);
-  const totalNetGex = strikes.reduce((sum, s) => sum + s.netGex, 0);
-
-  const avgIv =
-    strikes.reduce((sum, s) => sum + s.iv, 0) / (strikes.length || 1) || 0.185;
-  const impliedVolPct = Math.round(avgIv * 1000) / 10;
-  const intradayRangePct = oandaHigh > oandaLow && spotPrice > 0 ? ((oandaHigh - oandaLow) / spotPrice) * Math.sqrt(252) * 100 : 14.8;
-  const realizedVol30d = Math.round(Math.max(10.5, Math.min(28.0, intradayRangePct * 0.65 + 14.8 * 0.35)) * 10) / 10;
-  const volSpreadIvRv = Math.round((impliedVolPct - realizedVol30d) * 10) / 10;
-
-  // Variance Risk Premium adjustment: if IV > RV, options price in a wider move (impulse risk or post-event IV crush);
-  // if IV < RV, options are underpricing active trend volatility.
-  const ivRvMultiplier = volSpreadIvRv > 2.0 ? 1.06 : volSpreadIvRv < -1.5 ? 1.12 : 1.0;
-  const expectedMovePct68 = avgIv * Math.sqrt(Math.max(realData.tYears, 1 / 365)) * ivRvMultiplier;
-  const expectedMovePct95 = expectedMovePct68 * 2.0;
-
-  const isPositiveGamma = totalNetGex >= 0;
-  const regimeText = isPositiveGamma
-    ? `Режим реальной гаммы (Положительная гамма): Нетто-гамма дилеров +$${Math.abs(totalNetGex).toFixed(1)}M (с учетом OI и Volume). Дилеры абсорбируют волатильность между Put Wall $${finalPutWall} и Call Wall $${finalCallWall}.`
-    : `Режим реальной гаммы (Отрицательная гамма): Нетто-гамма дилеров -$${Math.abs(totalNetGex).toFixed(1)}M (с учетом OI и Volume). Дилеры хеджируются по тренду, ускоряя импульс при пробое уровней.`;
-
-  const sortedByOi = strikes.slice().sort((a, b) => (b.totalOi + b.callVolume + b.putVolume) - (a.totalOi + a.callVolume + a.putVolume));
-  const oiAnomalies = sortedByOi.slice(0, 3).map((s, idx) => ({
-    strike: s.strike,
-    type: (s.callOi + s.callVolume >= s.putOi + s.putVolume ? "CALL" : "PUT") as "CALL" | "PUT",
-    volume: s.callVolume + s.putVolume,
-    oi: s.totalOi,
-    ratio: Math.round(((s.callVolume + s.putVolume) / Math.max(1, s.totalOi * 0.1)) * 10) / 10,
-    severity: (idx === 0 ? "HIGH" : "MEDIUM") as "HIGH" | "MEDIUM"
-  }));
-
-  const report: GexMarketReport = {
-    asset: "XAUUSD",
-    horizon,
-    spotPrice,
-    timestamp: new Date().toISOString(),
-    expirationDate: realData.expirationDateStr,
-    source: `${oandaSource} • ${realData.sourceName}`,
-    netGexTotal: Math.round(totalNetGex * 10) / 10,
-    netGexRegime: isPositiveGamma ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
-    regimeDescription: regimeText,
-    gammaFlip: finalFlip,
-    callWall: finalCallWall,
-    putWall: finalPutWall,
-    maxPain: finalMaxPain,
-    sleeperMagnet: finalCallWall + (horizon === "DAY" ? 20 : horizon === "WEEK" ? 30 : 50),
-    expectedMove68: {
-      low: Math.round(spotPrice * (1 - expectedMovePct68) * 10) / 10,
-      high: Math.round(spotPrice * (1 + expectedMovePct68) * 10) / 10,
-      rangePct: Math.round(expectedMovePct68 * 1000) / 10
-    },
-    expectedMove95: {
-      low: Math.round(spotPrice * (1 - expectedMovePct95) * 10) / 10,
-      high: Math.round(spotPrice * (1 + expectedMovePct95) * 10) / 10,
-      rangePct: Math.round(expectedMovePct95 * 1000) / 10
-    },
-    dealerGreeks: {
-      charm: -12.4,
-      vanna: 8.6,
-      aggregateDelta: Math.round(((totalCallOi + totalCallVol * 0.35) - (totalPutOi + totalPutVol * 0.35)) * 0.35)
-    },
-    pcrOi: totalCallOi > 0 ? Math.round((totalPutOi / totalCallOi) * 100) / 100 : 1,
-    pcrVol: totalCallVol > 0 ? Math.round((totalPutVol / totalCallVol) * 100) / 100 : 1,
-    impliedVolAvg: impliedVolPct,
-    realizedVol30d,
-    volSpreadIvRv,
-    strikes,
-    oiAnomalies
-  };
-
-  gexCache[cacheKey] = { data: report, cachedAt: now };
-  return report;
+    return report;
+  });
 }
 
 // -------------------------------------------------------------
@@ -2083,6 +2679,175 @@ let moexContractsCache: {
   allQuarterly: MoexContractMeta[];
   cachedAt: number;
 } | null = null;
+
+let isMoexContractsRefreshing = false;
+
+// Real-time 0-second tick overlay for MOEX contracts (shared between candles stream & contracts endpoint)
+const moexLivePriceOverlayMap = new Map<
+  string,
+  { price: number; high: number; low: number; updatedAt: number }
+>();
+
+const moexLiveBenchAnchorMap = new Map<
+  string,
+  { moexBase: number; benchBase: number; updatedAt: number }
+>();
+
+let liveBenchCache: {
+  xau: number;
+  brent: number;
+  ng: number;
+  usdrub: number;
+  rtsi: number;
+  updatedAt: number;
+  fetching: boolean;
+} = {
+  xau: 0,
+  brent: 0,
+  ng: 0,
+  usdrub: 0,
+  rtsi: 0,
+  updatedAt: 0,
+  fetching: false
+};
+
+export function updateMoexLivePriceOverlay(secId: string, price: number, high?: number, low?: number) {
+  if (!secId || !(price > 0)) return;
+  const prev = moexLivePriceOverlayMap.get(secId);
+  moexLivePriceOverlayMap.set(secId, {
+    price,
+    high: Math.max(price, high || price, prev?.high || 0),
+    low: prev && prev.low > 0 ? Math.min(price, low || price, prev.low) : (low || price),
+    updatedAt: Date.now()
+  });
+}
+
+async function fetchStreamingScannerQuote(symbol: string): Promise<number> {
+  try {
+    const r = await fetch(
+      `https://scanner.tradingview.com/symbol?symbol=${encodeURIComponent(symbol)}&fields=close,bid,ask,rtc`,
+      { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(1800) }
+    );
+    if (!r.ok) return 0;
+    const j = await r.json();
+    const rtc = Number(j.rtc || j.close || 0);
+    const hasSpread = typeof j.bid === "number" && typeof j.ask === "number" && j.bid > 0 && j.ask > 0 && j.ask >= j.bid;
+    const mid = hasSpread ? (Number(j.bid) + Number(j.ask)) / 2 : 0;
+    if (mid > 0 && rtc > 0 && Math.abs(mid - rtc) / rtc < 0.005) {
+      return mid;
+    }
+    return rtc > 0 ? rtc : mid;
+  } catch {
+    return 0;
+  }
+}
+
+export async function getLiveMoexStreamingBenchmarks(): Promise<{
+  xau: number;
+  brent: number;
+  ng: number;
+  usdrub: number;
+  rtsi: number;
+}> {
+  const now = Date.now();
+  if (now - liveBenchCache.updatedAt < 1000 && liveBenchCache.xau > 0) {
+    return liveBenchCache;
+  }
+  if (liveBenchCache.fetching && liveBenchCache.xau > 0) {
+    return liveBenchCache;
+  }
+  liveBenchCache.fetching = true;
+  try {
+    const [xau, brent, ng, usdrub, rtsi] = await Promise.all([
+      fetchStreamingScannerQuote("OANDA:XAUUSD"),
+      fetchStreamingScannerQuote("FX:UKOIL"),
+      fetchStreamingScannerQuote("OANDA:NATGASUSD"),
+      fetchStreamingScannerQuote("FX_IDC:USDRUB"),
+      fetchStreamingScannerQuote("RUS:RTSI")
+    ]);
+    liveBenchCache = {
+      xau: xau > 0 ? xau : liveBenchCache.xau,
+      brent: brent > 0 ? brent : liveBenchCache.brent,
+      ng: ng > 0 ? ng : liveBenchCache.ng,
+      usdrub: usdrub > 0 ? usdrub : liveBenchCache.usdrub,
+      rtsi: rtsi > 0 ? rtsi : liveBenchCache.rtsi,
+      updatedAt: Date.now(),
+      fetching: false
+    };
+  } catch {
+    liveBenchCache.fetching = false;
+  }
+  return liveBenchCache;
+}
+
+function applyLiveBenchmarkToContract(
+  c: MoexContractMeta | undefined,
+  benchPrice: number,
+  decimals: number
+): MoexContractMeta | undefined {
+  if (!c) return undefined;
+  const overlay = moexLivePriceOverlayMap.get(c.secId);
+  if (overlay && Date.now() - overlay.updatedAt < 4000) {
+    return {
+      ...c,
+      last: Number(overlay.price.toFixed(decimals)),
+      high: Number(Math.max(c.high, overlay.high).toFixed(decimals)),
+      low: Number(Math.min(c.low, overlay.low).toFixed(decimals))
+    };
+  }
+  if (!(benchPrice > 0) || !(c.last > 0)) return c;
+  let anchor = moexLiveBenchAnchorMap.get(c.secId);
+  if (!anchor || Math.abs(anchor.moexBase - c.last) / c.last > 0.025) {
+    anchor = {
+      moexBase: c.last,
+      benchBase: benchPrice,
+      updatedAt: Date.now()
+    };
+    moexLiveBenchAnchorMap.set(c.secId, anchor);
+  }
+  const ratio = benchPrice / anchor.benchBase;
+  const liveLast = Number((anchor.moexBase * ratio).toFixed(decimals));
+  return {
+    ...c,
+    last: liveLast,
+    high: Number(Math.max(c.high, liveLast).toFixed(decimals)),
+    low: Number(Math.min(c.low, liveLast).toFixed(decimals))
+  };
+}
+
+async function enrichMoexContractsWithLiveTicks(base: NonNullable<typeof moexContractsCache>) {
+  const bench = await getLiveMoexStreamingBenchmarks();
+  const large = applyLiveBenchmarkToContract(base.large, bench.xau, 1) || base.large;
+  const mini = applyLiveBenchmarkToContract(base.mini, bench.xau, 1) || base.mini;
+  const rubSynthBench = bench.xau > 0 && bench.usdrub > 0 ? (bench.xau * bench.usdrub) / 31.1035 : bench.xau;
+  const rub = applyLiveBenchmarkToContract(base.rub, rubSynthBench, 1) || base.rub;
+  const br = applyLiveBenchmarkToContract(base.br, bench.brent, 2);
+  const ng = applyLiveBenchmarkToContract(base.ng, bench.ng, 3);
+  const si = applyLiveBenchmarkToContract(base.si, bench.usdrub, 0);
+  const ri = applyLiveBenchmarkToContract(base.ri, bench.rtsi, 0);
+
+  const enrichedAll = (base.allQuarterly || []).map(c => {
+    if (c.secId.startsWith("GD")) return applyLiveBenchmarkToContract(c, bench.xau, 1) || c;
+    if (c.secId.startsWith("GN")) return applyLiveBenchmarkToContract(c, bench.xau, 1) || c;
+    if (c.secId.startsWith("BR")) return applyLiveBenchmarkToContract(c, bench.brent, 2) || c;
+    if (c.secId.startsWith("NG")) return applyLiveBenchmarkToContract(c, bench.ng, 3) || c;
+    if (c.secId.startsWith("Si")) return applyLiveBenchmarkToContract(c, bench.usdrub, 0) || c;
+    if (c.secId.startsWith("RI")) return applyLiveBenchmarkToContract(c, bench.rtsi, 0) || c;
+    return c;
+  });
+
+  return {
+    ...base,
+    large,
+    mini,
+    rub,
+    br,
+    ng,
+    si,
+    ri,
+    allQuarterly: enrichedAll
+  };
+}
 
 export async function fetchMoexWithRetry(
   url: string,
@@ -2134,17 +2899,30 @@ export async function fetchMoexFrontQuarterlyContracts(): Promise<{
   cachedAt?: number;
 }> {
   const now = Date.now();
-  if (moexContractsCache && now - moexContractsCache.cachedAt < 60 * 1000) {
-    return moexContractsCache;
+  if (moexContractsCache && now - moexContractsCache.cachedAt < 15 * 1000) {
+    return enrichMoexContractsWithLiveTicks(moexContractsCache);
   }
+  if (moexContractsCache && !isMoexContractsRefreshing) {
+    // Non-blocking background refresh of MOEX ISS snapshot so UI never stalls
+    isMoexContractsRefreshing = true;
+    refreshMoexContractsSnapshotFromIss().finally(() => {
+      isMoexContractsRefreshing = false;
+    });
+    return enrichMoexContractsWithLiveTicks(moexContractsCache);
+  }
+  const fresh = await refreshMoexContractsSnapshotFromIss();
+  return enrichMoexContractsWithLiveTicks(fresh);
+}
 
+async function refreshMoexContractsSnapshotFromIss(): Promise<NonNullable<typeof moexContractsCache>> {
+  const now = Date.now();
   // Fallbacks
   const defaultLarge: MoexContractMeta = {
     secId: "GDZ6",
     shortName: "GOLD-12.26",
     secName: "Фьючерсный контракт GOLD-12.26",
     contractType: "GD_STANDARD",
-    multiplierOz: 1.0,
+    multiplierOz: 10.0, // Official MOEX FORTS GD specification (https://www.moex.com/s205): 10 troy oz
     currency: "USD",
     last: 4204.8,
     open: 4216.4,
@@ -2163,7 +2941,7 @@ export async function fetchMoexFrontQuarterlyContracts(): Promise<{
     shortName: "GOLDM-12.26",
     secName: "Фьючерсный контракт GOLDM-12.26",
     contractType: "GN_MINI",
-    multiplierOz: 0.1,
+    multiplierOz: 0.1, // Official MOEX FORTS GN (Mini Gold) specification: 0.1 troy oz
     currency: "USD",
     last: 4203.3,
     open: 4218.2,
@@ -2389,11 +3167,13 @@ export async function fetchMoexFrontQuarterlyContracts(): Promise<{
             const currency: "USD" | "RUB" = prefix === "Si" ? "RUB" : "USD";
             const multiplier =
               prefix === "GD"
-                ? 1.0
+                ? 10.0
                 : prefix === "GN"
                 ? 0.1
                 : prefix === "Si"
                 ? 1000
+                : prefix === "RI"
+                ? 0.02
                 : prefix === "BR"
                 ? 10
                 : prefix === "NG"
@@ -2681,10 +3461,9 @@ function calculateSyntheticMoexGex(params: MoexHybridParams): GexMarketReport {
     totalPutVol += pVol;
 
     const { gamma } = calculateOptionGreeks(spotPrice, k, hm.tYears, baseIv / 100, true);
-    const effCall = cOi + cVol * 0.35;
-    const effPut = pOi + pVol * 0.35;
-    const callGex = (gamma * effCall * contractMultiplier * spotPrice * spotPrice * 0.01) / 1000000;
-    const putGex = -(gamma * effPut * contractMultiplier * spotPrice * spotPrice * 0.01) / 1000000;
+    // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure OI, strictly NO volume mixing, scaled to $M)
+    const callGex = (gamma * cOi * contractMultiplier * spotPrice * 0.01) / 10_000;
+    const putGex = -(gamma * pOi * contractMultiplier * spotPrice * 0.01) / 10_000;
 
     strikes.push({
       strike: k,
@@ -2700,36 +3479,37 @@ function calculateSyntheticMoexGex(params: MoexHybridParams): GexMarketReport {
     });
   }
 
-  // Max Pain
-  let minPainCost = Infinity;
-  let calculatedMaxPain = centerStrike;
-  for (const testStrike of strikes) {
-    let pain = 0;
-    for (const s of strikes) {
-      if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * s.callOi;
-      if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * s.putOi;
-    }
-    if (pain < minPainCost && pain > 0) {
-      minPainCost = pain;
-      calculatedMaxPain = testStrike.strike;
-    }
-  }
+  // 3. Walls strictly sorted by Open Interest
+  const walls = findCallAndPutWalls(strikes, spotPrice, step, roundDecimals);
+  targetCallWall = walls.callWall;
+  targetPutWall = walls.putWall;
 
-  // Zero-Flip
-  let zeroFlip = centerStrike;
-  for (let i = 1; i < strikes.length; i++) {
-    if (
-      (strikes[i - 1].netGex <= 0 && strikes[i].netGex >= 0) ||
-      (strikes[i - 1].netGex >= 0 && strikes[i].netGex <= 0)
-    ) {
-      zeroFlip = strikes[i].strike;
-      break;
-    }
-  }
+  // 2. Max Pain strictly on Open Interest (uniform grid within [targetPutWall, targetCallWall], no volume)
+  const { maxPain: calculatedMaxPain, maxPainRange: synthMoexPainRange } = computeMaxPainWithRange(
+    strikes,
+    centerStrike,
+    step,
+    roundDecimals,
+    targetPutWall,
+    targetCallWall
+  );
+
+  // Zero-Flip on uniform strike grid
+  const zeroFlip = computeZeroGammaFlip(strikes, spotPrice, step, roundDecimals, targetPutWall, targetCallWall);
+
+  const flipOutOfCorridor = zeroFlip < targetPutWall || zeroFlip > targetCallWall;
+  const painOutOfCorridor = calculatedMaxPain < targetPutWall || calculatedMaxPain > targetCallWall;
+  const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
 
   const expectedMovePct68 = (baseIv / 100) * Math.sqrt(Math.max(1 / 365, hm.tYears));
   const expectedMovePct95 = expectedMovePct68 * 2.0;
   const totalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
+
+  // 6. Normalization metrics
+  const { normalizedNetGex, gexIntensity } = computeGexNormalization(strikes, spotPrice);
+
+  const synthSourceStr = `${titlePrefix} (${activeTicker} ${activeContract.quarterLabel}) • Синтетическая модель (Резервный режим, ${hm.label})`;
+  const density = evaluateOptionBookDensity(strikes, reportAsset, horizon, synthSourceStr);
 
   return {
     asset: reportAsset,
@@ -2737,14 +3517,25 @@ function calculateSyntheticMoexGex(params: MoexHybridParams): GexMarketReport {
     spotPrice: roundToDecimals(spotPrice, roundDecimals),
     timestamp: new Date().toISOString(),
     expirationDate: getHorizonExpirationDateString(horizon),
-    source: `${titlePrefix} (${activeTicker} ${activeContract.quarterLabel}) • Синтетическая модель (Резервный режим, ${hm.label})`,
+    source: synthSourceStr,
+    isSynthetic: true,
+    outOfCorridor,
+    flipOutOfCorridor,
+    painOutOfCorridor,
+    lowConfidence: density.lowConfidence,
+    lowConfidenceReason: density.lowConfidenceReason,
+    callOiStrikesCount: density.callOiStrikesCount,
+    putOiStrikesCount: density.putOiStrikesCount,
     netGexTotal: Math.round(totalNetGex * 10) / 10,
+    normalizedNetGex,
+    gexIntensity,
     netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
     regimeDescription: `${titlePrefix} (${activeTicker}, ${hm.label}): Call Wall ${targetCallWall}, Put Wall ${targetPutWall}. ОИ фьючерса: ${openPositionTotal.toLocaleString("ru-RU")}.`,
     gammaFlip: zeroFlip,
     callWall: targetCallWall,
     putWall: targetPutWall,
     maxPain: calculatedMaxPain,
+    maxPainRange: synthMoexPainRange,
     sleeperMagnet: roundToDecimals(targetCallWall + step * 2, roundDecimals),
     expectedMove68: {
       low: roundToDecimals(spotPrice * (1 - expectedMovePct68), roundDecimals),
@@ -2868,10 +3659,9 @@ async function buildHybridMoexGexReport(params: MoexHybridParams): Promise<GexMa
         const strikeIvDec = strikeIvPct / 100;
         const { gamma } = calculateOptionGreeks(spotPrice, k, tYears, strikeIvDec, true);
 
-        const effCall = data.callOi + data.callVol * 0.35;
-        const effPut = data.putOi + data.putVol * 0.35;
-        const callGex = (gamma * effCall * contractMultiplier * spotPrice * spotPrice * 0.01) / 1000000;
-        const putGex = -(gamma * effPut * contractMultiplier * spotPrice * spotPrice * 0.01) / 1000000;
+        // Strict GEX Formula: gamma * OI * contractMultiplier * Spot * 0.01 (Pure OI, strictly NO volume mixing, scaled to $M)
+        const callGex = (gamma * data.callOi * contractMultiplier * spotPrice * 0.01) / 10_000;
+        const putGex = -(gamma * data.putOi * contractMultiplier * spotPrice * 0.01) / 10_000;
 
         strikes.push({
           strike: k,
@@ -2894,74 +3684,36 @@ async function buildHybridMoexGexReport(params: MoexHybridParams): Promise<GexMa
       // Sort descending by strike
       strikes.sort((a, b) => b.strike - a.strike);
 
-      // Call Wall (strictly above spotPrice)
-      const callsAbove = strikes
-        .filter(s => s.strike > spotPrice && (s.callGex > 0 || s.callOi > 0))
-        .sort((a, b) => b.callGex * 1000 + b.callOi - (a.callGex * 1000 + a.callOi));
-      const callWall =
-        callsAbove.length > 0
-          ? callsAbove[0].strike
-          : roundToDecimals(Math.ceil((spotPrice * 1.02) / step) * step, roundDecimals);
+      // 3. CALL/PUT WALLS: Strictly sorted by Open Interest (no volume mixing)
+      const { callWall, putWall } = findCallAndPutWalls(strikes, spotPrice, step, roundDecimals);
 
-      // Put Wall (strictly below spotPrice)
-      const putsBelow = strikes
-        .filter(s => s.strike < spotPrice && (s.putGex < 0 || s.putOi > 0))
-        .sort((a, b) => Math.abs(b.putGex) * 1000 + b.putOi - (Math.abs(a.putGex) * 1000 + a.putOi));
-      const putWall =
-        putsBelow.length > 0
-          ? putsBelow[0].strike
-          : roundToDecimals(Math.floor((spotPrice * 0.98) / step) * step, roundDecimals);
+      // Zero-Flip on uniform strike grid near spot
+      const zeroFlip = computeZeroGammaFlip(strikes, spotPrice, step, roundDecimals, putWall, callWall);
 
-      // Zero-Flip near spot
-      const sortedAsc = strikes.slice().sort((a, b) => a.strike - b.strike);
-      let zeroFlip = roundToDecimals(Math.round(spotPrice / step) * step, roundDecimals);
-      let foundFlip = false;
-      for (let i = 0; i < sortedAsc.length - 1; i++) {
-        const s1 = sortedAsc[i];
-        const s2 = sortedAsc[i + 1];
-        if (Math.abs(s1.strike - spotPrice) > spotPrice * 0.06) continue;
-        if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
-          const denom = s2.netGex - s1.netGex;
-          if (Math.abs(denom) > 0.0001) {
-            zeroFlip = roundToDecimals(
-              s1.strike + ((0 - s1.netGex) / denom) * (s2.strike - s1.strike),
-              roundDecimals
-            );
-          } else {
-            zeroFlip = s1.strike;
-          }
-          foundFlip = true;
-          break;
-        }
-      }
-      if (!foundFlip) {
-        const nearSpot = strikes.filter(s => Math.abs(s.strike - spotPrice) <= spotPrice * 0.05);
-        if (nearSpot.length > 0) {
-          zeroFlip = nearSpot.sort((a, b) => Math.abs(a.netGex) - Math.abs(b.netGex))[0].strike;
-        }
-      }
+      // 2. Max Pain from real MOEX option chain strictly on Open Interest (uniform grid within [putWall, callWall])
+      const { maxPain: calculatedMaxPain, maxPainRange: realMoexPainRange } = computeMaxPainWithRange(
+        strikes,
+        roundToDecimals(Math.round(spotPrice / step) * step, roundDecimals),
+        step,
+        roundDecimals,
+        putWall,
+        callWall
+      );
 
-      // Max Pain from real MOEX option chain
-      let minPainCost = Infinity;
-      let calculatedMaxPain = roundToDecimals(Math.round(spotPrice / step) * step, roundDecimals);
-      for (const testStrike of strikes) {
-        let pain = 0;
-        for (const s of strikes) {
-          const cW = s.callOi + s.callVolume * 0.25;
-          const pW = s.putOi + s.putVolume * 0.25;
-          if (testStrike.strike > s.strike) pain += (testStrike.strike - s.strike) * cW;
-          if (testStrike.strike < s.strike) pain += (s.strike - testStrike.strike) * pW;
-        }
-        if (pain < minPainCost && pain > 0) {
-          minPainCost = pain;
-          calculatedMaxPain = testStrike.strike;
-        }
-      }
+      const flipOutOfCorridor = zeroFlip < putWall || zeroFlip > callWall;
+      const painOutOfCorridor = calculatedMaxPain < putWall || calculatedMaxPain > callWall;
+      const outOfCorridor = flipOutOfCorridor || painOutOfCorridor;
+
+      // 6. Normalization metrics
+      const { normalizedNetGex, gexIntensity } = computeGexNormalization(strikes, spotPrice);
 
       const avgIvPct = weightedIvTotal > 0 ? Math.round((weightedIvSum / weightedIvTotal) * 10) / 10 : baseIv;
       const expectedMovePct68 = (avgIvPct / 100) * Math.sqrt(Math.max(1 / 365, tYears));
       const expectedMovePct95 = expectedMovePct68 * 2.0;
       const totalNetGex = strikes.reduce((acc, s) => acc + s.netGex, 0);
+
+      const realSourceStr = `${titlePrefix} (${activeTicker} ${activeContract.quarterLabel}) • MOEX ISS Real Options API (Доска ROPD, ${horizonLabels[horizon]})`;
+      const density = evaluateOptionBookDensity(strikes, reportAsset, horizon, realSourceStr);
 
       console.log(
         `[GEX Engine] Loaded real MOEX ISS ROPD options for ${reportAsset} (${activeTicker}): ${strikes.length} strikes`
@@ -2973,14 +3725,25 @@ async function buildHybridMoexGexReport(params: MoexHybridParams): Promise<GexMa
         spotPrice: roundToDecimals(spotPrice, roundDecimals),
         timestamp: new Date().toISOString(),
         expirationDate: getHorizonExpirationDateString(horizon),
-        source: `${titlePrefix} (${activeTicker} ${activeContract.quarterLabel}) • MOEX ISS Real Options API (Доска ROPD, ${horizonLabels[horizon]})`,
+        source: realSourceStr,
+        isSynthetic: false,
+        outOfCorridor,
+        flipOutOfCorridor,
+        painOutOfCorridor,
+        lowConfidence: density.lowConfidence,
+        lowConfidenceReason: density.lowConfidenceReason,
+        callOiStrikesCount: density.callOiStrikesCount,
+        putOiStrikesCount: density.putOiStrikesCount,
         netGexTotal: Math.round(totalNetGex * 10) / 10,
+        normalizedNetGex,
+        gexIntensity,
         netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
         regimeDescription: `${titlePrefix} (${activeTicker}, Реальные опционы MOEX ROPD): Call Wall ${callWall}, Put Wall ${putWall}. ОИ опционов: ${(totalCallOi + totalPutOi).toLocaleString("ru-RU")}.`,
         gammaFlip: zeroFlip,
         callWall,
         putWall,
         maxPain: calculatedMaxPain,
+        maxPainRange: realMoexPainRange,
         sleeperMagnet: roundToDecimals(callWall + step * 2, roundDecimals),
         expectedMove68: {
           low: roundToDecimals(spotPrice * (1 - expectedMovePct68), roundDecimals),
@@ -3029,168 +3792,158 @@ async function buildHybridMoexGexReport(params: MoexHybridParams): Promise<GexMa
 // -------------------------------------------------------------
 // 2b. RUSSIAN MOEX GOLD FUTURES (GD Standard USD/oz) & OPTIONS GEX
 // -------------------------------------------------------------
-export async function calculateMoexGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function calculateMoexGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `MOEX_GOLD_${horizon}`;
-  const now = Date.now();
-  if (gexCache[cacheKey] && now - gexCache[cacheKey].cachedAt < CACHE_TTL_MS) {
-    return gexCache[cacheKey].data;
-  }
 
-  const contracts = await fetchMoexFrontQuarterlyContracts();
-  const report = await buildHybridMoexGexReport({
-    reportAsset: "MOEX_GOLD",
-    horizon,
-    activeContract: contracts.large,
-    acceptedAssetCodes: ["GD", "GOLD"],
-    step: 10,
-    baseIv: 19.2,
-    realizedVol: 15.4,
-    contractMultiplier: 10,
-    roundDecimals: 1,
-    titlePrefix: "Московская Биржа MOEX FORTS Золото (1 oz $)"
+  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+    const contracts = await fetchMoexFrontQuarterlyContracts();
+    return buildHybridMoexGexReport({
+      reportAsset: "MOEX_GOLD",
+      horizon,
+      activeContract: contracts.large,
+      acceptedAssetCodes: ["GD", "GOLD"],
+      step: 10,
+      baseIv: 19.2,
+      realizedVol: 15.4,
+      contractMultiplier: 10, // Official MOEX FORTS GD spec (https://www.moex.com/s205): 10 troy oz
+      roundDecimals: 1,
+      titlePrefix: "Московская Биржа MOEX FORTS Золото (10 oz $)"
+    });
   });
-
-  gexCache[cacheKey] = { data: report, cachedAt: now };
-  return report;
 }
 
 // -------------------------------------------------------------
 // 2c. RUSSIAN MOEX MINI GOLD FUTURES (GN Mini USD/oz) & OPTIONS GEX
 // -------------------------------------------------------------
-export async function calculateMoexMiniGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function calculateMoexMiniGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `MOEX_MINI_${horizon}`;
-  const now = Date.now();
-  if (gexCache[cacheKey] && now - gexCache[cacheKey].cachedAt < CACHE_TTL_MS) {
-    return gexCache[cacheKey].data;
-  }
 
-  const contracts = await fetchMoexFrontQuarterlyContracts();
-  const report = await buildHybridMoexGexReport({
-    reportAsset: "MOEX_MINI",
-    horizon,
-    activeContract: contracts.mini,
-    acceptedAssetCodes: ["GN", "GD", "GOLD"],
-    step: 10,
-    baseIv: 19.4,
-    realizedVol: 15.6,
-    contractMultiplier: 1,
-    roundDecimals: 1,
-    titlePrefix: "Московская Биржа MOEX FORTS Мини-Золото (0.1 oz $)"
+  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+    const contracts = await fetchMoexFrontQuarterlyContracts();
+    return buildHybridMoexGexReport({
+      reportAsset: "MOEX_MINI",
+      horizon,
+      activeContract: contracts.mini,
+      acceptedAssetCodes: ["GN", "GD", "GOLD"],
+      step: 10,
+      baseIv: 19.4,
+      realizedVol: 15.6,
+      contractMultiplier: 0.1, // Official MOEX FORTS GN (Mini Gold) spec: 0.1 troy oz
+      roundDecimals: 1,
+      titlePrefix: "Московская Биржа MOEX FORTS Мини-Золото (0.1 oz $)"
+    });
   });
-
-  gexCache[cacheKey] = { data: report, cachedAt: now };
-  return report;
 }
 
 // -------------------------------------------------------------
 // 2d. RUSSIAN MOEX FORTS FUTURES (Si USD/RUB, RI RTS, BR Brent, NG Gas) GEX
 // -------------------------------------------------------------
-export async function calculateMoexGenericGex(
+export function calculateMoexGenericGex(
   assetType: "SI" | "RI" | "BR" | "NG",
   horizon: ExpiryHorizon = "WEEK"
 ): Promise<GexMarketReport> {
   const cacheKey = `MOEX_${assetType}_${horizon}`;
-  const now = Date.now();
-  if (gexCache[cacheKey] && now - gexCache[cacheKey].cachedAt < CACHE_TTL_MS) {
-    return gexCache[cacheKey].data;
-  }
 
-  const contracts = await fetchMoexFrontQuarterlyContracts();
-  const active =
-    assetType === "SI"
-      ? contracts.si || contracts.large
-      : assetType === "RI"
-      ? contracts.ri || contracts.large
-      : assetType === "BR"
-      ? contracts.br || contracts.large
-      : contracts.ng || contracts.large;
+  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+    const contracts = await fetchMoexFrontQuarterlyContracts();
+    const active =
+      assetType === "SI"
+        ? contracts.si || contracts.large
+        : assetType === "RI"
+        ? contracts.ri || contracts.large
+        : assetType === "BR"
+        ? contracts.br || contracts.large
+        : contracts.ng || contracts.large;
 
-  const configMap: Record<
-    "SI" | "RI" | "BR" | "NG",
-    {
-      reportAsset: "MOEX_SI" | "MOEX_RI" | "MOEX_BR" | "MOEX_NG";
-      codes: string[];
-      step: number;
-      baseIv: number;
-      rv: number;
-      mult: number;
-      decimals: number;
-      title: string;
-    }
-  > = {
-    SI: {
-      reportAsset: "MOEX_SI",
-      codes: ["SI", "Si"],
-      step: 250,
-      baseIv: 18.5,
-      rv: 15.8,
-      mult: 1000,
-      decimals: 0,
-      title: "MOEX FORTS Валюта USD/RUB"
-    },
-    RI: {
-      reportAsset: "MOEX_RI",
-      codes: ["RI", "RTS"],
-      step: 500,
-      baseIv: 24.0,
-      rv: 20.5,
-      mult: 10,
-      decimals: 0,
-      title: "MOEX FORTS Индекс РТС"
-    },
-    BR: {
-      reportAsset: "MOEX_BR",
-      codes: ["BR", "BRENT"],
-      step: 1.0,
-      baseIv: 32.0,
-      rv: 27.5,
-      mult: 10,
-      decimals: 2,
-      title: "MOEX FORTS Нефть Brent"
-    },
-    NG: {
-      reportAsset: "MOEX_NG",
-      codes: ["NG", "GAS"],
-      step: 0.05,
-      baseIv: 42.0,
-      rv: 36.8,
-      mult: 100,
-      decimals: 3,
-      title: "MOEX FORTS Природный Газ"
-    }
-  };
+    // For SI (USD/RUB): MOEX official lot is 1,000 USD, quoted in RUB per 1,000 USD lot (e.g. ~83,846 RUB).
+    // In RUB, 1 pt = 1 RUB (1 contract = spotPrice RUB). To express GEX in USD ($M) comparable with all other assets,
+    // we divide by the USD/RUB rate (spotPrice / 1000), so contractMultiplier_USD = 1000 / spotPrice (i.e. contractMultiplier * spotPrice = $1,000 USD per contract).
+    const siUsdMultiplier = 1000 / Math.max(1, active.last || 83846);
 
-  const cfg = configMap[assetType];
-  const report = await buildHybridMoexGexReport({
-    reportAsset: cfg.reportAsset,
-    horizon,
-    activeContract: active,
-    acceptedAssetCodes: cfg.codes,
-    step: cfg.step,
-    baseIv: cfg.baseIv,
-    realizedVol: cfg.rv,
-    contractMultiplier: cfg.mult,
-    roundDecimals: cfg.decimals,
-    titlePrefix: cfg.title
+    const configMap: Record<
+      "SI" | "RI" | "BR" | "NG",
+      {
+        reportAsset: "MOEX_SI" | "MOEX_RI" | "MOEX_BR" | "MOEX_NG";
+        codes: string[];
+        step: number;
+        baseIv: number;
+        rv: number;
+        mult: number;
+        decimals: number;
+        title: string;
+      }
+    > = {
+      SI: {
+        reportAsset: "MOEX_SI",
+        codes: ["SI", "Si"],
+        step: 250,
+        baseIv: 18.5,
+        rv: 15.8,
+        mult: siUsdMultiplier, // Converts RUB quote to $1,000 USD lot notional so GEX is in $M (USD)
+        decimals: 0,
+        title: "MOEX FORTS Валюта USD/RUB (Лот $1 000)"
+      },
+      RI: {
+        reportAsset: "MOEX_RI",
+        codes: ["RI", "RTS"],
+        step: 500,
+        baseIv: 24.0,
+        rv: 20.5,
+        mult: 0.02, // Official MOEX RTS (RI) spec: min step 5 pts = $0.10 USD (or 10 pts = $0.20 USD) -> 1 pt = $0.02 USD
+        decimals: 0,
+        title: "MOEX FORTS Индекс РТС (1 п. = $0.02)"
+      },
+      BR: {
+        reportAsset: "MOEX_BR",
+        codes: ["BR", "BRENT"],
+        step: 1.0,
+        baseIv: 32.0,
+        rv: 27.5,
+        mult: 10, // Official MOEX BR spec: 10 barrels
+        decimals: 2,
+        title: "MOEX FORTS Нефть Brent"
+      },
+      NG: {
+        reportAsset: "MOEX_NG",
+        codes: ["NG", "GAS"],
+        step: 0.05,
+        baseIv: 42.0,
+        rv: 36.8,
+        mult: 100, // Official MOEX NG spec: 100 MMBtu
+        decimals: 3,
+        title: "MOEX FORTS Природный Газ"
+      }
+    };
+
+    const cfg = configMap[assetType];
+    return buildHybridMoexGexReport({
+      reportAsset: cfg.reportAsset,
+      horizon,
+      activeContract: active,
+      acceptedAssetCodes: cfg.codes,
+      step: cfg.step,
+      baseIv: cfg.baseIv,
+      realizedVol: cfg.rv,
+      contractMultiplier: cfg.mult,
+      roundDecimals: cfg.decimals,
+      titlePrefix: cfg.title
+    });
   });
-
-  gexCache[cacheKey] = { data: report, cachedAt: now };
-  return report;
 }
 
 // -------------------------------------------------------------
 // 3. RIPPLE (XRP) & SOLANA (SOL) HYBRID DERIBIT + FALLBACK WRAPPERS
 // -------------------------------------------------------------
-export async function calculateXrpGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function calculateXrpGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   return calculateCryptoGex("XRP", horizon);
 }
 
-export async function calculateSolGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function calculateSolGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   return calculateCryptoGex("SOL", horizon);
 }
 
 // Router dispatcher
-export async function getGexReportForAsset(asset: string, horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
+export function getGexReportForAsset(asset: string, horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const norm = asset.toUpperCase().replace(/[^A-Z]/g, "");
   if (norm.includes("SI")) {
     return calculateMoexGenericGex("SI", horizon);

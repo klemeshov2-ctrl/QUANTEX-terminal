@@ -325,7 +325,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     // Check Call Wall shift (genuine shift on same horizon with minimum duration)
     if (gexReport.callWall && Math.abs(gexReport.callWall - curRef.callWall) >= minShift && (now - curRef.cwStartTime) >= minActiveTimeMs) {
       const prevCw = curRef.callWall;
-      const oldAudit = auditSingleGexLevel(candles, prevCw, "RESISTANCE", 86400);
+      const oldAudit = auditSingleGexLevel(candles, prevCw, "RESISTANCE", 86400, activeAsset);
       const durationText = formatDuration(now - curRef.cwStartTime);
       newEntries.push({
         id: `mig_cw_${now}`,
@@ -350,7 +350,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     // Check Put Wall shift (genuine shift on same horizon with minimum duration)
     if (gexReport.putWall && Math.abs(gexReport.putWall - curRef.putWall) >= minShift && (now - curRef.pwStartTime) >= minActiveTimeMs) {
       const prevPw = curRef.putWall;
-      const oldAudit = auditSingleGexLevel(candles, prevPw, "SUPPORT", 86400);
+      const oldAudit = auditSingleGexLevel(candles, prevPw, "SUPPORT", 86400, activeAsset);
       const durationText = formatDuration(now - curRef.pwStartTime);
       newEntries.push({
         id: `mig_pw_${now}`,
@@ -375,7 +375,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     // Check Gamma Flip shift (genuine shift on same horizon with minimum duration)
     if (gexReport.gammaFlip && Math.abs(gexReport.gammaFlip - curRef.gammaFlip) >= minShift && (now - curRef.flipStartTime) >= minActiveTimeMs) {
       const prevFlip = curRef.gammaFlip;
-      const oldAudit = auditSingleGexLevel(candles, prevFlip, "FLIP", 86400);
+      const oldAudit = auditSingleGexLevel(candles, prevFlip, "FLIP", 86400, activeAsset);
       const durationText = formatDuration(now - curRef.flipStartTime);
       newEntries.push({
         id: `mig_flip_${now}`,
@@ -502,7 +502,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       const currentFromSec = Math.max(windowStartSec, Math.floor(lvl.activeSinceMs / 1000));
       const currentCandles = sourceCandles.filter((c) => c.time >= currentFromSec);
       const activeCandlesForCurrent = currentCandles.length >= 2 ? currentCandles : sourceCandles.slice(-6);
-      const currentAudit = auditSingleGexLevel(activeCandlesForCurrent, lvl.price, lvl.type, 0);
+      const currentAudit = auditSingleGexLevel(activeCandlesForCurrent, lvl.price, lvl.type, 0, activeAsset);
 
       const currentTouches = currentAudit.touches;
       const currentBounces = currentAudit.bounces;
@@ -543,7 +543,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
 
         // If historical candles exist for that window, re-audit dynamically
         if (segmentCandles.length >= 3) {
-          const segAudit = auditSingleGexLevel(segmentCandles, log.prevPrice, lvl.type, 0);
+          const segAudit = auditSingleGexLevel(segmentCandles, log.prevPrice, lvl.type, 0, activeAsset);
           segTouches = segAudit.touches;
           segBounces = segAudit.bounces;
           segBreakouts = segAudit.breakouts;
@@ -1215,15 +1215,11 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     };
   }, []);
 
-  const isRealOptions = Boolean(
-    gexReport.source &&
-    (gexReport.source.includes("CBOE") ||
-     gexReport.source.includes("Yahoo Finance Real Options") ||
-     gexReport.source.includes("Real Option"))
-  );
   const isSyntheticModel = Boolean(
-    gexReport.source && gexReport.source.includes("Синтетическая модель")
+    gexReport.isSynthetic ||
+    (gexReport.source && gexReport.source.includes("Синтетическая модель"))
   );
+  const isRealOptions = Boolean(!isSyntheticModel && gexReport.source);
 
   // ============================================================================
   // 🎯 NEW QUANT MODULE A: LIQUIDITY MAP (STOP HUNT ZONES / КАРТА ЛИКВИДНОСТИ)
@@ -1399,8 +1395,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
               <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-200 rounded border border-emerald-500/40 font-bold">
                 Институциональный поток
               </span>
+              {gexReport.lowConfidence && (
+                <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-200 rounded border border-amber-400/50 font-bold">
+                  ⚠️ {gexReport.lowConfidenceReason || "Мало данных OI — уровни приблизительные"}
+                </span>
+              )}
               <span className="text-[11px] text-emerald-200/90 hidden md:inline">
-                Открытый интерес (OI) и гамма дилеров рассчитаны по реальной биржевой опционной цепи ({gexReport.source.includes("CBOE") ? "CBOE" : "Yahoo Finance"}).
+                Открытый интерес (OI) и гамма дилеров рассчитаны по биржевой опционной цепи ({gexReport.source}).
               </span>
             </div>
           </div>

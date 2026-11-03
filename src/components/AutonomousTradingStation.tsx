@@ -886,6 +886,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const mobileTfRef = useRef<HTMLDivElement | null>(null);
   const gexHorizonDropdownRef = useRef<HTMLDivElement | null>(null);
   const desktopGexHorizonDropdownRef = useRef<HTMLDivElement | null>(null);
+  const gexAssetDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Short human-friendly label for ultra-compact mobile header (~6" screens)
   const getShortAssetLabel = (asset: AssetSymbol): string => {
@@ -955,7 +956,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // Safe tab fallback: if activeTab is not in stationUser.allowedTabs
   useEffect(() => {
     if (stationUser?.allowedTabs && stationUser.allowedTabs.length > 0) {
-      if (activeTab !== "settings" && !stationUser.allowedTabs.includes(activeTab)) {
+      if (!stationUser.allowedTabs.includes(activeTab)) {
         setActiveTab((stationUser.allowedTabs[0] as StationModuleTab) || "chart");
       }
     }
@@ -1055,7 +1056,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const handleClickOutside = (e: MouseEvent) => {
       const isInsideAsset =
         (assetDropdownRef.current && assetDropdownRef.current.contains(e.target as Node)) ||
-        (mobileAssetDropdownRef.current && mobileAssetDropdownRef.current.contains(e.target as Node));
+        (mobileAssetDropdownRef.current && mobileAssetDropdownRef.current.contains(e.target as Node)) ||
+        (gexAssetDropdownRef.current && gexAssetDropdownRef.current.contains(e.target as Node));
       if (!isInsideAsset) {
         setIsAssetDropdownOpen(false);
       }
@@ -1174,8 +1176,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     if (cached && cached.length > 0) {
       setCandles(cached);
       setCandlesKey(key);
+    } else {
+      setCandlesKey(key);
     }
     setActiveAsset(asset);
+    try {
+      localStorage.setItem("quantex_active_asset", asset);
+    } catch {}
+    fetchCandles(asset, activeTf);
+    fetchDayGexReport(asset);
+    fetchGexReport(asset, gexHorizonRef.current);
   };
 
   const [gexReport, setGexReport] = useState<GexMarketReport | null>(null);
@@ -2261,7 +2271,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const mySeq = ++fetchSeqRef.current;
     try {
       setIsLoadingCandles(true);
-      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=200`);
+      const headers: Record<string, string> = {};
+      if (typeof window !== "undefined") {
+        const token = localStorage.getItem("quantex_auth_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=200`, { headers });
       if (res.ok) {
         const data = await res.json();
         // Discard stale out-of-order responses if user switched asset or timeframe
@@ -2354,8 +2369,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           isClearing: !!data.isClearing,
           sessionType: data.sessionType,
           statusBadge: data.statusBadge,
-          marketStatusText: data.marketStatusText || (data.marketOpen === false ? "Сейчас нет торгов" : "Торги идут")
         });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (errData.error === "Данные недоступны" || !errData.candles) {
+          setMarketStatus(prev => ({
+            ...prev,
+            isOpen: false,
+            statusBadge: "Данные недоступны",
+            statusText: "Данные недоступны"
+          }));
+        }
       }
     } catch (e: any) {
       console.warn("Candle fetch notice:", e.message);
@@ -2384,7 +2408,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const targetH = horizon || gexHorizonRef.current;
     try {
       setIsLoadingGex(true);
-      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=${targetH}`);
+      const headers: Record<string, string> = {};
+      if (typeof window !== "undefined") {
+        const token = localStorage.getItem("quantex_auth_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=${targetH}`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (data.report) {
@@ -2404,7 +2433,12 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 2b. Fetch DAY GEX Report specifically for Station Chart & Indicator mathematical forecasts
   const fetchDayGexReport = async (symbol: AssetSymbol) => {
     try {
-      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=DAY`);
+      const headers: Record<string, string> = {};
+      if (typeof window !== "undefined") {
+        const token = localStorage.getItem("quantex_auth_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=DAY`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (data.report) {
@@ -2420,6 +2454,50 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     gexHorizonRef.current = horizon;
     setGexHorizon(horizon);
     fetchGexReport(activeAsset, horizon);
+  };
+
+  // 2c. Reset Stabilized GEX Cache & Engine Cache for active asset
+  const [isResettingGexCache, setIsResettingGexCache] = useState(false);
+  const handleResetStabilizedGexCache = async () => {
+    setIsResettingGexCache(true);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (typeof window !== "undefined") {
+        const token = localStorage.getItem("quantex_auth_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch("/api/gex/reset-cache", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ asset: activeAsset })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const curHorizon = gexHorizonRef.current;
+        if (data.reports) {
+          if (data.reports.DAY) setDayGexReport(data.reports.DAY);
+          if (curHorizon !== "ALL" && data.reports[curHorizon]) {
+            setGexReport(data.reports[curHorizon]);
+          } else {
+            await fetchGexReport(activeAsset, curHorizon);
+          }
+        } else {
+          await Promise.all([
+            fetchDayGexReport(activeAsset),
+            fetchGexReport(activeAsset, curHorizon)
+          ]);
+        }
+      } else {
+        await Promise.all([
+          fetchDayGexReport(activeAsset),
+          fetchGexReport(activeAsset, gexHorizonRef.current)
+        ]);
+      }
+    } catch (e: any) {
+      console.warn("GEX cache reset notice:", e.message);
+    } finally {
+      setIsResettingGexCache(false);
+    }
   };
 
   // 3. Fetch Economic Calendar from local server (with Moscow date & time synchronization)
@@ -4766,7 +4844,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const cwInfo = getLevelRole("CALL_WALL", effectiveGex.callWall, spot, effHorizon);
       const pwInfo = getLevelRole("PUT_WALL", effectiveGex.putWall, spot, effHorizon);
       const flipInfo = getLevelRole("GAMMA_FLIP", effectiveGex.gammaFlip, spot, effHorizon);
-      const painInfo = getLevelRole("MAX_PAIN", effectiveGex.maxPain, spot, effHorizon);
+      const painInfo = getLevelRole("MAX_PAIN", effectiveGex.maxPain, spot, effHorizon, (effectiveGex as any).maxPainRange);
 
       if (showGexWalls) {
         boundedLines.push({
@@ -4803,6 +4881,20 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
 
       if (showGexFlip) {
+        const isFlipOut = Boolean(
+          (effectiveGex as any).flipOutOfCorridor ||
+          (effectiveGex.putWall &&
+            effectiveGex.callWall &&
+            (effectiveGex.gammaFlip < effectiveGex.putWall || effectiveGex.gammaFlip > effectiveGex.callWall))
+        );
+        const rawFlipLabel = (effectiveGex as any).flipLabel
+          ? `⚡ ${(effectiveGex as any).flipLabel}`
+          : `⚡ ${flipInfo.fullName}`;
+        const finalFlipLabel =
+          isFlipOut && !rawFlipLabel.includes("⚠️")
+            ? `${rawFlipLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
+            : rawFlipLabel;
+
         boundedLines.push({
           id: "flip_line",
           price: effectiveGex.gammaFlip,
@@ -4810,17 +4902,31 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           endTime: gx2BaseTime,
           startLogical: gx1,
           endLogical: gx2Base,
-          color: "#a855f7",
+          color: isFlipOut ? "#f59e0b" : "#a855f7",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: (effectiveGex as any).flipLabel ? `⚡ ${(effectiveGex as any).flipLabel}` : `⚡ ${flipInfo.fullName}`,
-          labelBg: "rgba(22, 10, 36, 0.98)",
-          labelBorderColor: "#c084fc",
-          labelTextColor: "#f3e8ff"
+          label: finalFlipLabel,
+          labelBg: isFlipOut ? "rgba(38, 22, 6, 0.98)" : "rgba(22, 10, 36, 0.98)",
+          labelBorderColor: isFlipOut ? "#fbbf24" : "#c084fc",
+          labelTextColor: isFlipOut ? "#fef3c7" : "#f3e8ff"
         });
       }
 
       if (showGexPain) {
+        const isPainOut = Boolean(
+          (effectiveGex as any).painOutOfCorridor ||
+          (effectiveGex.putWall &&
+            effectiveGex.callWall &&
+            (effectiveGex.maxPain < effectiveGex.putWall || effectiveGex.maxPain > effectiveGex.callWall))
+        );
+        const rawPainLabel = (effectiveGex as any).painLabel
+          ? `🎯 ${(effectiveGex as any).painLabel}`
+          : `🎯 ${painInfo.fullName}`;
+        const finalPainLabel =
+          isPainOut && !rawPainLabel.includes("⚠️")
+            ? `${rawPainLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
+            : rawPainLabel;
+
         boundedLines.push({
           id: "pain_line",
           price: effectiveGex.maxPain,
@@ -4828,13 +4934,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           endTime: gx2BaseTime,
           startLogical: gx1,
           endLogical: gx2Base,
-          color: "#06b6d4",
+          color: isPainOut ? "#f59e0b" : "#06b6d4",
           lineWidth: 1,
           lineStyle: "dotted",
-          label: (effectiveGex as any).painLabel ? `🎯 ${(effectiveGex as any).painLabel}` : `🎯 ${painInfo.fullName}`,
-          labelBg: "rgba(8, 22, 28, 0.98)",
-          labelBorderColor: "#22d3ee",
-          labelTextColor: "#cffafe"
+          label: finalPainLabel,
+          labelBg: isPainOut ? "rgba(38, 22, 6, 0.98)" : "rgba(8, 22, 28, 0.98)",
+          labelBorderColor: isPainOut ? "#fbbf24" : "#22d3ee",
+          labelTextColor: isPainOut ? "#fef3c7" : "#cffafe"
         });
       }
 
@@ -4911,7 +5017,30 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       }
     }
 
-    // Update native canvas primitive with zones, forecast, bounded lines, and bar countdown
+    // Compute floating price-axis tags (spot, EMA9, EMA21, EMA200) as obstacles for chart badge anti-collision
+    const floatingPriceAxisTags: Array<{ id: string; price: number; label?: string }> = [];
+    if (lastCandle && isFinite(lastCandle.close) && lastCandle.close > 0) {
+      floatingPriceAxisTags.push({ id: "spot", price: lastCandle.close, label: "Spot" });
+    }
+    if (cleanCandles.length > 0) {
+      const ema9Arr = calculateEMA(cleanCandles, 9);
+      const ema21Arr = calculateEMA(cleanCandles, 21);
+      const ema200Arr = calculateEMA(cleanCandles, 200);
+      const lastEma9 = ema9Arr[ema9Arr.length - 1];
+      const lastEma21 = ema21Arr[ema21Arr.length - 1];
+      const lastEma200 = ema200Arr[ema200Arr.length - 1];
+      if (isFinite(lastEma9) && lastEma9 > 0) {
+        floatingPriceAxisTags.push({ id: "EMA9", price: lastEma9, label: "EMA9" });
+      }
+      if (isFinite(lastEma21) && lastEma21 > 0) {
+        floatingPriceAxisTags.push({ id: "EMA21", price: lastEma21, label: "EMA21" });
+      }
+      if (isFinite(lastEma200) && lastEma200 > 0) {
+        floatingPriceAxisTags.push({ id: "EMA200", price: lastEma200, label: "EMA200" });
+      }
+    }
+
+    // Update native canvas primitive with zones, forecast, bounded lines, floating price-axis tags, and bar countdown
     zonesPrimitiveRef.current?.setData({
       zones: zoneBoxes,
       forecast: forecastData,
@@ -4920,6 +5049,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       eqLine: eqData,
       lines: boundedLines,
       gexProfile: null,
+      floatingPriceAxisTags,
       chartFontSize: chartLabelFontSize,
       showBadgeBorders: showChartBadgeBorders,
       currentPriceCountdown: lastCandle ? {
@@ -5258,7 +5388,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Фьючерс Золото (${moexContracts?.large?.shortName || "GOLD-12.26"})`,
         sub: "МосБиржа • Контракт 1 унция (USD)",
-        price: `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
+        price: activeAsset === "MOEX_GOLD" && latestCandle ? `$${latestCandle.close.toFixed(1)}` : `$${Number(moexContracts?.large?.last || 4204.8).toFixed(1)}`,
         meta: `ОИ: ${Number(moexContracts?.large?.openPosition || 259088).toLocaleString("ru-RU")}`
       },
       {
@@ -5269,7 +5399,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Мини-фьючерс Золото (${moexContracts?.mini?.shortName || "GOLDM-12.26"})`,
         sub: "МосБиржа • Мини-контракт 0.1 унции (USD)",
-        price: `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
+        price: activeAsset === "MOEX_MINI" && latestCandle ? `$${latestCandle.close.toFixed(1)}` : `$${Number(moexContracts?.mini?.last || 4203.3).toFixed(1)}`,
         meta: `ОИ: ${Number(moexContracts?.mini?.openPosition || 44702).toLocaleString("ru-RU")}`
       },
       {
@@ -5280,7 +5410,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: "Вечный фьючерс Золото (₽/г)",
         sub: "МосБиржа • Рублевое золото за 1 грамм",
-        price: `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
+        price: activeAsset === "GLDRUBF" && latestCandle ? `${Number(latestCandle.close.toFixed(1)).toLocaleString("ru-RU")} ₽` : `${Number(moexContracts?.rub?.last || 8560).toLocaleString("ru-RU")} ₽`,
         meta: `ОИ: ${Number(moexContracts?.rub?.openPosition || 192400).toLocaleString("ru-RU")}`
       },
       {
@@ -5291,7 +5421,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Фьючерс USD/RUB (${moexContracts?.si?.shortName || "Si-12.26"})`,
         sub: "МосБиржа • Валютный фьючерс (1 000 USD в ₽)",
-        price: `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
+        price: activeAsset === "MOEX_SI" && latestCandle ? `${Number(latestCandle.close.toFixed(0)).toLocaleString("ru-RU")} ₽` : `${Number(moexContracts?.si?.last || 83846).toLocaleString("ru-RU")} ₽`,
         meta: `ОИ: ${Number(moexContracts?.si?.openPosition || 9541598).toLocaleString("ru-RU")}`
       },
       {
@@ -5302,7 +5432,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Фьючерс Индекс РТС (${moexContracts?.ri?.shortName || "RTS-12.26"})`,
         sub: "МосБиржа • Индексный фьючерс (пункты)",
-        price: `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
+        price: activeAsset === "MOEX_RI" && latestCandle ? `${Number(latestCandle.close.toFixed(0)).toLocaleString("ru-RU")} п.` : `${Number(moexContracts?.ri?.last || 93370).toLocaleString("ru-RU")} п.`,
         meta: `ОИ: ${Number(moexContracts?.ri?.openPosition || 106776).toLocaleString("ru-RU")}`
       },
       {
@@ -5313,7 +5443,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Фьючерс Нефть Brent (${moexContracts?.br?.shortName || "BR-11.26"})`,
         sub: "МосБиржа • Товарный фьючерс (10 баррелей)",
-        price: `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
+        price: activeAsset === "MOEX_BR" && latestCandle ? `$${latestCandle.close.toFixed(2)}` : `$${Number(moexContracts?.br?.last || 110.49).toFixed(2)}`,
         meta: `ОИ: ${Number(moexContracts?.br?.openPosition || 504422).toLocaleString("ru-RU")}`
       },
       {
@@ -5324,7 +5454,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         badgeTone: "bg-red-500/20 text-red-300 border-red-500/40",
         name: `Фьючерс Природный газ (${moexContracts?.ng?.shortName || "NG-10.26"})`,
         sub: "МосБиржа • Товарный фьючерс (100 MMBtu)",
-        price: `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
+        price: activeAsset === "MOEX_NG" && latestCandle ? `$${latestCandle.close.toFixed(3)}` : `$${Number(moexContracts?.ng?.last || 3.014).toFixed(3)}`,
         meta: `ОИ: ${Number(moexContracts?.ng?.openPosition || 741722).toLocaleString("ru-RU")}`
       },
       {
@@ -6522,6 +6652,27 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <span>ИИ-Аналитик</span>
                 </button>
 
+                {/* Reset Stabilizer Cache Button */}
+                <button
+                  onClick={handleResetStabilizedGexCache}
+                  disabled={isResettingGexCache}
+                  className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 flex items-center gap-1 transition cursor-pointer shadow-sm whitespace-nowrap shrink-0 disabled:opacity-50"
+                  title="Сбросить кэш стабилизатора GEX и пересчитать уровни без ожидания часового кулдауна"
+                >
+                  <RefreshCw className={`h-3 w-3 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
+                  <span>Сбросить кэш стабилизатора</span>
+                </button>
+
+                {/* Low OI Density Guard Badge on Terminal (Chart) Tab */}
+                {(gexReport?.lowConfidence || dayGexReport?.lowConfidence) && (
+                  <span
+                    className="px-2 py-0.5 rounded-lg text-[10.5px] font-mono font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50 flex items-center gap-1 whitespace-nowrap shrink-0 shadow-sm"
+                    title={(gexReport?.lowConfidenceReason || dayGexReport?.lowConfidenceReason) || "В стакане опционов менее 8 страйков с открытым интересом с одной из сторон"}
+                  >
+                    ⚠️ {(gexReport?.lowConfidenceReason || dayGexReport?.lowConfidenceReason) || "Мало данных OI — уровни приблизительные"}
+                  </span>
+                )}
+
                 {/* Refresh */}
                 <button
                   onClick={() => {
@@ -6536,6 +6687,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 </button>
               </div>
             </div>
+
+            {/* Mobile Low OI Density Guard & Stabilizer Reset Banner on Terminal (Chart) Tab */}
+            {(gexReport?.lowConfidence || dayGexReport?.lowConfidence) && (
+              <div className="sm:hidden flex items-center justify-between gap-2 px-2.5 py-1 bg-amber-950/60 border-b border-amber-500/40 text-[10px] font-mono text-amber-200 shrink-0">
+                <span className="font-bold truncate">
+                  ⚠️ {(gexReport?.lowConfidenceReason || dayGexReport?.lowConfidenceReason) || "Мало данных OI — уровни приблизительные"}
+                </span>
+                <button
+                  onClick={handleResetStabilizedGexCache}
+                  disabled={isResettingGexCache}
+                  className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold shrink-0"
+                >
+                  🔄 Сброс кэша
+                </button>
+              </div>
+            )}
 
             {/* Ensure Lightweight Charts canvas never intercepts mobile touch scrolling */}
             <style>{`
@@ -7141,15 +7308,26 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   </div>
                   <h3 className="font-display font-bold text-base text-white tracking-wide flex items-center gap-2">
                     <span>Опционная GEX-Аналитика &amp; Стены Дилеров</span>
-                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                      {activeAsset === "MOEX_GOLD"
-                        ? `${moexContracts?.large?.secId || "GDZ6"} (FORTS)`
-                        : activeAsset === "MOEX_MINI"
-                        ? `${moexContracts?.mini?.secId || "GNZ6"} (Мини)`
-                        : activeAsset === "XAUUSD"
-                        ? "XAU/USD OANDA (24/7 Spot)"
-                        : activeAsset}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsAssetDropdownOpen((prev) => !prev);
+                      }}
+                      className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/30 transition cursor-pointer flex items-center gap-1"
+                      title="Нажмите для смены тикера"
+                    >
+                      <span>
+                        {activeAsset === "MOEX_GOLD"
+                          ? `${moexContracts?.large?.secId || "GDZ6"} (FORTS)`
+                          : activeAsset === "MOEX_MINI"
+                          ? `${moexContracts?.mini?.secId || "GNZ6"} (Мини)`
+                          : activeAsset === "XAUUSD"
+                          ? "XAU/USD OANDA (24/7 Spot)"
+                          : activeAsset}
+                      </span>
+                      <ChevronDown className="h-3 w-3 text-purple-400" />
+                    </button>
                   </h3>
                   <span className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -7186,6 +7364,79 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <RefreshCw className={`h-3.5 w-3.5 ${isLoadingGex ? "animate-spin text-purple-400" : ""}`} />
                   <span>Обновить GEX</span>
                 </button>
+              </div>
+            </div>
+
+            {/* 🎯 GEX QUICK ASSET SWITCHER (Все 13 инструментов с мгновенным переключением) */}
+            <div className="bg-[#0b0e17] border border-purple-500/30 rounded-2xl p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-xl relative">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white shadow-sm shrink-0">
+                  <Activity className="h-4 w-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-white uppercase tracking-wider block">
+                    Выбор инструмента GEX:
+                  </span>
+                  <span className="text-[11px] text-gray-400">
+                    Переключение опционного профиля, дилерских стен и открытого интереса
+                  </span>
+                </div>
+              </div>
+
+              {/* Quick Ticker Chips & Dropdown Trigger */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[
+                  { id: "XAUUSD" as AssetSymbol, label: "🥇 XAU/USD", sub: "Spot" },
+                  { id: "MOEX_GOLD" as AssetSymbol, label: `🇷🇺 ${moexContracts?.large?.secId || "GDZ6"}`, sub: "FORTS" },
+                  { id: "MOEX_SI" as AssetSymbol, label: `🇷🇺 ${moexContracts?.si?.secId || "SiZ6"}`, sub: "USD/RUB" },
+                  { id: "MOEX_RI" as AssetSymbol, label: `🇷🇺 ${moexContracts?.ri?.secId || "RIZ6"}`, sub: "РТС" },
+                  { id: "MOEX_BR" as AssetSymbol, label: `🇷🇺 ${moexContracts?.br?.secId || "BR"}`, sub: "Brent" },
+                  { id: "MOEX_NG" as AssetSymbol, label: `🇷🇺 ${moexContracts?.ng?.secId || "NG"}`, sub: "Газ" },
+                  { id: "BTCUSDT" as AssetSymbol, label: "⚡ BTC", sub: "Deribit" },
+                  { id: "ETHUSDT" as AssetSymbol, label: "⚡ ETH", sub: "Deribit" },
+                  { id: "SOLUSDT" as AssetSymbol, label: "⚡ SOL", sub: "Опционы" },
+                  { id: "XRPUSDT" as AssetSymbol, label: "⚡ XRP", sub: "Опционы" },
+                ].map((item) => {
+                  const isCur = activeAsset === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectAsset(item.id)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 border ${
+                        isCur
+                          ? "bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-500/30 scale-105"
+                          : "bg-[#121624] text-gray-300 hover:text-white hover:bg-gray-800 border-gray-800"
+                      }`}
+                    >
+                      <span>{item.label}</span>
+                      <span className="text-[9px] opacity-75 font-normal">({item.sub})</span>
+                    </button>
+                  );
+                })}
+
+                <div className="relative shrink-0" ref={gexAssetDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsAssetDropdownOpen((prev) => !prev);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#1a1f33] hover:bg-[#232a45] text-amber-300 border border-amber-500/40 transition cursor-pointer"
+                  >
+                    <span>Все 13 тикеров...</span>
+                    <ChevronDown className={`h-3 w-3 transition-transform ${isAssetDropdownOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {isAssetDropdownOpen && (
+                    <div
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="absolute right-0 top-full mt-1 z-50 w-[380px] max-w-[94vw] max-h-[75vh] flex flex-col bg-[#0c0f18] border border-amber-500/80 rounded-xl shadow-2xl overflow-hidden shadow-black/95 font-sans ring-1 ring-amber-500/50 animate-in fade-in slide-in-from-top-1 duration-150"
+                    >
+                      {renderTickerDropdownContent(false)}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -7257,44 +7508,77 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <span>🌐</span>
                   <span>ВСЕ (Total GEX)</span>
                 </button>
+
+                <button
+                  onClick={handleResetStabilizedGexCache}
+                  disabled={isResettingGexCache}
+                  className="px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 font-bold disabled:opacity-50"
+                  title="Сбросить кэш стабилизатора GEX и пересчитать уровни свежей логикой без ожидания часового кулдауна"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
+                  <span>Сбросить кэш стабилизатора</span>
+                </button>
               </div>
             </div>
 
             {/* GEX Metrics Grid */}
             {gexReport ? (
               <div className="space-y-6">
-                {/* 🟢/⚠️ Live Options / Synthetic Badge Banner */}
-                {gexReport.source && (gexReport.source.includes("CBOE") || gexReport.source.includes("Yahoo Finance Real Options") || gexReport.source.includes("Real Option")) ? (
-                  <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/35 text-emerald-300 text-xs shadow-md">
-                    <div className="flex items-center gap-2">
-                      <span className="relative flex h-2.5 w-2.5">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                      </span>
-                      <span className="font-extrabold text-white text-xs sm:text-sm tracking-wide">
-                        🟢 Live Options (Реальные данные)
-                      </span>
-                      <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/20 text-emerald-200 rounded border border-emerald-500/40 font-bold hidden sm:inline">
-                        {gexReport.source.includes("CBOE") ? "CBOE Institutional Feed" : "Yahoo Finance"}
+                {/* 🟢/⚠️ Live Options / Synthetic / Stale Badge Banner */}
+                {!gexReport.isSynthetic ? (
+                  <div className="flex flex-col gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/35 text-emerald-300 text-xs shadow-md">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                        </span>
+                        <span className="font-extrabold text-white text-xs sm:text-sm tracking-wide">
+                          🟢 Опционные данные ({gexReport.source.includes("Yahoo Finance Options GC=F / GLD ETF") ? "Yahoo Finance Options GC=F / GLD ETF (delayed quotes)" : gexReport.source.includes("MOEX") ? "MOEX ISS ROPD" : "Deribit Live API"})
+                        </span>
+                        {(gexReport.asset === "XAUUSD" || gexReport.proxyNote) && (
+                          <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/20 text-amber-200 rounded border border-amber-500/40 font-bold">
+                            ⚠️ {gexReport.proxyNote || "Опционы на ETF GLD, не на фьючерс золота COMEX GC"}
+                          </span>
+                        )}
+                        {gexReport.lowConfidence && (
+                          <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-200 rounded border border-amber-500/50 font-bold">
+                            ⚠️ {gexReport.lowConfidenceReason || "Мало данных OI — уровни приблизительные"}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] font-mono text-emerald-400/80 truncate max-w-md hidden md:inline">
+                        {gexReport.source}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono text-emerald-400/80 truncate max-w-xs hidden md:inline">
-                      {gexReport.source}
-                    </span>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs shadow-md">
-                    <div className="flex items-center gap-2">
-                      <span className="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide">
-                        ⚠️ Синтетическая модель (Резервный режим)
-                      </span>
-                      <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-300 rounded border border-amber-500/50 font-bold hidden sm:inline">
-                        Реальный API недоступен
+                  <div className="flex flex-col gap-1.5 px-3.5 py-2.5 rounded-xl bg-amber-500/15 border border-amber-500/60 text-amber-200 text-xs shadow-lg ring-1 ring-amber-500/30">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide flex items-center gap-1.5">
+                          <span className="inline-block px-1.5 py-0.5 rounded bg-amber-500 text-black text-[10px] font-black uppercase">
+                            {gexReport.isDataStale || gexReport.source?.includes("Данные устарели") ? "Данные устарели" : "Синтетика"}
+                          </span>
+                          {gexReport.isDataStale || gexReport.source?.includes("Данные устарели")
+                            ? "Данные устарели (>1ч) • Синтетический / резервный режим GEX"
+                            : "Математическая модель GEX (Резервный режим)"}
+                        </span>
+                        <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-950/80 text-amber-300 rounded border border-amber-500/50 font-bold">
+                          {gexReport.asset === "XAUUSD"
+                            ? "Yahoo Finance Options GC=F / GLD ETF (delayed quotes) • Опционы на ETF GLD, не на фьючерс золота COMEX GC"
+                            : "Биржевой API опционов временно недоступен — уровни рассчитаны по модели Блэка-Шоулза"}
+                        </span>
+                        {gexReport.lowConfidence && (
+                          <span className="px-2 py-0.5 text-[10px] font-mono bg-amber-500/25 text-amber-200 rounded border border-amber-500/50 font-bold">
+                            ⚠️ {gexReport.lowConfidenceReason || "Мало данных OI — уровни приблизительные"}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] font-mono text-amber-300/90 shrink-0">
+                        Спот-якорь: ${(gexReport.spotPrice || 4043).toFixed(1)}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono text-amber-400/80">
-                      Спот: ${(gexReport.spotPrice || 4043).toFixed(1)}
-                    </span>
                   </div>
                 )}
 
@@ -7308,12 +7592,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 {/* 4 Key Institutional Diagnostic Cards (With Concise '⚡ Сейчас для цены' & Compact Tooltips) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   
-                  {/* Card 1: Net GEX Regime (OI + Volume) */}
+                  {/* Card 1: Net GEX Regime (Pure OI) */}
                   <div className="bg-[#0b0e17] border border-gray-800/90 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Режим Дилеров</span>
-                        <span className="text-[10px] text-cyan-400 font-mono">OI + Volume GEX</span>
+                        <span className="text-[10px] text-cyan-400 font-mono font-bold">
+                          {gexReport.normalizedNetGex !== undefined
+                            ? `Индекс: ${gexReport.normalizedNetGex > 0 ? "+" : ""}${gexReport.normalizedNetGex}`
+                            : "Чистый ОИ GEX"}
+                        </span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
                         <span
@@ -7325,9 +7613,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         >
                           {gexReport.netGexRegime === "POSITIVE_GAMMA" ? "🟢 +GEX (ШТИЛЬ)" : "🔴 -GEX (ШТОРМ)"}
                         </span>
-                        <span className="text-xs font-mono font-bold text-white">
-                          {gexReport.netGexTotal > 0 ? `+${gexReport.netGexTotal}` : gexReport.netGexTotal} $M
-                        </span>
+                        <div className="text-right">
+                          <span className="text-xs font-mono font-bold text-white block">
+                            {gexReport.netGexTotal > 0 ? `+${gexReport.netGexTotal}` : gexReport.netGexTotal} $M
+                          </span>
+                          {gexReport.gexIntensity !== undefined && (
+                            <span className="text-[9.5px] font-mono text-purple-300 block">
+                              Сила: {gexReport.gexIntensity}%
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -7344,7 +7639,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <span className="group-open:rotate-180 transition-transform">▾</span>
                       </summary>
                       <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
-                        Учитывает открытый интерес (OI) и внутридневной объем (Volume). В +GEX маркетмейкеры продают на росте и покупают на падении; в -GEX — усиливают направленный импульс.
+                        Рассчитывается строго на базе открытого интереса (OI × Gamma × SpotPrice) без примеси объемов. В +GEX маркетмейкеры продают на росте и покупают на падении; в -GEX — усиливают направленный импульс.
                       </p>
                     </details>
                   </div>
@@ -7464,20 +7759,52 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                     const flipRoleInfo = getLevelRole("GAMMA_FLIP", gexReport.gammaFlip, gexReport.spotPrice, gexReport.horizon || gexHorizon);
                     const painRoleInfo = getLevelRole("MAX_PAIN", gexReport.maxPain, gexReport.spotPrice, gexReport.horizon || gexHorizon);
                     const expSuffix = getExpirySuffix(gexReport.horizon || gexHorizon);
+                    const isPainOut = Boolean(
+                      gexReport.painOutOfCorridor ||
+                      gexReport.maxPain < gexReport.putWall ||
+                      gexReport.maxPain > gexReport.callWall
+                    );
+                    const isFlipOut = Boolean(
+                      gexReport.flipOutOfCorridor ||
+                      gexReport.gammaFlip < gexReport.putWall ||
+                      gexReport.gammaFlip > gexReport.callWall
+                    );
+                    const painRange = (gexReport as any).maxPainRange as
+                      | { low: number; high: number; mid: number }
+                      | null
+                      | undefined;
+                    const formattedPainBadge =
+                      painRange && painRange.high > painRange.low
+                        ? `Магнит (${expSuffix}): ${painRange.low}–${painRange.high} (середина ${painRange.mid ?? gexReport.maxPain})`
+                        : `Магнит (${expSuffix}): $${gexReport.maxPain}`;
+                    const migrationEntries = ((gexReport as any).migrationLog || []) as Array<{
+                      timestamp: string;
+                      asset: string;
+                      horizon: string;
+                      level: string;
+                      oldValue: number | null;
+                      newValue: number;
+                      reason: "breach" | "cooldown+OI" | "new session" | "reset";
+                      details: string;
+                    }>;
                     return (
                       <div className="bg-[#0b0e17] border border-purple-500/30 rounded-xl p-3.5 flex flex-col justify-between gap-2 relative overflow-hidden">
                         <div className="space-y-1">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-1 flex-wrap">
                             <span className="text-[11px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1">
                               ⚡ {flipRoleInfo.baseName} &amp; {painRoleInfo.baseName}
                             </span>
-                            <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                              Магнит ({expSuffix}): ${gexReport.maxPain}
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                              isPainOut
+                                ? "bg-amber-500/25 text-amber-200 border border-amber-500/50"
+                                : "bg-cyan-500/20 text-cyan-300"
+                            }`}>
+                              {isPainOut ? "⚠️ " : ""}{formattedPainBadge}{isPainOut ? " [Вне PW–CW]" : ""}
                             </span>
                           </div>
                           <div className="flex items-baseline justify-between">
                             <div className="text-2xl font-mono font-bold text-purple-400">
-                              {activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
+                              {isFlipOut ? "⚠️ " : ""}{activeAsset === "MOEX_MINI" ? `${gexReport.gammaFlip} ₽` : `$${gexReport.gammaFlip}`}
                             </div>
                             <span className={`text-[10px] font-mono font-bold ${gexReport.spotPrice >= gexReport.gammaFlip ? "text-emerald-400" : "text-rose-400"}`}>
                               {gexReport.spotPrice >= gexReport.gammaFlip ? "Выше Flip (+GEX)" : "Ниже Flip (-GEX)"}
@@ -7488,18 +7815,35 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <div className="p-2 rounded-lg bg-purple-950/25 border border-purple-500/25 text-[11px] text-purple-100 leading-snug">
                           <b className="text-purple-300">⚡ Роль и динамика:</b>{" "}
                           {gexReport.spotPrice >= gexReport.gammaFlip
-                            ? `Цена выше Флипа $${gexReport.gammaFlip} (+GEX) — приоритет возврата к балансу Магнита $${gexReport.maxPain}.`
+                            ? `Цена выше Флипа $${gexReport.gammaFlip} (+GEX) — приоритет возврата к балансу ${painRange && painRange.high > painRange.low ? `зоны пиннинга ${painRange.low}–${painRange.high} (середина ${painRange.mid ?? gexReport.maxPain})` : `Магнита $${gexReport.maxPain}`}.`
                             : `Цена ниже Флипа $${gexReport.gammaFlip} (-GEX) — риск ускорения распродаж к Полу (PW) $${gexReport.putWall}.`}
+                          {(isPainOut || isFlipOut) && (
+                            <span className="block mt-1 text-[10.5px] text-amber-300 font-semibold">
+                              ⚠️ Внимание: {isPainOut ? `Max Pain ($${gexReport.maxPain})` : `Gamma Flip ($${gexReport.gammaFlip})`} находится за пределами текущего рабочего коридора [${gexReport.putWall}–$${gexReport.callWall}] (показан без жесткого клампинга).
+                            </span>
+                          )}
                         </div>
 
                         <details className="group text-[10px] text-gray-400">
                           <summary className="cursor-pointer select-none text-gray-400 hover:text-white font-mono flex items-center justify-between">
-                            <span>ℹ️ Суть Флипа и Магнита</span>
+                            <span>ℹ️ Суть Флипа и Магнита {migrationEntries.length > 0 ? `• Лог миграций (${migrationEntries.length})` : ""}</span>
                             <span className="group-open:rotate-180 transition-transform">▾</span>
                           </summary>
-                          <p className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed">
-                            Флип (Zero-Flip) разграничивает зоны рыночной волатильности (+GEX и -GEX). Магнит (Max Pain) — страйк, к которому цена тяготеет к моменту экспирации.
-                          </p>
+                          <div className="mt-1 text-gray-300 bg-black/40 p-2 rounded border border-gray-800 leading-relaxed space-y-1.5">
+                            <p>
+                              Флип (Zero-Flip) разграничивает зоны рыночной волатильности (+GEX и -GEX). Магнит (Max Pain) — страйк или диапазон нулевых выплат (пиннинга), к которому цена тяготеет к моменту экспирации.
+                            </p>
+                            {migrationEntries.length > 0 && (
+                              <div className="pt-1 border-t border-gray-800/80 space-y-1 font-mono text-[9.5px]">
+                                <div className="text-purple-300 font-bold">Лог миграций стабилизатора:</div>
+                                {migrationEntries.slice(-5).map((m, i) => (
+                                  <div key={i} className="text-gray-300 truncate" title={m.details}>
+                                    [{m.level}] {m.oldValue !== null ? `${m.oldValue}→${m.newValue}` : `init→${m.newValue}`} • <span className="text-cyan-300 font-semibold">reason={m.reason}</span> ({m.details})
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </details>
                       </div>
                     );
@@ -8317,9 +8661,20 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
               </div>
             ) : (
-              <div className="p-12 text-center text-gray-500 space-y-3">
+              <div className="p-12 text-center text-gray-400 space-y-4 bg-[#0c0f18] rounded-2xl border border-gray-800">
                 <RefreshCw className="h-8 w-8 animate-spin mx-auto text-purple-400" />
-                <p>Загрузка реальных опционных данных COMEX/FORTS и расчет GEX-профиля...</p>
+                <div className="space-y-1">
+                  <p className="text-white font-semibold">Загрузка опционных данных и расчет GEX-профиля для {getShortAssetLabel(activeAsset)}...</p>
+                  <p className="text-xs text-gray-500">Подключение к агрегатору Deribit / COMEX / MOEX FORTS...</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchGexReport(activeAsset, gexHorizon)}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-md inline-flex items-center gap-1.5"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Обновить GEX для {getShortAssetLabel(activeAsset)}</span>
+                </button>
               </div>
             )}
           </div>

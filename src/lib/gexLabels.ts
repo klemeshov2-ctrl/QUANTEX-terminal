@@ -40,6 +40,36 @@ export function getBaseLevelName(type: GexLevelType | string): string {
   return "Опционный барьер";
 }
 
+export interface MaxPainPinningRange {
+  low: number;
+  high: number;
+  mid?: number;
+}
+
+export function formatStrikeNumber(val: number): string {
+  if (!isFinite(val)) return "0";
+  if (Math.abs(val - Math.round(val)) < 1e-6) {
+    return String(Math.round(val));
+  }
+  return val >= 1000 ? val.toFixed(1) : val.toFixed(2);
+}
+
+export function formatMaxPainRangeValue(
+  levelPrice: number,
+  maxPainRange?: MaxPainPinningRange | null
+): string {
+  if (
+    maxPainRange &&
+    isFinite(maxPainRange.low) &&
+    isFinite(maxPainRange.high) &&
+    maxPainRange.high > maxPainRange.low + 1e-6
+  ) {
+    const midVal = isFinite(maxPainRange.mid as number) ? (maxPainRange.mid as number) : levelPrice;
+    return `${formatStrikeNumber(maxPainRange.low)}–${formatStrikeNumber(maxPainRange.high)} (середина ${formatStrikeNumber(midVal)})`;
+  }
+  return levelPrice >= 1000 ? levelPrice.toFixed(1) : levelPrice.toFixed(2);
+}
+
 /**
  * 3. Динамическая смена ролей (Level Role Engine)
  * Если цена пробила PW и находится ниже — уровень становится «Сопротивление (Бывшая поддержка)».
@@ -49,7 +79,8 @@ export function getLevelRole(
   levelType: GexLevelType | string,
   levelPrice: number,
   spotPrice: number,
-  horizon?: GexHorizon | string
+  horizon?: GexHorizon | string,
+  maxPainRange?: MaxPainPinningRange | null
 ): GexRoleInfo {
   const baseName = getBaseLevelName(levelType);
   const expiry = getExpirySuffix(horizon);
@@ -68,8 +99,10 @@ export function getLevelRole(
   let shortRole = "Уровень";
   let isBroken = false;
 
+  const breakoutMargin = Math.max(0.01, levelPrice * 0.0015);
+
   if (isCw) {
-    if (spotPrice > levelPrice + 0.5) {
+    if (spotPrice > levelPrice + breakoutMargin) {
       // Цена пробила Call Wall вверх — уровень стал поддержкой
       isBroken = true;
       role = "Поддержка (Бывшее сопротивление)";
@@ -79,7 +112,7 @@ export function getLevelRole(
       shortRole = "Сопротивление";
     }
   } else if (isPw) {
-    if (spotPrice < levelPrice - 0.5) {
+    if (spotPrice < levelPrice - breakoutMargin) {
       // Цена пробила Put Wall вниз — уровень стал сопротивлением
       isBroken = true;
       role = "Сопротивление (Бывшая поддержка)";
@@ -101,7 +134,11 @@ export function getLevelRole(
     shortRole = "Магнит";
   }
 
-  const priceStr = levelPrice >= 1000 ? levelPrice.toFixed(1) : levelPrice.toFixed(2);
+  const priceStr = isMagnet
+    ? formatMaxPainRangeValue(levelPrice, maxPainRange)
+    : levelPrice >= 1000
+    ? levelPrice.toFixed(1)
+    : levelPrice.toFixed(2);
   const titleWithExpiry = baseName.includes("(")
     ? baseName.replace(/\)$/, `, ${expiry})`)
     : `${baseName} (${expiry})`;
@@ -122,28 +159,37 @@ export function getLevelRole(
 
 /**
  * Единое стандартизированное форматирование для текстовых сводок и UI
- * Поддерживает как объект параметров { type, price, horizon, spotPrice },
- * так и позиционные аргументы (type, price, horizon, spotPrice).
+ * Поддерживает как объект параметров { type, price, horizon, spotPrice, maxPainRange },
+ * так и позиционные аргументы (type, price, horizon, spotPrice, maxPainRange).
  */
 export function formatGexLevelLabel(
   typeOrParams:
     | GexLevelType
     | string
-    | { type: GexLevelType | string; price: number; horizon?: GexHorizon | string; spotPrice?: number },
+    | {
+        type: GexLevelType | string;
+        price: number;
+        horizon?: GexHorizon | string;
+        spotPrice?: number;
+        maxPainRange?: MaxPainPinningRange | null;
+      },
   priceArg?: number,
   horizonArg?: GexHorizon | string,
-  spotPriceArg?: number
+  spotPriceArg?: number,
+  maxPainRangeArg?: MaxPainPinningRange | null
 ): string {
   let type: GexLevelType | string;
   let price: number;
   let horizon: GexHorizon | string | undefined = horizonArg;
   let spotPrice: number | undefined = spotPriceArg;
+  let maxPainRange: MaxPainPinningRange | null | undefined = maxPainRangeArg;
 
   if (typeof typeOrParams === "object" && typeOrParams !== null) {
     type = typeOrParams.type;
     price = typeOrParams.price;
     horizon = typeOrParams.horizon;
     spotPrice = typeOrParams.spotPrice;
+    maxPainRange = typeOrParams.maxPainRange;
   } else {
     type = typeOrParams as GexLevelType | string;
     price = priceArg ?? 0;
@@ -151,13 +197,19 @@ export function formatGexLevelLabel(
 
   const base = getBaseLevelName(type);
   const exp = getExpirySuffix(horizon);
-  const pStr = price >= 1000 ? price.toFixed(1) : price.toFixed(2);
+  const normType = type.toUpperCase().replace(/[\s_-]/g, "");
+  const isMagnet = normType.includes("PAIN") || normType.includes("MAGNET");
+  const pStr = isMagnet
+    ? formatMaxPainRangeValue(price, maxPainRange)
+    : price >= 1000
+    ? price.toFixed(1)
+    : price.toFixed(2);
   const titleWithExpiry = base.includes("(")
     ? base.replace(/\)$/, `, ${exp})`)
     : `${base} (${exp})`;
 
   if (typeof spotPrice === "number" && spotPrice > 0) {
-    const roleInfo = getLevelRole(type, price, spotPrice, horizon);
+    const roleInfo = getLevelRole(type, price, spotPrice, horizon, maxPainRange);
     if (roleInfo.isBroken) {
       return `${titleWithExpiry}: ${pStr} [${roleInfo.role}]`;
     }

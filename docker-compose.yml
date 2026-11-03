@@ -7,10 +7,14 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
     environment:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
