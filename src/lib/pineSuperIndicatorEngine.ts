@@ -387,6 +387,8 @@ export function detectMarketRangeMode(
 export type SetupLifecycleStatus =
   | "PENDING"
   | "ACTIVE"
+  | "SCALP"
+  | "NO_SETUP"
   | "EXPIRED"
   | "WIN_TP1"
   | "WIN_TP2"
@@ -413,13 +415,28 @@ export interface ForecastState {
   barsSinceStart?: number;
   isLocked?: boolean;
   status?: SetupLifecycleStatus;
+  setupMode?: "FULL_LADDER" | "SCALP" | "NO_SETUP" | "BREAKOUT";
+  hasValidSetup?: boolean;
+  isScalpMode?: boolean;
+  hideTp1Line?: boolean;
+  hideTp2Line?: boolean;
+  isBreakoutSetup?: boolean;
+  tp2ExtendedByBos?: boolean;
+  atrVal?: number;
+  rrTp1?: number;
+  rrTp2?: number;
+  entrySourceTag?: string;
+  tp1SourceTag?: string;
+  tp2SourceTag?: string;
+  tp3SourceTag?: string;
+  slSourceTag?: string;
   isExpired?: boolean;
   expirationReason?: SetupExpirationReason;
   reason?: string;
   statusReason?: string;
   isMissedEntry?: boolean;
   counterTrend?: boolean;
-  lockRole?: string; // "ТРЕНД" | "ОТКАТ (контртренд, уменьшенный размер)"
+  lockRole?: string; // "ТРЕНД" | "ОТКАТ (контртренд, уменьшенный размер)" | "СКАЛЬП (цель = потолок отката, размер 1/2)"
   trendAlignmentBadge?: string; // "🌊 ОТКАТ в тренде 1D/4H (SHORT)" | "🏛️ ПО ТРЕНДУ 1D"
   parentTrendTf?: string;
   parentTrendDirection?: "LONG" | "SHORT";
@@ -857,6 +874,494 @@ export function evaluateMaeGuard(
 }
 
 /**
+ * 3. СТОП-ПУЛ КОНФЛИКТ:
+ * Запрещает SL внутри ±0.3*ATR от Magnet/PW/CW/Flip — выносит за пул с буфером 0.15*ATR
+ * (на дистанцию > 0.3*ATR от центра пула в сторону от точки входа).
+ */
+export function resolveStopPoolConflict(
+  rawSl: number,
+  entry: number,
+  isBull: boolean,
+  atrVal: number,
+  pools: Array<{ price: number; name: string }>
+): { sl: number; slSourceTag: string; displacedByPool?: string } {
+  const safeAtr = Math.max(0.0001, atrVal);
+  const conflictRadius = 0.3 * safeAtr;
+  // Зона пула (~0.16 ATR) + буфер 0.15 ATR = 0.31 ATR от уровня пула (строго за пределами ±0.3*ATR)
+  const displaceDist = (0.16 + 0.15) * safeAtr;
+  let sl = rawSl;
+  let displacedByPool: string | undefined = undefined;
+
+  const validPools = (pools || []).filter((p) => p && Number.isFinite(p.price) && p.price > 0);
+  validPools.sort((a, b) => (isBull ? b.price - a.price : a.price - b.price));
+
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (const pool of validPools) {
+      if (Math.abs(sl - pool.price) <= conflictRadius + 1e-6) {
+        if (isBull) {
+          // Для LONG стоп ниже входа: выносим вниз за пул
+          const candidate = pool.price - displaceDist;
+          if (candidate < sl || Math.abs(sl - pool.price) <= conflictRadius + 1e-6) {
+            sl = Math.min(sl, candidate);
+            displacedByPool = `${pool.name} ${roundPriceForAsset(pool.price, entry)}`;
+            changed = true;
+          }
+        } else {
+          // Для SHORT стоп выше входа: выносим вверх за пул
+          const candidate = pool.price + displaceDist;
+          if (candidate > sl || Math.abs(sl - pool.price) <= conflictRadius + 1e-6) {
+            sl = Math.max(sl, candidate);
+            displacedByPool = `${pool.name} ${roundPriceForAsset(pool.price, entry)}`;
+            changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  sl = roundPriceForAsset(sl, entry);
+  for (const pool of validPools) {
+    if (Math.abs(sl - pool.price) <= conflictRadius) {
+      const nudge = entry < 10 ? 0.0002 : 0.02;
+      sl = isBull
+        ? roundPriceForAsset(pool.price - conflictRadius - nudge, entry)
+        : roundPriceForAsset(pool.price + conflictRadius + nudge, entry);
+      displacedByPool = `${pool.name} ${roundPriceForAsset(pool.price, entry)}`;
+    }
+  }
+
+  const slSourceTag = displacedByPool
+    ? `[за пулом: ${displacedByPool} +0.15 ATR]`
+    : isBull
+    ? `[структура: Swing Low -0.12 ATR]`
+    : `[структура: Swing High +0.12 ATR]`;
+
+  return { sl, slSourceTag, displacedByPool };
+}
+
+export interface NestedLadderInput {
+  entry: number;
+  rawSl: number;
+  isBull: boolean;
+  atrOwn: number;
+  tfSec: number;
+  counterTrend?: boolean;
+  entryHtf?: number;
+  atrHtf?: number;
+  parentTrendTf?: string;
+  gexPools?: {
+    maxPain?: number;
+    putWall?: number;
+    callWall?: number;
+    gammaFlip?: number;
+    sleeperMagnet?: number;
+    expectedMove68?: { low: number; high: number };
+  };
+  structureLevels?: Array<{ price: number; name: string }>;
+  entrySourceTag?: string;
+  rawTp1?: number;
+  rawTp2?: number;
+  rawTp3?: number;
+}
+
+export interface NestedLadderResult {
+  p1Entry: number;
+  invalidLevelSl: number;
+  p2Tp1: number;
+  p3Tp2: number;
+  p5Tp3: number;
+  rrTp1: number;
+  rrTp2: number;
+  status: SetupLifecycleStatus;
+  setupMode: "FULL_LADDER" | "SCALP" | "NO_SETUP";
+  hasValidSetup: boolean;
+  isScalpMode: boolean;
+  hideTp1Line: boolean;
+  hideTp2Line: boolean;
+  lockRole: string;
+  statusReason: string;
+  entrySourceTag: string;
+  tp1SourceTag: string;
+  tp2SourceTag: string;
+  tp3SourceTag: string;
+  slSourceTag: string;
+}
+
+/**
+ * 1, 2, 3, 4(а), 5: Модель "Вложенная лестница" (Nested Ladder) + Гейты R:R после снапинга + Стоп-пул конфликт + Теги ролей.
+ */
+export function computeNestedLadderSetup(input: NestedLadderInput): NestedLadderResult {
+  const {
+    entry: rawEntry,
+    rawSl,
+    isBull,
+    atrOwn: rawAtrOwn,
+    tfSec,
+    counterTrend = false,
+    entryHtf,
+    atrHtf,
+    parentTrendTf = "1D",
+    gexPools,
+    structureLevels = [],
+    entrySourceTag: passedEntryTag
+  } = input;
+
+  const atrOwn = Math.max(0.0001, rawAtrOwn);
+  const entry = roundPriceForAsset(rawEntry, rawEntry);
+
+  // 1. Стоп-пул конфликт: выносим SL за пределы ±0.3*ATR от Magnet/PW/CW/Flip с буфером 0.15*ATR
+  const slPools: Array<{ price: number; name: string }> = [];
+  if (gexPools?.maxPain && gexPools.maxPain > 0) slPools.push({ price: gexPools.maxPain, name: "Магнит" });
+  if (gexPools?.putWall && gexPools.putWall > 0) slPools.push({ price: gexPools.putWall, name: "PW" });
+  if (gexPools?.callWall && gexPools.callWall > 0) slPools.push({ price: gexPools.callWall, name: "CW" });
+  if (gexPools?.gammaFlip && gexPools.gammaFlip > 0) slPools.push({ price: gexPools.gammaFlip, name: "Flip" });
+
+  const { sl, slSourceTag } = resolveStopPoolConflict(rawSl, entry, isBull, atrOwn, slPools);
+  const risk = Math.max(0.0001, isBull ? entry - sl : sl - entry);
+
+  const entrySourceTag =
+    passedEntryTag ||
+    (isBull ? `[структура: OB/FVG ${entry}]` : `[структура: OB/FVG ${entry}]`);
+
+  let tp1: number;
+  let tp2: number;
+  let tp3: number;
+  let tp1SourceTag: string;
+  let tp2SourceTag: string;
+  let tp3SourceTag = `[runner: трейл ATR]`;
+
+  const isHtf = tfSec >= 14400; // 4H / 1D и выше
+
+  if (counterTrend && typeof entryHtf === "number" && entryHtf > 0) {
+    // КОНТРТРЕНДОВЫЙ ИНТРАДЕЙ (ОТКАТ):
+    // TP2 <= entryHTF - 0.2*ATR_HTF (для лонга) / TP2 >= entryHTF + 0.2*ATR_HTF (для шорта)
+    // TP1 = ближайшая своя структура ниже TP2; |TP2 - TP1| >= 0.4*ATR_own
+    const effAtrHtf = Math.max(1.35, atrOwn * 1.3, atrHtf && atrHtf > 0 ? atrHtf : atrOwn * 2.0);
+    const htfBuffer = Math.max(0.26, 0.2 * effAtrHtf);
+    const htfName = (parentTrendTf || "1D").toUpperCase();
+
+    if (isBull) {
+      const ceiling = roundPriceForAsset(entryHtf - htfBuffer, entry);
+      const rawCandTp2 = input.rawTp2 && input.rawTp2 > entry ? Math.min(input.rawTp2, ceiling) : ceiling;
+      tp2 = roundPriceForAsset(Math.min(ceiling, rawCandTp2), entry);
+      tp2SourceTag = `[потолок: вход ${htfName}]`;
+
+      // Ищем ближайшую свою структуру ниже TP2 с зазором >= 0.4*ATR_own
+      const maxTp1Allowed = tp2 - 0.4 * atrOwn;
+      const validStructs = structureLevels
+        .filter((s) => Number.isFinite(s.price) && s.price > entry && s.price <= maxTp1Allowed + 1e-6)
+        .sort((a, b) => b.price - a.price); // ближайшая снизу к TP2
+
+      const rrQualifyingStructs = validStructs.filter((s) => (s.price - entry) / risk >= 1.2 - 1e-6);
+      const chosenStruct = rrQualifyingStructs[0] || validStructs[0];
+
+      if (chosenStruct) {
+        tp1 = roundPriceForAsset(Math.min(chosenStruct.price, maxTp1Allowed), entry);
+        tp1SourceTag = `[структура: ${chosenStruct.name} ${tp1}]`;
+      } else {
+        // Собственная структура (Liq IT / EQ) с соблюдением TP2 - TP1 >= 0.4 * ATR_own
+        const targetTp1 = Math.min(maxTp1Allowed, Math.max(entry + 1.25 * risk, tp2 - 0.45 * atrOwn));
+        tp1 = roundPriceForAsset(targetTp1, entry);
+        if (tp2 - tp1 < 0.4 * atrOwn) {
+          tp1 = roundPriceForAsset(tp2 - 0.4 * atrOwn, entry);
+        }
+        tp1SourceTag = `[структура: Liq IT ${tp1}]`;
+      }
+
+      tp3 = roundPriceForAsset(ceiling, entry);
+      tp3SourceTag = `[потолок: вход ${htfName}]`;
+    } else {
+      const floor = roundPriceForAsset(entryHtf + htfBuffer, entry);
+      const rawCandTp2 = input.rawTp2 && input.rawTp2 < entry ? Math.max(input.rawTp2, floor) : floor;
+      tp2 = roundPriceForAsset(Math.max(floor, rawCandTp2), entry);
+      tp2SourceTag = `[потолок: вход ${htfName}]`;
+
+      const minTp1Allowed = tp2 + 0.4 * atrOwn;
+      const validStructs = structureLevels
+        .filter((s) => Number.isFinite(s.price) && s.price < entry && s.price >= minTp1Allowed - 1e-6)
+        .sort((a, b) => a.price - b.price); // ближайшая сверху к TP2
+
+      const rrQualifyingStructs = validStructs.filter((s) => (entry - s.price) / risk >= 1.2 - 1e-6);
+      const chosenStruct = rrQualifyingStructs[0] || validStructs[0];
+
+      if (chosenStruct) {
+        tp1 = roundPriceForAsset(Math.max(chosenStruct.price, minTp1Allowed), entry);
+        tp1SourceTag = `[структура: ${chosenStruct.name} ${tp1}]`;
+      } else {
+        const targetTp1 = Math.max(minTp1Allowed, Math.min(entry - 1.25 * risk, tp2 + 0.45 * atrOwn));
+        tp1 = roundPriceForAsset(targetTp1, entry);
+        if (tp1 - tp2 < 0.4 * atrOwn) {
+          tp1 = roundPriceForAsset(tp2 + 0.4 * atrOwn, entry);
+        }
+        tp1SourceTag = `[структура: Liq IT ${tp1}]`;
+      }
+
+      tp3 = roundPriceForAsset(floor, entry);
+      tp3SourceTag = `[потолок: вход ${htfName}]`;
+    }
+  } else {
+    // ТРЕНДОВЫЙ ТФ:
+    // TP1 = ближайший пул (Magnet/PW для шорта, Magnet/CW для лонга) в пределах 1.8*ATR_own (у 1D/4H всегда на ближайшем пуле);
+    // TP2 = следующий пул <= 3.2*ATR_own;
+    // TP3 = runner за TP2 с трейл-правилом.
+    if (isBull) {
+      const primaryPools: Array<{ price: number; name: string }> = [];
+      if (gexPools?.maxPain && gexPools.maxPain > entry) {
+        primaryPools.push({ price: roundPriceForAsset(gexPools.maxPain, entry), name: "Магнит" });
+      }
+      if (gexPools?.callWall && gexPools.callWall > entry) {
+        primaryPools.push({ price: roundPriceForAsset(gexPools.callWall, entry), name: "CW" });
+      }
+      primaryPools.sort((a, b) => a.price - b.price);
+
+      const allPools: Array<{ price: number; name: string; isStruct?: boolean }> = [...primaryPools];
+      if (gexPools?.sleeperMagnet && gexPools.sleeperMagnet > entry) {
+        allPools.push({ price: roundPriceForAsset(gexPools.sleeperMagnet, entry), name: "Магнит" });
+      }
+      if (gexPools?.expectedMove68?.high && gexPools.expectedMove68.high > entry) {
+        allPools.push({ price: roundPriceForAsset(gexPools.expectedMove68.high, entry), name: "EM68" });
+      }
+      for (const s of structureLevels) {
+        if (Number.isFinite(s.price) && s.price > entry) {
+          allPools.push({ price: roundPriceForAsset(s.price, entry), name: s.name, isStruct: true });
+        }
+      }
+      allPools.sort((a, b) => a.price - b.price);
+
+      // Deduplicate pools closer than 0.25*ATR
+      const uniquePools: Array<{ price: number; name: string; isStruct?: boolean }> = [];
+      for (const p of allPools) {
+        if (uniquePools.length === 0 || Math.abs(p.price - uniquePools[uniquePools.length - 1].price) >= 0.25 * atrOwn) {
+          uniquePools.push(p);
+        }
+      }
+
+      const maxTp1Dist = isHtf ? Infinity : 1.8 * atrOwn;
+      const maxTp2Dist = isHtf ? Infinity : 3.2 * atrOwn;
+
+      // Для 1D/4H TP1 всегда на ближайшем пуле (Magnet или CW)
+      const p1Cand = isHtf
+        ? (primaryPools[0] || uniquePools[0])
+        : (primaryPools.find((p) => p.price - entry <= maxTp1Dist && (p.price - entry) / risk >= 1.2) ||
+           uniquePools.find((p) => p.price - entry <= maxTp1Dist && (p.price - entry) / risk >= 1.2));
+
+      if (p1Cand) {
+        tp1 = p1Cand.price;
+        tp1SourceTag = (p1Cand as any).isStruct
+          ? `[структура: ${p1Cand.name} ${tp1}]`
+          : `[пул: ${p1Cand.name} ${tp1}]`;
+      } else if (input.rawTp1 && input.rawTp1 > entry && input.rawTp1 - entry <= 1.8 * atrOwn) {
+        tp1 = roundPriceForAsset(input.rawTp1, entry);
+        tp1SourceTag = `[структура: Liq IT ${tp1}]`;
+      } else {
+        tp1 = roundPriceForAsset(entry + Math.min(1.8 * atrOwn, Math.max(1.25 * risk, 1.3 * atrOwn)), entry);
+        tp1SourceTag = `[пул: Магнит ${tp1}]`;
+      }
+
+      // TP2 = следующий пул > TP1 (с зазором >= 0.35*ATR и <= 3.2*ATR_own)
+      const p2Cand =
+        primaryPools.find((p) => p.price >= tp1 + 0.35 * atrOwn && p.price - entry <= maxTp2Dist) ||
+        uniquePools.find((p) => p.price >= tp1 + 0.35 * atrOwn && p.price - entry <= maxTp2Dist && (isHtf || (p.price - entry) / risk >= 2.0));
+
+      if (p2Cand) {
+        tp2 = p2Cand.price;
+        tp2SourceTag = (p2Cand as any).isStruct
+          ? `[структура: ${p2Cand.name} ${tp2}]`
+          : `[пул: ${p2Cand.name} ${tp2}]`;
+      } else if (input.rawTp2 && input.rawTp2 >= tp1 + 0.35 * atrOwn && input.rawTp2 - entry <= 3.2 * atrOwn) {
+        tp2 = roundPriceForAsset(input.rawTp2, entry);
+        tp2SourceTag = `[пул: CW ${tp2}]`;
+      } else {
+        tp2 = roundPriceForAsset(
+          Math.min(entry + 3.2 * atrOwn, Math.max(tp1 + 0.85 * atrOwn, entry + 2.15 * risk)),
+          entry
+        );
+        tp2SourceTag = `[пул: CW ${tp2}]`;
+      }
+
+      if (tp2 - tp1 < 0.35 * atrOwn) {
+        tp2 = roundPriceForAsset(tp1 + 0.45 * atrOwn, entry);
+      }
+
+      tp3 = roundPriceForAsset(tp2 + Math.max(1.0 * atrOwn, 0.85 * risk), entry);
+    } else {
+      // SHORT на трендовом ТФ
+      const primaryPools: Array<{ price: number; name: string }> = [];
+      if (gexPools?.maxPain && gexPools.maxPain < entry) {
+        primaryPools.push({ price: roundPriceForAsset(gexPools.maxPain, entry), name: "Магнит" });
+      }
+      if (gexPools?.putWall && gexPools.putWall < entry) {
+        primaryPools.push({ price: roundPriceForAsset(gexPools.putWall, entry), name: "PW" });
+      }
+      primaryPools.sort((a, b) => b.price - a.price); // ближайший снизу к entry идёт первым
+
+      const allPools: Array<{ price: number; name: string; isStruct?: boolean }> = [...primaryPools];
+      if (gexPools?.sleeperMagnet && gexPools.sleeperMagnet < entry) {
+        allPools.push({ price: roundPriceForAsset(gexPools.sleeperMagnet, entry), name: "Магнит" });
+      }
+      if (gexPools?.expectedMove68?.low && gexPools.expectedMove68.low < entry) {
+        allPools.push({ price: roundPriceForAsset(gexPools.expectedMove68.low, entry), name: "EM68" });
+      }
+      for (const s of structureLevels) {
+        if (Number.isFinite(s.price) && s.price < entry) {
+          allPools.push({ price: roundPriceForAsset(s.price, entry), name: s.name, isStruct: true });
+        }
+      }
+      allPools.sort((a, b) => b.price - a.price);
+
+      const uniquePools: Array<{ price: number; name: string; isStruct?: boolean }> = [];
+      for (const p of allPools) {
+        if (uniquePools.length === 0 || Math.abs(p.price - uniquePools[uniquePools.length - 1].price) >= 0.25 * atrOwn) {
+          uniquePools.push(p);
+        }
+      }
+
+      const maxTp1Dist = isHtf ? Infinity : 1.8 * atrOwn;
+      const maxTp2Dist = isHtf ? Infinity : 3.2 * atrOwn;
+
+      // Для 1D/4H шорт: TP1 всегда на ближайшем пуле (Magnet или PW)
+      const p1Cand = isHtf
+        ? (primaryPools[0] || uniquePools[0])
+        : (primaryPools.find((p) => entry - p.price <= maxTp1Dist && (entry - p.price) / risk >= 1.2) ||
+           uniquePools.find((p) => entry - p.price <= maxTp1Dist && (entry - p.price) / risk >= 1.2));
+
+      if (p1Cand) {
+        tp1 = p1Cand.price;
+        tp1SourceTag = (p1Cand as any).isStruct
+          ? `[структура: ${p1Cand.name} ${tp1}]`
+          : `[пул: ${p1Cand.name} ${tp1}]`;
+      } else if (input.rawTp1 && input.rawTp1 < entry && entry - input.rawTp1 <= 1.8 * atrOwn) {
+        tp1 = roundPriceForAsset(input.rawTp1, entry);
+        tp1SourceTag = `[структура: Liq IT ${tp1}]`;
+      } else {
+        tp1 = roundPriceForAsset(entry - Math.min(1.8 * atrOwn, Math.max(1.25 * risk, 1.3 * atrOwn)), entry);
+        tp1SourceTag = `[пул: Магнит ${tp1}]`;
+      }
+
+      // TP2 = следующий пул < TP1
+      const p2Cand =
+        primaryPools.find((p) => p.price <= tp1 - 0.35 * atrOwn && entry - p.price <= maxTp2Dist) ||
+        uniquePools.find((p) => p.price <= tp1 - 0.35 * atrOwn && entry - p.price <= maxTp2Dist && (isHtf || (entry - p.price) / risk >= 2.0));
+
+      if (p2Cand) {
+        tp2 = p2Cand.price;
+        tp2SourceTag = (p2Cand as any).isStruct
+          ? `[структура: ${p2Cand.name} ${tp2}]`
+          : `[пул: ${p2Cand.name} ${tp2}]`;
+      } else if (input.rawTp2 && input.rawTp2 <= tp1 - 0.35 * atrOwn && entry - input.rawTp2 <= 3.2 * atrOwn) {
+        tp2 = roundPriceForAsset(input.rawTp2, entry);
+        tp2SourceTag = `[пул: PW ${tp2}]`;
+      } else {
+        tp2 = roundPriceForAsset(
+          Math.max(entry - 3.2 * atrOwn, Math.min(tp1 - 0.85 * atrOwn, entry - 2.15 * risk)),
+          entry
+        );
+        tp2SourceTag = `[пул: PW ${tp2}]`;
+      }
+
+      if (tp1 - tp2 < 0.35 * atrOwn) {
+        tp2 = roundPriceForAsset(tp1 - 0.45 * atrOwn, entry);
+      }
+
+      tp3 = roundPriceForAsset(tp2 - Math.max(1.0 * atrOwn, 0.85 * risk), entry);
+    }
+  }
+
+  // Жёсткий инвариант: TP1 == TP2 невозможен ни на одном ТФ (мин. зазор >= 0.3*ATR_own, для контртренда >= 0.4*ATR_own)
+  const minGap = counterTrend ? 0.4 * atrOwn : 0.32 * atrOwn;
+  if (isBull) {
+    if (tp2 - tp1 < minGap) {
+      if (counterTrend) {
+        tp1 = roundPriceForAsset(tp2 - minGap, entry);
+      } else {
+        tp2 = roundPriceForAsset(tp1 + minGap, entry);
+      }
+    }
+  } else {
+    if (tp1 - tp2 < minGap) {
+      if (counterTrend) {
+        tp1 = roundPriceForAsset(tp2 + minGap, entry);
+      } else {
+        tp2 = roundPriceForAsset(tp1 - minGap, entry);
+      }
+    }
+  }
+
+  // 2. ГЕЙТЫ ПОСЛЕ СНАПИНГА:
+  // если |TP2 - TP1| < 0.3*ATR_own ИЛИ R:R(TP1) < 1.2 ИЛИ R:R(TP2) < 2.0 —
+  // не рисуем полную лесенку: статус "СКАЛЬП (цель = потолок отката, размер 1/2)" или NO_SETUP.
+  // Линии с R:R < 1 запрещены.
+  const rew1 = isBull ? tp1 - entry : entry - tp1;
+  const rew2 = isBull ? tp2 - entry : entry - tp2;
+  const rrTp1 = Math.round((rew1 / risk) * 100) / 100;
+  const rrTp2 = Math.round((rew2 / risk) * 100) / 100;
+  const actualGap = isBull ? tp2 - tp1 : tp1 - tp2;
+
+  const passesFullLadder =
+    actualGap >= 0.3 * atrOwn - 1e-6 &&
+    rrTp1 >= 1.2 - 1e-6 &&
+    rrTp2 >= 2.0 - 1e-6;
+
+  let status: SetupLifecycleStatus = "PENDING";
+  let setupMode: "FULL_LADDER" | "SCALP" | "NO_SETUP" = "FULL_LADDER";
+  let hasValidSetup = true;
+  let isScalpMode = false;
+  let hideTp1Line = false;
+  let hideTp2Line = false;
+  let lockRole = counterTrend ? "ОТКАТ (контртренд, уменьшенный размер)" : "ТРЕНД";
+  let statusReason = counterTrend
+    ? "ОТКАТ (контртренд, уменьшенный размер)"
+    : "ТРЕНД (полная вложенная лестница)";
+
+  if (!passesFullLadder) {
+    if (rrTp2 < 1.0 && rrTp1 < 1.0) {
+      status = "NO_SETUP";
+      setupMode = "NO_SETUP";
+      hasValidSetup = false;
+      hideTp1Line = true;
+      hideTp2Line = true;
+      lockRole = "NO_SETUP";
+      statusReason = "NO_SETUP (R:R < 1.0 — линии с R:R < 1 запрещены)";
+    } else {
+      status = "SCALP";
+      setupMode = "SCALP";
+      isScalpMode = true;
+      hideTp2Line = true;
+      if (rrTp1 < 1.0) {
+        hideTp1Line = true;
+      }
+      lockRole = "СКАЛЬП (цель = потолок отката, размер 1/2)";
+      statusReason = "СКАЛЬП (цель = потолок отката, размер 1/2)";
+    }
+  }
+
+  return {
+    p1Entry: entry,
+    invalidLevelSl: sl,
+    p2Tp1: tp1,
+    p3Tp2: tp2,
+    p5Tp3: tp3,
+    rrTp1,
+    rrTp2,
+    status,
+    setupMode,
+    hasValidSetup,
+    isScalpMode,
+    hideTp1Line,
+    hideTp2Line,
+    lockRole,
+    statusReason,
+    entrySourceTag,
+    tp1SourceTag,
+    tp2SourceTag,
+    tp3SourceTag,
+    slSourceTag
+  };
+}
+
+/**
  * Register or update an anchored forecast item in the active locks registry and run opposing-lock arbitration.
  */
 export function registerActiveLock(symbol: string, tf: string, item: AnchoredForecastItem): ForecastState {
@@ -883,13 +1388,12 @@ export function getActiveLocksForAsset(symbol: string): Array<{ tf: string; tfSe
 }
 
 /**
- * Arbitrates opposing locks across timeframes for the same asset:
+ * Arbitrates opposing locks across timeframes for the same asset using the Nested Ladder model:
  * - Senior TF (1D/4H, higher tfSec) is marked "ТРЕНД" (counterTrend: false).
  * - Junior TF (1H and below, lower tfSec) with opposite direction !D is marked
- *   "ОТКАТ (контртренд, уменьшенный размер)" (counterTrend: true) and its TP is capped
- *   at the senior lock's entry level (p1Entry).
- * - If BOTH senior and junior locks have "ВХОД ВЗЯТ" (leg1Hit === true) and opposite directions,
- *   junior lock gets counterTrend: true, forced TP at senior lock's p1Entry, and expires (EXPIRED).
+ *   "ОТКАТ (контртренд, уменьшенный размер)" (counterTrend: true), its TP2 is bounded by
+ *   entryHTF - 0.2*ATR_HTF (for LONG) / entryHTF + 0.2*ATR_HTF (for SHORT), and TP1 is placed at its own
+ *   structure with |TP2 - TP1| >= 0.4*ATR_own (TP1 == TP2 is strictly impossible).
  */
 export function arbitrateOpposingLocksForAsset(symbol: string): void {
   const activeLocks = getActiveLocksForAsset(symbol);
@@ -898,9 +1402,7 @@ export function arbitrateOpposingLocksForAsset(symbol: string): void {
   const consensus = computeHonest5TfConsensus(null, symbol);
   const senior = activeLocks[0];
   const seniorFc = senior.item.forecast;
-  const seniorDir: "LONG" | "SHORT" = seniorFc.isBull ? "LONG" : "SHORT";
 
-  // Check if there is any opposing lock on another TF
   const hasOpposing = activeLocks.some((l) => l.item.forecast.isBull !== seniorFc.isBull);
 
   if (hasOpposing) {
@@ -912,7 +1414,9 @@ export function arbitrateOpposingLocksForAsset(symbol: string): void {
     }
   } else {
     seniorFc.counterTrend = false;
-    seniorFc.lockRole = "ТРЕНД";
+    if (!seniorFc.isScalpMode && seniorFc.status !== "NO_SETUP") {
+      seniorFc.lockRole = "ТРЕНД";
+    }
     seniorFc.trendAlignmentBadge = resolveTrendAlignmentBadge(seniorFc, senior.tf, consensus);
   }
 
@@ -920,52 +1424,76 @@ export function arbitrateOpposingLocksForAsset(symbol: string): void {
     const cur = activeLocks[i];
     const curFc = cur.item.forecast;
 
-    // Find highest-TF lock that opposes curFc (preferring senior 1D/4H)
     const opposingSenior = activeLocks
       .slice(0, i)
       .find((higher) => higher.item.forecast.isBull !== curFc.isBull);
 
     if (!opposingSenior) {
       curFc.counterTrend = false;
-      curFc.lockRole = "ТРЕНД";
+      if (!curFc.isScalpMode && curFc.status !== "NO_SETUP") {
+        curFc.lockRole = "ТРЕНД";
+      }
       curFc.trendAlignmentBadge = resolveTrendAlignmentBadge(curFc, cur.tf, consensus);
       continue;
     }
 
     const oppFc = opposingSenior.item.forecast;
     const oppDir: "LONG" | "SHORT" = oppFc.isBull ? "LONG" : "SHORT";
+    const atrOwn = Math.max(0.5, curFc.atrVal || Math.abs(curFc.p1Entry - curFc.invalidLevelSl) / 0.72 || 5);
+    const atrHtf = Math.max(1.5, oppFc.atrVal || Math.abs(oppFc.p1Entry - oppFc.invalidLevelSl) / 0.72 || atrOwn * 2);
 
     curFc.counterTrend = true;
-    curFc.lockRole = "ОТКАТ (контртренд, уменьшенный размер)";
     curFc.parentTrendTf = opposingSenior.tf.toUpperCase();
     curFc.parentTrendDirection = oppDir;
     curFc.parentEntryPrice = oppFc.p1Entry;
     curFc.trendAlignmentBadge = `🌊 ОТКАТ в тренде 1D/4H (${oppDir})`;
 
-    // Cap TP1/TP2/TP3 at the senior lock's limit entry (p1Entry)
-    if (curFc.isBull) {
-      // Junior LONG vs Senior SHORT: cap TP above by senior SHORT's entry
-      curFc.p2Tp1 = roundPriceForAsset(Math.min(curFc.p2Tp1, oppFc.p1Entry), curFc.p1Entry);
-      curFc.p3Tp2 = roundPriceForAsset(Math.min(curFc.p3Tp2, oppFc.p1Entry), curFc.p1Entry);
-      curFc.p5Tp3 = roundPriceForAsset(Math.min(curFc.p5Tp3, oppFc.p1Entry), curFc.p1Entry);
-    } else {
-      // Junior SHORT vs Senior LONG: cap TP below by senior LONG's entry
-      curFc.p2Tp1 = roundPriceForAsset(Math.max(curFc.p2Tp1, oppFc.p1Entry), curFc.p1Entry);
-      curFc.p3Tp2 = roundPriceForAsset(Math.max(curFc.p3Tp2, oppFc.p1Entry), curFc.p1Entry);
-      curFc.p5Tp3 = roundPriceForAsset(Math.max(curFc.p5Tp3, oppFc.p1Entry), curFc.p1Entry);
+    // Recalculate TP1 / TP2 via Nested Ladder constraints (TP2 <= entryHTF - 0.2*ATR_HTF, TP2 - TP1 >= 0.4*ATR_own)
+    const ladder = computeNestedLadderSetup({
+      entry: curFc.p1Entry,
+      rawSl: curFc.invalidLevelSl,
+      isBull: curFc.isBull,
+      atrOwn,
+      tfSec: cur.tfSec,
+      counterTrend: true,
+      entryHtf: oppFc.p1Entry,
+      atrHtf,
+      parentTrendTf: opposingSenior.tf.toUpperCase(),
+      rawTp1: curFc.p2Tp1,
+      rawTp2: curFc.p3Tp2,
+      rawTp3: curFc.p5Tp3,
+      entrySourceTag: curFc.entrySourceTag
+    });
+
+    curFc.p2Tp1 = ladder.p2Tp1;
+    curFc.p3Tp2 = ladder.p3Tp2;
+    curFc.p5Tp3 = ladder.p5Tp3;
+    curFc.rrTp1 = ladder.rrTp1;
+    curFc.rrTp2 = ladder.rrTp2;
+    curFc.tp1SourceTag = ladder.tp1SourceTag;
+    curFc.tp2SourceTag = ladder.tp2SourceTag;
+    curFc.tp3SourceTag = ladder.tp3SourceTag;
+    curFc.slSourceTag = curFc.slSourceTag || ladder.slSourceTag;
+    curFc.setupMode = ladder.setupMode;
+    curFc.hasValidSetup = ladder.hasValidSetup;
+    curFc.isScalpMode = ladder.isScalpMode;
+    curFc.hideTp1Line = ladder.hideTp1Line;
+    curFc.hideTp2Line = ladder.hideTp2Line;
+    curFc.lockRole = ladder.isScalpMode ? ladder.lockRole : "ОТКАТ (контртренд, уменьшенный размер)";
+    if (ladder.status === "NO_SETUP" || ladder.status === "SCALP") {
+      curFc.status = ladder.status;
+      curFc.statusReason = ladder.statusReason;
     }
 
     // If BOTH locks have "ВХОД ВЗЯТ" (leg1Hit === true) and directions are opposite:
-    // Junior lock gets forced TP at senior lock's entry level and then expires.
+    // Junior lock expires at its ceiling TP2 (while preserving TP1 < TP2 invariant).
     if (oppFc.leg1Hit && curFc.leg1Hit) {
-      curFc.p2Tp1 = roundPriceForAsset(oppFc.p1Entry, curFc.p1Entry);
-      curFc.p3Tp2 = roundPriceForAsset(oppFc.p1Entry, curFc.p1Entry);
       curFc.leg2Hit = true;
       curFc.status = "EXPIRED";
       curFc.isExpired = true;
       curFc.expirationReason = "counterTrendTp";
-      curFc.reason = `Принудительный TP на уровне входа старшего лока (${oppFc.p1Entry})`;
-      curFc.statusReason = `⏳ Истёк: ОТКАТ закрыт по принудительному TP у входа ${opposingSenior.tf.toUpperCase()} (${oppFc.p1Entry})`;
+      curFc.reason = `Потолок отката у входа старшего лока (${oppFc.p1Entry})`;
+      curFc.statusReason = `⏳ Истёк: ОТКАТ закрыт у потолка входа ${opposingSenior.tf.toUpperCase()} (${curFc.p3Tp2})`;
     }
   }
 }
@@ -2157,16 +2685,39 @@ export function evaluateSuperIndicator(
   // Tightly bounded multiplier [0.85, 1.20] so TP1 and TP2 never inflate beyond institutional ATR bands
   const tpMult = Math.min(1.20, Math.max(0.85, basePresetMult * regimeMult * ictMult * absorbMult));
 
-  interface SetupLevelsResult {
-    p1Entry: number;
-    p2Tp1: number;
-    p3Tp2: number;
-    p5Tp3: number;
-    invalidLevelSl: number;
+  interface SetupLevelsResult extends NestedLadderResult {
     altTp1: number;
     altTp2: number;
     altTp3: number;
   }
+
+  // Own structural levels for Nested Ladder (Liq LT/IT/ST, EQ, FVG/OB edges)
+  const buildOwnStructureLevels = (bIdx: number, isBullDir: boolean): Array<{ price: number; name: string }> => {
+    const structList: Array<{ price: number; name: string }> = [];
+    for (const z of srZones) {
+      if (z.isMitigated) continue;
+      structList.push({ price: z.level, name: `Liq ${z.type}` });
+    }
+    if (Number.isFinite(fib500) && fib500 > 0) {
+      structList.push({ price: fib500, name: "EQ" });
+    }
+    if (isBullDir) {
+      for (const fvg of cleanBearFvg) {
+        if (fvg.left <= bIdx) structList.push({ price: fvg.bottom, name: "FVG" });
+      }
+      for (const ob of cleanBearOb) {
+        if (ob.left <= bIdx) structList.push({ price: ob.bottom, name: "OB" });
+      }
+    } else {
+      for (const fvg of cleanBullFvg) {
+        if (fvg.left <= bIdx) structList.push({ price: fvg.top, name: "FVG" });
+      }
+      for (const ob of cleanBullOb) {
+        if (ob.left <= bIdx) structList.push({ price: ob.top, name: "OB" });
+      }
+    }
+    return structList;
+  };
 
   const computeSetupLevelsForBar = (
     bIdx: number,
@@ -2190,11 +2741,13 @@ export function evaluateSuperIndicator(
     const min_pullback_atr = isSweep ? 0.0 : 0.18;
 
     let entry: number;
+    let entryTagKind = "Pullback";
 
     if (isBullDir) {
       // 1. HIGH-PROBABILITY LONG ENTRY (Pullback to unmitigated Bullish OB / FVG within [0.18, max_pullback_atr] ATR)
       if (isSweep) {
         entry = Math.max(bClose - bAtr * max_pullback_atr, Math.min(bClose, bCandle.low));
+        entryTagKind = "Sweep";
       } else {
         let pFound: number | null = null;
         for (let i = cleanBullOb.length - 1; i >= 0; i--) {
@@ -2203,6 +2756,7 @@ export function evaluateSuperIndicator(
           const candidate = Math.min(ob.top, Math.max(mid, bClose - bAtr * max_pullback_atr));
           if (ob.left <= bIdx && candidate <= bClose - bAtr * min_pullback_atr && candidate >= bClose - bAtr * max_pullback_atr) {
             pFound = candidate;
+            entryTagKind = "OB";
             break;
           }
         }
@@ -2213,6 +2767,7 @@ export function evaluateSuperIndicator(
             const candidate = Math.min(fvg.top, Math.max(mid, bClose - bAtr * max_pullback_atr));
             if (fvg.left <= bIdx && candidate <= bClose - bAtr * min_pullback_atr && candidate >= bClose - bAtr * max_pullback_atr) {
               pFound = candidate;
+              entryTagKind = "FVG";
               break;
             }
           }
@@ -2222,21 +2777,21 @@ export function evaluateSuperIndicator(
       }
       entry = Math.max(bClose - bAtr * max_pullback_atr, Math.min(bClose - bAtr * min_pullback_atr, entry));
       entry = roundPriceForAsset(entry, bClose);
+      const entrySourceTag = `[структура: ${entryTagKind} ${entry}]`;
 
       // 2. LONG STOP LOSS (Strictly below entry and local 6-bar swing low, bounded [0.55, 0.95] ATR)
       const winSlice = candles.slice(Math.max(0, bIdx - 6), bIdx + 1);
       const ll = winSlice.length > 0 ? Math.min(...winSlice.map(c => c.low)) : entry - bAtr * 0.72;
       const ssl = (ll < entry && ll >= entry - bAtr * 0.85) ? ll - bAtr * 0.12 : entry - bAtr * 0.72;
-      let sl = Math.min(entry - bAtr * 0.55, Math.max(entry - bAtr * 0.95, ssl));
-      sl = f_avoid_round_sl(sl, true, bAtr);
-      // Enforce strict post-rounding invariant [0.52, 1.00] ATR from entry
-      sl = Math.min(entry - bAtr * 0.52, Math.max(entry - bAtr * 1.00, sl));
-      sl = roundPriceForAsset(sl, bClose);
-      const riskDist = Math.max(bAtr * 0.52, entry - sl);
+      let rawSl = Math.min(entry - bAtr * 0.55, Math.max(entry - bAtr * 0.95, ssl));
+      rawSl = f_avoid_round_sl(rawSl, true, bAtr);
+      rawSl = Math.min(entry - bAtr * 0.52, Math.max(entry - bAtr * 1.00, rawSl));
+      rawSl = roundPriceForAsset(rawSl, bClose);
+      const riskDist = Math.max(bAtr * 0.52, entry - rawSl);
 
-      // 3. LONG TAKE PROFIT 1 (1.10 - 1.75 ATR from Entry • R:R >= 1.40 • Anchored to Bearish FVG/OB & Call Wall)
+      // 3. Raw LONG TP1 / TP2 candidates
       const pullbackDist = Math.max(0, bClose - entry);
-      const minRew1 = Math.max(bAtr * min_tp1_atr, riskDist * 1.40, pullbackDist + bAtr * 0.65);
+      const minRew1 = Math.max(bAtr * min_tp1_atr, riskDist * 1.25, pullbackDist + bAtr * 0.55);
       const maxRew1 = Math.max(minRew1 + bAtr * 0.15, bAtr * max_tp1_atr * tpMult);
 
       let candP2: number | null = null;
@@ -2259,41 +2814,51 @@ export function evaluateSuperIndicator(
       const recentHighs = candles.slice(Math.max(0, bIdx - 20), bIdx + 1).map(c => c.high);
       const hh = Math.max(...recentHighs);
       const swingTarget = hh > entry + minRew1 ? entry + Math.min(maxRew1, Math.max(minRew1, (hh - entry) * 0.85)) : entry + bAtr * 1.28 * tpMult;
-      let tp1 = candP2 !== null ? candP2 : swingTarget;
+      let rawTp1 = candP2 !== null ? candP2 : swingTarget;
+      rawTp1 = f_avoid_round(rawTp1, true, bAtr);
+      rawTp1 = Math.min(entry + maxRew1, Math.max(entry + minRew1, rawTp1));
+      rawTp1 = roundPriceForAsset(rawTp1, bClose);
 
-      // Institutional Call Wall alignment: snap ahead of Call Wall only if Call Wall satisfies minRew1
-      if (callWall - 0.50 >= entry + minRew1 && callWall <= entry + maxRew1 * 1.12) {
-        tp1 = Math.min(tp1, callWall - 0.50);
-      }
-      tp1 = f_avoid_round(tp1, true, bAtr);
-      tp1 = Math.min(entry + maxRew1, Math.max(entry + minRew1, tp1));
-      tp1 = roundPriceForAsset(tp1, bClose);
-
-      // 4. LONG TAKE PROFIT 2 (2.00 - 2.95 ATR from Entry • R:R >= 2.35 • Major Swing / Call Wall)
-      const rew1 = tp1 - entry;
-      const minRew2 = Math.max(rew1 + bAtr * step_tp2_atr, riskDist * 2.35);
+      const rew1 = rawTp1 - entry;
+      const minRew2 = Math.max(rew1 + bAtr * step_tp2_atr, riskDist * 2.05);
       const maxRew2 = Math.max(minRew2 + bAtr * 0.20, bAtr * max_tp2_atr * tpMult);
-      let tp2 = entry + Math.min(maxRew2, Math.max(minRew2, bAtr * (isTrending ? 2.35 : 2.15) * tpMult));
+      let rawTp2 = entry + Math.min(maxRew2, Math.max(minRew2, bAtr * (isTrending ? 2.35 : 2.15) * tpMult));
+      rawTp2 = f_avoid_round(rawTp2, true, bAtr);
+      rawTp2 = Math.min(entry + maxRew2, Math.max(entry + minRew2, rawTp2));
+      rawTp2 = roundPriceForAsset(rawTp2, bClose);
+      const rawTp3 = roundPriceForAsset(rawTp2 + bAtr * Math.max(0.95, 1.10 * tpMult), bClose);
 
-      if (callWall - 0.50 >= entry + minRew2 && callWall <= entry + maxRew2 * 1.12) {
-        tp2 = Math.min(tp2, callWall - 0.50);
-      }
-      tp2 = f_avoid_round(tp2, true, bAtr);
-      tp2 = Math.min(entry + maxRew2, Math.max(entry + minRew2, tp2));
-      tp2 = roundPriceForAsset(tp2, bClose);
+      const ladder = computeNestedLadderSetup({
+        entry,
+        rawSl,
+        isBull: true,
+        atrOwn: bAtr,
+        tfSec,
+        gexPools: {
+          maxPain,
+          putWall,
+          callWall,
+          gammaFlip,
+          sleeperMagnet,
+          expectedMove68
+        },
+        structureLevels: buildOwnStructureLevels(bIdx, true),
+        entrySourceTag,
+        rawTp1,
+        rawTp2,
+        rawTp3
+      });
 
-      // 5. LONG TAKE PROFIT 3 (Runner: +1.05..1.25 ATR beyond TP2)
-      const tp3 = roundPriceForAsset(tp2 + bAtr * Math.max(0.95, 1.10 * tpMult), bClose);
-
-      const altTp1 = roundPriceForAsset(sl - bAtr * 1.35, bClose);
-      const altTp2 = roundPriceForAsset(sl - bAtr * 2.60, bClose);
+      const altTp1 = roundPriceForAsset(ladder.invalidLevelSl - bAtr * 1.35, bClose);
+      const altTp2 = roundPriceForAsset(ladder.invalidLevelSl - bAtr * 2.60, bClose);
       const altTp3 = roundPriceForAsset(altTp2 - bAtr * 1.15, bClose);
 
-      return { p1Entry: entry, p2Tp1: tp1, p3Tp2: tp2, p5Tp3: tp3, invalidLevelSl: sl, altTp1, altTp2, altTp3 };
+      return { ...ladder, altTp1, altTp2, altTp3 };
     } else {
       // 1. HIGH-PROBABILITY SHORT ENTRY (Pullback to unmitigated Bearish OB / FVG within [0.18, max_pullback_atr] ATR)
       if (isSweep) {
         entry = Math.min(bClose + bAtr * max_pullback_atr, Math.max(bClose, bCandle.high));
+        entryTagKind = "Sweep";
       } else {
         let pFound: number | null = null;
         for (let i = cleanBearOb.length - 1; i >= 0; i--) {
@@ -2302,6 +2867,7 @@ export function evaluateSuperIndicator(
           const candidate = Math.max(ob.bottom, Math.min(mid, bClose + bAtr * max_pullback_atr));
           if (ob.left <= bIdx && candidate >= bClose + bAtr * min_pullback_atr && candidate <= bClose + bAtr * max_pullback_atr) {
             pFound = candidate;
+            entryTagKind = "OB";
             break;
           }
         }
@@ -2312,6 +2878,7 @@ export function evaluateSuperIndicator(
             const candidate = Math.max(fvg.bottom, Math.min(mid, bClose + bAtr * max_pullback_atr));
             if (fvg.left <= bIdx && candidate >= bClose + bAtr * min_pullback_atr && candidate <= bClose + bAtr * max_pullback_atr) {
               pFound = candidate;
+              entryTagKind = "FVG";
               break;
             }
           }
@@ -2321,21 +2888,21 @@ export function evaluateSuperIndicator(
       }
       entry = Math.min(bClose + bAtr * max_pullback_atr, Math.max(bClose + bAtr * min_pullback_atr, entry));
       entry = roundPriceForAsset(entry, bClose);
+      const entrySourceTag = `[структура: ${entryTagKind} ${entry}]`;
 
       // 2. SHORT STOP LOSS (Strictly above entry and local 6-bar swing high, bounded [0.55, 0.95] ATR)
       const winSlice = candles.slice(Math.max(0, bIdx - 6), bIdx + 1);
       const hh = winSlice.length > 0 ? Math.max(...winSlice.map(c => c.high)) : entry + bAtr * 0.72;
       const ssl = (hh > entry && hh <= entry + bAtr * 0.85) ? hh + bAtr * 0.12 : entry + bAtr * 0.72;
-      let sl = Math.max(entry + bAtr * 0.55, Math.min(entry + bAtr * 0.95, ssl));
-      sl = f_avoid_round_sl(sl, false, bAtr);
-      // Enforce strict post-rounding invariant [0.52, 1.00] ATR from entry
-      sl = Math.max(entry + bAtr * 0.52, Math.min(entry + bAtr * 1.00, sl));
-      sl = roundPriceForAsset(sl, bClose);
-      const riskDist = Math.max(bAtr * 0.52, sl - entry);
+      let rawSl = Math.max(entry + bAtr * 0.55, Math.min(entry + bAtr * 0.95, ssl));
+      rawSl = f_avoid_round_sl(rawSl, false, bAtr);
+      rawSl = Math.max(entry + bAtr * 0.52, Math.min(entry + bAtr * 1.00, rawSl));
+      rawSl = roundPriceForAsset(rawSl, bClose);
+      const riskDist = Math.max(bAtr * 0.52, rawSl - entry);
 
-      // 3. SHORT TAKE PROFIT 1 (1.10 - 1.75 ATR from Entry • R:R >= 1.40 • Anchored to Bullish FVG/OB & Put Wall)
+      // 3. Raw SHORT TP1 / TP2 candidates
       const pullbackDist = Math.max(0, entry - bClose);
-      const minRew1 = Math.max(bAtr * min_tp1_atr, riskDist * 1.40, pullbackDist + bAtr * 0.65);
+      const minRew1 = Math.max(bAtr * min_tp1_atr, riskDist * 1.25, pullbackDist + bAtr * 0.55);
       const maxRew1 = Math.max(minRew1 + bAtr * 0.15, bAtr * max_tp1_atr * tpMult);
 
       let candP2: number | null = null;
@@ -2358,37 +2925,46 @@ export function evaluateSuperIndicator(
       const recentLows = candles.slice(Math.max(0, bIdx - 20), bIdx + 1).map(c => c.low);
       const ll = Math.min(...recentLows);
       const swingTarget = ll < entry - minRew1 ? entry - Math.min(maxRew1, Math.max(minRew1, (entry - ll) * 0.85)) : entry - bAtr * 1.28 * tpMult;
-      let tp1 = candP2 !== null ? candP2 : swingTarget;
+      let rawTp1 = candP2 !== null ? candP2 : swingTarget;
+      rawTp1 = f_avoid_round(rawTp1, false, bAtr);
+      rawTp1 = Math.max(entry - maxRew1, Math.min(entry - minRew1, rawTp1));
+      rawTp1 = roundPriceForAsset(rawTp1, bClose);
 
-      // Institutional Put Wall alignment: snap ahead of Put Wall only if Put Wall satisfies minRew1
-      if (putWall + 0.50 <= entry - minRew1 && putWall >= entry - maxRew1 * 1.12) {
-        tp1 = Math.max(tp1, putWall + 0.50);
-      }
-      tp1 = f_avoid_round(tp1, false, bAtr);
-      tp1 = Math.max(entry - maxRew1, Math.min(entry - minRew1, tp1));
-      tp1 = roundPriceForAsset(tp1, bClose);
-
-      // 4. SHORT TAKE PROFIT 2 (2.00 - 2.95 ATR from Entry • R:R >= 2.35 • Major Swing / Put Wall)
-      const rew1 = entry - tp1;
-      const minRew2 = Math.max(rew1 + bAtr * step_tp2_atr, riskDist * 2.35);
+      const rew1 = entry - rawTp1;
+      const minRew2 = Math.max(rew1 + bAtr * step_tp2_atr, riskDist * 2.05);
       const maxRew2 = Math.max(minRew2 + bAtr * 0.20, bAtr * max_tp2_atr * tpMult);
-      let tp2 = entry - Math.min(maxRew2, Math.max(minRew2, bAtr * (isTrending ? 2.35 : 2.15) * tpMult));
+      let rawTp2 = entry - Math.min(maxRew2, Math.max(minRew2, bAtr * (isTrending ? 2.35 : 2.15) * tpMult));
+      rawTp2 = f_avoid_round(rawTp2, false, bAtr);
+      rawTp2 = Math.max(entry - maxRew2, Math.min(entry - minRew2, rawTp2));
+      rawTp2 = roundPriceForAsset(rawTp2, bClose);
+      const rawTp3 = roundPriceForAsset(rawTp2 - bAtr * Math.max(0.95, 1.10 * tpMult), bClose);
 
-      if (putWall + 0.50 <= entry - minRew2 && putWall >= entry - maxRew2 * 1.12) {
-        tp2 = Math.max(tp2, putWall + 0.50);
-      }
-      tp2 = f_avoid_round(tp2, false, bAtr);
-      tp2 = Math.max(entry - maxRew2, Math.min(entry - minRew2, tp2));
-      tp2 = roundPriceForAsset(tp2, bClose);
+      const ladder = computeNestedLadderSetup({
+        entry,
+        rawSl,
+        isBull: false,
+        atrOwn: bAtr,
+        tfSec,
+        gexPools: {
+          maxPain,
+          putWall,
+          callWall,
+          gammaFlip,
+          sleeperMagnet,
+          expectedMove68
+        },
+        structureLevels: buildOwnStructureLevels(bIdx, false),
+        entrySourceTag,
+        rawTp1,
+        rawTp2,
+        rawTp3
+      });
 
-      // 5. SHORT TAKE PROFIT 3 (Runner: -1.05..1.25 ATR beyond TP2)
-      const tp3 = roundPriceForAsset(tp2 - bAtr * Math.max(0.95, 1.10 * tpMult), bClose);
-
-      const altTp1 = roundPriceForAsset(sl + bAtr * 1.35, bClose);
-      const altTp2 = roundPriceForAsset(sl + bAtr * 2.60, bClose);
+      const altTp1 = roundPriceForAsset(ladder.invalidLevelSl + bAtr * 1.35, bClose);
+      const altTp2 = roundPriceForAsset(ladder.invalidLevelSl + bAtr * 2.60, bClose);
       const altTp3 = roundPriceForAsset(altTp2 + bAtr * 1.15, bClose);
 
-      return { p1Entry: entry, p2Tp1: tp1, p3Tp2: tp2, p5Tp3: tp3, invalidLevelSl: sl, altTp1, altTp2, altTp3 };
+      return { ...ladder, altTp1, altTp2, altTp3 };
     }
   };
 
@@ -2435,6 +3011,13 @@ export function evaluateSuperIndicator(
     // A limit pullback order placed at the close of barIdx is only filled on barIdx if it is a market-price sweep entry
     const bEntryHitOnStart = Math.abs(bP1 - bClose) <= bAtr * 0.03;
 
+    const initialStatus: SetupLifecycleStatus =
+      levels.status === "NO_SETUP" || levels.status === "SCALP"
+        ? levels.status
+        : bEntryHitOnStart
+        ? "ACTIVE"
+        : "PENDING";
+
     const fcState: ForecastState = {
       isBull: bIsBull,
       probability: Math.round(bIsBull ? (bDelta > 0 ? 74 : 68) : (bDelta < 0 ? 74 : 68)),
@@ -2443,7 +3026,24 @@ export function evaluateSuperIndicator(
       startTime: bCandle.time,
       barsSinceStart: (n - 1) - bIdx,
       isLocked: true,
-      statusReason: `Фиксирован (бар #${bIdx})`,
+      atrVal: bAtr,
+      rrTp1: levels.rrTp1,
+      rrTp2: levels.rrTp2,
+      setupMode: levels.setupMode,
+      hasValidSetup: levels.hasValidSetup,
+      isScalpMode: levels.isScalpMode,
+      hideTp1Line: levels.hideTp1Line,
+      hideTp2Line: levels.hideTp2Line,
+      lockRole: levels.lockRole,
+      entrySourceTag: levels.entrySourceTag,
+      tp1SourceTag: levels.tp1SourceTag,
+      tp2SourceTag: levels.tp2SourceTag,
+      tp3SourceTag: levels.tp3SourceTag,
+      slSourceTag: levels.slSourceTag,
+      statusReason:
+        levels.status === "NO_SETUP" || levels.status === "SCALP"
+          ? levels.statusReason
+          : `Фиксирован (бар #${bIdx})`,
       startPrice: roundPriceForAsset(bClose, bClose),
       p1Entry: roundPriceForAsset(bP1, bClose),
       p2Tp1: roundPriceForAsset(bP2, bClose),
@@ -2467,7 +3067,7 @@ export function evaluateSuperIndicator(
       altTp3: roundPriceForAsset(bAlt3, bClose),
       isHighRunaway: noPullbackProb >= 65,
       noPullbackProb,
-      status: bEntryHitOnStart ? "ACTIVE" : "PENDING",
+      status: initialStatus,
       isExpired: false
     };
 
@@ -2654,6 +3254,18 @@ export function evaluateSuperIndicator(
   };
 }
 
+export interface EvaluateSetupOptions {
+  bosByBar?: boolean[];
+  nextPools?: Array<{ price: number; name: string }>;
+  gexPools?: {
+    maxPain?: number;
+    putWall?: number;
+    callWall?: number;
+    gammaFlip?: number;
+    sleeperMagnet?: number;
+  };
+}
+
 export function evaluateSetupRange(
   item: AnchoredForecastItem,
   anchorIdx: number,
@@ -2664,7 +3276,8 @@ export function evaluateSetupRange(
   tfSec: number = 900,
   trendStateByBar?: string[],
   isBull: boolean = item.forecast.isBull,
-  externalGammaFlip?: number
+  externalGammaFlip?: number,
+  evalOptions?: EvaluateSetupOptions
 ): { expiredAtBar: number | null; updatedForecast: ForecastState } {
   const prev = item.forecast;
   const entryWaitBars = tfSec >= 86400 ? 4 : tfSec >= 3600 ? 6 : 8;
@@ -2673,8 +3286,23 @@ export function evaluateSetupRange(
   const anchorAtr = (atrs && atrs[anchorIdx]) || atrVal;
   const lastClose = candles[targetEndIdx]?.close ?? prev.startPrice;
 
+  let currentEntry = prev.p1Entry;
+  let currentSl = prev.invalidLevelSl;
+  let currentTp1 = prev.p2Tp1;
+  let currentTp2 = prev.p3Tp2;
+  let currentTp3 = prev.p5Tp3;
+  let entrySourceTag = prev.entrySourceTag;
+  let slSourceTag = prev.slSourceTag;
+  let tp1SourceTag = prev.tp1SourceTag;
+  let tp2SourceTag = prev.tp2SourceTag;
+  let tp3SourceTag = prev.tp3SourceTag;
+  let isBreakoutSetup = Boolean(prev.isBreakoutSetup);
+  let tp2ExtendedByBos = Boolean(prev.tp2ExtendedByBos);
+  let setupMode = prev.setupMode;
+  let effectiveAnchorIdx = anchorIdx;
+
   // Deterministically replay fills starting from anchorIdx
-  let leg1Hit = Boolean(prev.leg1Hit) || Math.abs(prev.p1Entry - prev.startPrice) <= anchorAtr * 0.03;
+  let leg1Hit = Boolean(prev.leg1Hit) || Math.abs(currentEntry - prev.startPrice) <= anchorAtr * 0.03;
   let leg1Idx: number | undefined = leg1Hit ? (prev.leg1Idx ?? anchorIdx) : undefined;
   let leg1Time: number | undefined = leg1Hit ? (prev.leg1Time ?? anchorCandle?.time) : undefined;
 
@@ -2686,7 +3314,7 @@ export function evaluateSetupRange(
   let leg3Idx: number | undefined = prev.leg3Idx;
   let leg3Time: number | undefined = prev.leg3Time;
 
-  let activeTrailingSl = prev.invalidLevelSl;
+  let activeTrailingSl = currentSl;
   let trailingStageStr = "🛡️ Начальный SL";
   let trailingStageIdx = 0;
   let trailingActivatedAtBar: number | undefined = undefined;
@@ -2695,13 +3323,10 @@ export function evaluateSetupRange(
   let expirationReason: SetupExpirationReason | undefined = undefined;
   let customReason: string | undefined = undefined;
 
-  const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
   item.highestPriceSinceStart = anchorCandle ? anchorCandle.high : prev.startPrice;
   item.lowestPriceSinceStart = anchorCandle ? anchorCandle.low : prev.startPrice;
 
   let consecutiveRegimeFlipBars = 0;
-  // If anchorCandle itself closed on the opposite side of externalGammaFlip after lock creation (e.g. when anchorIdx === targetEndIdx - 1),
-  // count it if prev.startPrice was originally on the valid side of externalGammaFlip
   if (
     typeof externalGammaFlip === "number" &&
     externalGammaFlip > 0 &&
@@ -2728,8 +3353,6 @@ export function evaluateSetupRange(
     const wasLeg2Hit = leg2Hit;
 
     // 1. GAMMA-REGIME INVALIDATION (regimeFlip):
-    // If spot closed (bar close) on the opposite side of external gammaFlip AGAINST lock direction
-    // and stayed there for >= 2 bars of its timeframe -> setup expires with EXPIRED (reason: "смена гамма-режима")
     if (typeof externalGammaFlip === "number" && externalGammaFlip > 0 && !prev.counterTrend) {
       const isOppositeSideOfFlip = prev.isBull
         ? cb.close < externalGammaFlip
@@ -2748,7 +3371,6 @@ export function evaluateSetupRange(
       }
     }
 
-    // Check if the next bar will complete a 2-bar regimeFlip; if so, do not pre-empt with SL or CHoCH on bar 1
     const nextBarCompletesRegimeFlip =
       consecutiveRegimeFlipBars === 1 &&
       bi + 1 <= targetEndIdx &&
@@ -2773,68 +3395,183 @@ export function evaluateSetupRange(
       break;
     }
 
-    // Check if price hit TP1 before ever touching limit Entry (Missed Entry / Runaway)
+    // 4(в) Check if price reached TP1 before ever touching limit Entry (Missed Entry)
+    // If accompanied by confirming BOS -> create a BREAKOUT setup with entry on retest of the broken level instead of grey "НЕДОХОД"
     if (!wasLeg1Hit && !nextBarCompletesRegimeFlip) {
-      const touchedEntry = prev.isBull ? cb.low <= prev.p1Entry : cb.high >= prev.p1Entry;
-      const touchedTp1 = prev.isBull ? cb.high >= prev.p2Tp1 : cb.low <= prev.p2Tp1;
+      const touchedEntry = prev.isBull ? cb.low <= currentEntry : cb.high >= currentEntry;
+      const touchedTp1 = prev.isBull ? cb.high >= currentTp1 : cb.low <= currentTp1;
       if (touchedTp1 && !touchedEntry) {
-        isMissedEntry = true;
-        expiredAtBar = bi;
-        expirationReason = "missedEntry";
-        break;
+        const confirmingBos =
+          Boolean(evalOptions?.bosByBar?.[bi]) ||
+          (prev.isBull ? cb.close > currentTp1 : cb.close < currentTp1);
+
+        if (confirmingBos && !isBreakoutSetup) {
+          const brokenLevel = roundPriceForAsset(currentTp1, cb.close);
+          const oldTp2 = currentTp2;
+          const oldTp3 = currentTp3;
+
+          currentEntry = brokenLevel;
+          entrySourceTag = `[ретест BOS: ${brokenLevel}]`;
+
+          currentTp1 = roundPriceForAsset(oldTp2, cb.close);
+          tp1SourceTag = tp2SourceTag || `[пул: Магнит ${currentTp1}]`;
+
+          // Find next pool beyond oldTp2 for new TP2
+          const poolCands = (evalOptions?.nextPools || []).filter((p) =>
+            prev.isBull ? p.price > currentTp1 + 0.3 * bAtr : p.price < currentTp1 - 0.3 * bAtr
+          );
+          poolCands.sort((a, b) => (prev.isBull ? a.price - b.price : b.price - a.price));
+
+          if (poolCands[0]) {
+            currentTp2 = roundPriceForAsset(poolCands[0].price, cb.close);
+            tp2SourceTag = `[пул: ${poolCands[0].name} ${currentTp2}]`;
+          } else if (
+            oldTp3 > 0 &&
+            (prev.isBull ? oldTp3 >= currentTp1 + 0.35 * bAtr : oldTp3 <= currentTp1 - 0.35 * bAtr)
+          ) {
+            currentTp2 = roundPriceForAsset(oldTp3, cb.close);
+            tp2SourceTag = `[пул: ${prev.isBull ? "CW" : "PW"} ${currentTp2}]`;
+          } else {
+            currentTp2 = roundPriceForAsset(
+              currentTp1 + (prev.isBull ? 1 : -1) * Math.max(0.85 * bAtr, Math.abs(currentTp1 - currentEntry)),
+              cb.close
+            );
+            tp2SourceTag = `[пул: ${prev.isBull ? "CW" : "PW"} ${currentTp2}]`;
+          }
+
+          currentTp3 = roundPriceForAsset(currentTp2 + (prev.isBull ? 1 : -1) * bAtr * 1.05, cb.close);
+
+          const rawBreakoutSl = currentEntry + (prev.isBull ? -1 : 1) * bAtr * 0.72;
+          const slPools: Array<{ price: number; name: string }> = [];
+          if (evalOptions?.gexPools?.maxPain) slPools.push({ price: evalOptions.gexPools.maxPain, name: "Магнит" });
+          if (evalOptions?.gexPools?.putWall) slPools.push({ price: evalOptions.gexPools.putWall, name: "PW" });
+          if (evalOptions?.gexPools?.callWall) slPools.push({ price: evalOptions.gexPools.callWall, name: "CW" });
+          if (evalOptions?.gexPools?.gammaFlip) slPools.push({ price: evalOptions.gexPools.gammaFlip, name: "Flip" });
+          const slResolved = resolveStopPoolConflict(rawBreakoutSl, currentEntry, prev.isBull, bAtr, slPools);
+          currentSl = slResolved.sl;
+          slSourceTag = slResolved.slSourceTag;
+          activeTrailingSl = currentSl;
+
+          isBreakoutSetup = true;
+          setupMode = "BREAKOUT";
+          isMissedEntry = false;
+          effectiveAnchorIdx = bi;
+          continue;
+        } else {
+          isMissedEntry = true;
+          expiredAtBar = bi;
+          expirationReason = "missedEntry";
+          break;
+        }
       }
     }
 
     if (prev.isBull) {
-      if (!leg1Hit && cb.low <= prev.p1Entry) {
+      if (!leg1Hit && cb.low <= currentEntry) {
         leg1Hit = true;
         leg1Idx = bi;
         leg1Time = cb.time;
       }
-      // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly above entry
-      if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1 && (wasLeg1Hit || cb.close >= prev.p2Tp1)) {
+      if (leg1Hit && !leg2Hit && cb.high >= currentTp1 && (wasLeg1Hit || cb.close >= currentTp1)) {
         leg2Hit = true;
         leg2Idx = bi;
         leg2Time = cb.time;
       }
-      // TP2 can only trigger on a bar after leg1Hit was already active
-      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2 && (wasLeg2Hit || cb.close >= prev.p3Tp2)) {
+    } else {
+      if (!leg1Hit && cb.high >= currentEntry) {
+        leg1Hit = true;
+        leg1Idx = bi;
+        leg1Time = cb.time;
+      }
+      if (leg1Hit && !leg2Hit && cb.low <= currentTp1 && (wasLeg1Hit || cb.close <= currentTp1)) {
+        leg2Hit = true;
+        leg2Idx = bi;
+        leg2Time = cb.time;
+      }
+    }
+
+    // 4(б) After TP1 + BOS of own TF in the direction of the trade:
+    // Move TP2 to the next pool (entry and stop do NOT change)
+    if (leg2Hit && !tp2ExtendedByBos) {
+      const tp1BarHigh = typeof leg2Idx === "number" && candles[leg2Idx] ? candles[leg2Idx].high : currentTp1;
+      const tp1BarLow = typeof leg2Idx === "number" && candles[leg2Idx] ? candles[leg2Idx].low : currentTp1;
+      const bosAfterTp1 =
+        Boolean(evalOptions?.bosByBar?.[bi]) ||
+        (Boolean(evalOptions?.nextPools?.length) && (prev.isBull ? cb.close > currentTp1 : cb.close < currentTp1)) ||
+        (typeof leg2Idx === "number" &&
+          bi > leg2Idx &&
+          (prev.isBull ? cb.close > tp1BarHigh : cb.close < tp1BarLow));
+
+      if (bosAfterTp1) {
+        const nextPoolCands: Array<{ price: number; name: string }> = [];
+        for (const p of evalOptions?.nextPools || []) {
+          if (prev.isBull && p.price > currentTp2 + 0.1 * bAtr) nextPoolCands.push(p);
+          if (!prev.isBull && p.price < currentTp2 - 0.1 * bAtr) nextPoolCands.push(p);
+        }
+        if (evalOptions?.gexPools) {
+          const gp = evalOptions.gexPools;
+          const poolEntries = [
+            { price: gp.maxPain || 0, name: "Магнит" },
+            { price: gp.callWall || 0, name: "CW" },
+            { price: gp.putWall || 0, name: "PW" },
+            { price: gp.sleeperMagnet || 0, name: "Магнит" }
+          ];
+          for (const pe of poolEntries) {
+            if (pe.price > 0) {
+              if (prev.isBull && pe.price > currentTp2 + 0.1 * bAtr) nextPoolCands.push(pe);
+              if (!prev.isBull && pe.price < currentTp2 - 0.1 * bAtr) nextPoolCands.push(pe);
+            }
+          }
+        }
+        nextPoolCands.sort((a, b) => (prev.isBull ? a.price - b.price : b.price - a.price));
+
+        if (nextPoolCands[0]) {
+          currentTp2 = roundPriceForAsset(nextPoolCands[0].price, cb.close);
+          tp2SourceTag = `[пул: ${nextPoolCands[0].name} ${currentTp2} (BOS)]`;
+        } else if (
+          currentTp3 > 0 &&
+          (prev.isBull ? currentTp3 > currentTp2 + 0.1 * bAtr : currentTp3 < currentTp2 - 0.1 * bAtr)
+        ) {
+          currentTp2 = roundPriceForAsset(currentTp3, cb.close);
+          tp2SourceTag = `[пул: ${prev.isBull ? "CW" : "PW"} ${currentTp2} (BOS)]`;
+        } else {
+          currentTp2 = roundPriceForAsset(currentTp2 + (prev.isBull ? 1 : -1) * bAtr * 1.0, cb.close);
+          tp2SourceTag = `[пул: ${prev.isBull ? "CW" : "PW"} ${currentTp2} (BOS)]`;
+        }
+        currentTp3 = roundPriceForAsset(currentTp2 + (prev.isBull ? 1 : -1) * bAtr * 1.0, cb.close);
+        tp2ExtendedByBos = true;
+        // Entry (currentEntry) and Stop (currentSl) strictly remain unchanged!
+      }
+    }
+
+    // Check TP2 (currentTp2) hit
+    if (prev.isBull) {
+      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.high >= currentTp2 && (wasLeg2Hit || cb.close >= currentTp2)) {
         leg3Hit = true;
         leg3Idx = bi;
         leg3Time = cb.time;
       }
     } else {
-      if (!leg1Hit && cb.high >= prev.p1Entry) {
-        leg1Hit = true;
-        leg1Idx = bi;
-        leg1Time = cb.time;
-      }
-      // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly below entry
-      if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1 && (wasLeg1Hit || cb.close <= prev.p2Tp1)) {
-        leg2Hit = true;
-        leg2Idx = bi;
-        leg2Time = cb.time;
-      }
-      // TP2 can only trigger on a bar after leg1Hit was already active
-      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2 && (wasLeg2Hit || cb.close <= prev.p3Tp2)) {
+      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.low <= currentTp2 && (wasLeg2Hit || cb.close <= currentTp2)) {
         leg3Hit = true;
         leg3Idx = bi;
         leg3Time = cb.time;
       }
     }
 
+    const distToTp1 = Math.abs(currentTp1 - currentEntry);
     // Monotonic ratcheted trailing stop progression once entry is active
     if (leg1Hit && distToTp1 > 0) {
-      const bestExtreme = prev.isBull ? cb.high - prev.p1Entry : prev.p1Entry - cb.low;
+      const bestExtreme = prev.isBull ? cb.high - currentEntry : currentEntry - cb.low;
       if (leg2Hit && trailingStageIdx < 2) {
         activeTrailingSl = prev.isBull
-          ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
-          : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
+          ? currentEntry + (currentTp1 - currentEntry) * 0.50
+          : currentEntry - (currentEntry - currentTp1) * 0.50;
         trailingStageStr = "💰 Защита 50%";
         trailingStageIdx = 2;
         trailingActivatedAtBar = bi;
       } else if (wasLeg1Hit && trailingStageIdx < 1 && bestExtreme >= distToTp1 * 0.72) {
-        activeTrailingSl = prev.isBull ? prev.p1Entry + bAtr * 0.15 : prev.p1Entry - bAtr * 0.15;
+        activeTrailingSl = prev.isBull ? currentEntry + bAtr * 0.15 : currentEntry - bAtr * 0.15;
         trailingStageStr = "🔒 BE+0.15";
         trailingStageIdx = 1;
         trailingActivatedAtBar = bi;
@@ -2845,14 +3582,14 @@ export function evaluateSetupRange(
       continue;
     }
 
-    const barsPassedAtBi = bi - anchorIdx;
-    const slBrokenAtBi = prev.isBull ? cb.low <= prev.invalidLevelSl : cb.high >= prev.invalidLevelSl;
+    const barsPassedAtBi = bi - effectiveAnchorIdx;
+    const slBrokenAtBi = prev.isBull ? cb.low <= currentSl : cb.high >= currentSl;
 
     // On the final bar, if MAE-Guard is active (floating loss > 1.25 * risk AND within 0.3 ATR of SL),
     // keep the lock alive with the "⚠️ ПОД УГРОЗОЙ" warning instead of immediately expiring
     const maeOnFinalBar =
       bi === targetEndIdx &&
-      evaluateMaeGuard({ ...prev, leg1Hit }, cb.close, bAtr).isUnderThreat;
+      evaluateMaeGuard({ ...prev, p1Entry: currentEntry, invalidLevelSl: currentSl, leg1Hit }, cb.close, bAtr).isUnderThreat;
 
     // Structural trend reversal (CHoCH) against setup direction
     const barTrendBull = trendStateByBar && trendStateByBar[bi] ? trendStateByBar[bi] === "bullish" : isBull;
@@ -2860,7 +3597,7 @@ export function evaluateSetupRange(
 
     // Drift without entry: price moved > 1.75 ATR away from limit entry without filling
     const driftedAwayWithoutEntry =
-      !leg1Hit && Math.abs(cb.close - prev.p1Entry) > bAtr * 1.75;
+      !leg1Hit && Math.abs(cb.close - currentEntry) > bAtr * 1.75;
 
     const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? bi - leg2Idx : 0;
 
@@ -2887,7 +3624,15 @@ export function evaluateSetupRange(
   const isRegimeFlipExpired = expirationReason === "regimeFlip";
   const isExpired = expiredAtBar !== null;
 
-  let status: SetupLifecycleStatus = leg1Hit ? "ACTIVE" : "PENDING";
+  let status: SetupLifecycleStatus =
+    prev.status === "NO_SETUP" || prev.status === "SCALP"
+      ? prev.status
+      : leg1Hit
+      ? "ACTIVE"
+      : "PENDING";
+  if (isBreakoutSetup && status !== "EXPIRED") {
+    status = leg1Hit ? "ACTIVE" : "PENDING";
+  }
   if (isRegimeFlipExpired || isExpired) {
     status = "EXPIRED";
   }
@@ -2898,6 +3643,19 @@ export function evaluateSetupRange(
     startLogical: anchorIdx,
     startTime: candles[anchorIdx]?.time ?? item.anchorCandleTime,
     startPrice: prev.startPrice,
+    p1Entry: currentEntry,
+    invalidLevelSl: currentSl,
+    p2Tp1: currentTp1,
+    p3Tp2: currentTp2,
+    p5Tp3: currentTp3,
+    entrySourceTag,
+    slSourceTag,
+    tp1SourceTag,
+    tp2SourceTag,
+    tp3SourceTag,
+    isBreakoutSetup,
+    tp2ExtendedByBos,
+    setupMode,
     barsSinceStart: barsPassed,
     isLocked: !isRegimeFlipExpired,
     status,
@@ -2905,10 +3663,17 @@ export function evaluateSetupRange(
     expirationReason,
     reason: customReason,
     isMissedEntry,
+    lockRole: isBreakoutSetup ? "ПРОБОЙ + РЕТЕСТ (BOS)" : prev.lockRole,
     statusReason: isRegimeFlipExpired
       ? "смена гамма-режима"
       : isMissedEntry
       ? `🚫 НЕДОХОД (MISSED ENTRY) - Тейк взят до активации лимита`
+      : isBreakoutSetup
+      ? `🚀 ПРОБОЙ + РЕТЕСТ (вход на ретесте пробитого уровня ${currentEntry})`
+      : tp2ExtendedByBos
+      ? `📈 TP2 сдвинут по BOS на следующий пул (${currentTp2})`
+      : prev.status === "SCALP" || prev.status === "NO_SETUP"
+      ? prev.statusReason
       : `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
     leg1Hit,
     leg1Idx,
@@ -2975,11 +3740,17 @@ export function generateHudData(
   const p3Str = fc.p3Tp2.toFixed(1);
   let recActionStr = `⏳ Ждём вход @${p1Str} (${fc.isBull ? "LONG" : "SHORT"})`;
   let recCol = "#94a3b8";
-  if (fc.status === "EXPIRED" && fc.expirationReason === "regimeFlip") {
+  if (fc.status === "NO_SETUP" || fc.hasValidSetup === false) {
+    recActionStr = "🚫 NO_SETUP (R:R < 1.0 — сделка пропущена)";
+    recCol = "#64748b";
+  } else if (fc.status === "SCALP" || fc.isScalpMode) {
+    recActionStr = `⚡ СКАЛЬП (цель = потолок отката @${p2Str}, размер 1/2)`;
+    recCol = "#f59e0b";
+  } else if (fc.status === "EXPIRED" && fc.expirationReason === "regimeFlip") {
     recActionStr = "⛔ EXPIRED — смена гамма-режима (закрытие за Flip)";
     recCol = "#ef4444";
   } else if (fc.status === "EXPIRED" && fc.expirationReason === "counterTrendTp") {
-    recActionStr = `🎯 ОТКАТ ЗАКРЫТ у входа старшего ТФ (@${p2Str})`;
+    recActionStr = `🎯 ОТКАТ ЗАКРЫТ у потолка входа старшего ТФ (@${p3Str})`;
     recCol = "#10b981";
   } else if (isUnderThreat) {
     recActionStr = `${maeBadge} — закрыть вручную или ужать стоп (@${fc.invalidLevelSl.toFixed(1)})`;
@@ -2987,11 +3758,14 @@ export function generateHudData(
   } else if (fc.isPlanBActive) {
     recActionStr = "⚡ ПЛАН Б — слом SL, жди разворот";
     recCol = "#f59e0b";
+  } else if (fc.isBreakoutSetup && !fc.leg1Hit) {
+    recActionStr = `🚀 ПРОБОЙ + РЕТЕСТ @${p1Str} → ждём TP1 ${p2Str}`;
+    recCol = "#38bdf8";
   } else if (fc.leg3Hit) {
     recActionStr = "🏆 ЗАКРЫВАЙ — TP2 достигнут";
     recCol = "#10b981";
   } else if (fc.leg2Hit) {
-    recActionStr = `📈 ДЕРЖИМ до TP2 ${p3Str}`;
+    recActionStr = `📈 ДЕРЖИМ до TP2 ${p3Str}${fc.tp2ExtendedByBos ? " (BOS+)" : ""}`;
     recCol = "#38bdf8";
   } else if (fc.leg1Hit) {
     recActionStr = `📍 В позиции → ждём TP1 ${p2Str}`;

@@ -48,6 +48,9 @@ import {
   resolveTrendAlignmentBadge,
   evaluateMaeGuard,
   generateHudData,
+  computeNestedLadderSetup,
+  resolveStopPoolConflict,
+  runPineSuperIndicatorEngine,
   AnchoredForecastItem,
   ForecastState,
   Candle
@@ -1495,18 +1498,16 @@ async function runTests() {
 
     assert.strictEqual(updated1h.counterTrend, true, "Младший лок 1H должен получить counterTrend=true");
     assert.ok(
-      updated1h.lockRole && updated1h.lockRole.includes("ОТКАТ"),
-      `Младший лок 1H должен иметь метку ОТКАТ: получено '${updated1h.lockRole}'`
+      updated1h.lockRole && (updated1h.lockRole.includes("ОТКАТ") || updated1h.lockRole.includes("СКАЛЬП")),
+      `Младший лок 1H должен иметь метку ОТКАТ/СКАЛЬП: получено '${updated1h.lockRole}'`
     );
-    assert.strictEqual(
-      updated1h.p2Tp1,
-      3995,
-      `TP1 младшего лока LONG должен быть ограничен входом старшего SHORT (3995), получено ${updated1h.p2Tp1}`
+    assert.ok(
+      updated1h.p2Tp1 < updated1h.p3Tp2,
+      `По модели 'вложенная лестница' TP1 (${updated1h.p2Tp1}) обязан быть строго ниже TP2 (${updated1h.p3Tp2}), TP1 == TP2 невозможен!`
     );
-    assert.strictEqual(
-      updated1h.p3Tp2,
-      3995,
-      `TP2 младшего лока LONG должен быть ограничен входом старшего SHORT (3995), получено ${updated1h.p3Tp2}`
+    assert.ok(
+      updated1h.p3Tp2 < 3995,
+      `TP2 младшего лока LONG (${updated1h.p3Tp2}) должен быть ниже входа старшего SHORT (3995 - 0.2*ATR_HTF)`
     );
 
     // Теперь оба лока имеют "ВХОД ВЗЯТ" (leg1Hit = true на 1D SHORT и на 1H LONG)
@@ -1514,13 +1515,13 @@ async function runTests() {
     arbitrateOpposingLocksForAsset(TEST_SYM);
 
     assert.strictEqual(lock1hLong.forecast.counterTrend, true, "При обоих ВХОД ВЗЯТ младший лок сохраняет counterTrend=true");
-    assert.strictEqual(lock1hLong.forecast.p2Tp1, 3995, "Принудительный TP младшего лока равен входу старшего лока (3995)");
+    assert.ok(lock1hLong.forecast.p2Tp1 < lock1hLong.forecast.p3Tp2, "Инвариант TP1 < TP2 сохраняется");
     assert.strictEqual(lock1hLong.forecast.status, "EXPIRED", "После срабатывания обоих входов младший лок истекает (EXPIRED)");
     assert.strictEqual(lock1hLong.forecast.expirationReason, "counterTrendTp", "Причина истечения младшего лока — counterTrendTp");
 
     resetIndicatorForecast(TEST_SYM);
     console.log(
-      `✅ [PASS] Test 25 (б): Арбитраж противоположных локов 1D SHORT vs 1H LONG подтверждён: 1D='${lock1dShort.forecast.lockRole}', 1H='${updated1h.lockRole}' (counterTrend=true, TP ограничен входом 1D @ 3995, при обоих 'ВХОД ВЗЯТ' младший лок закрыт со статусом '${lock1hLong.forecast.status}')`
+      `✅ [PASS] Test 25 (б): Арбитраж противоположных локов 1D SHORT vs 1H LONG подтверждён: 1D='${lock1dShort.forecast.lockRole}', 1H='${updated1h.lockRole}' (counterTrend=true, TP1=${updated1h.p2Tp1} < TP2=${updated1h.p3Tp2} < 3995, при обоих 'ВХОД ВЗЯТ' младший лок закрыт со статусом '${lock1hLong.forecast.status}')`
     );
     passed++;
   }
@@ -1707,10 +1708,9 @@ async function runTests() {
       juniorInJournal.bundleKey && juniorInJournal.bundleKey === seniorInJournal.bundleKey,
       "Связанные сетапы тренд+откат должны иметь общий bundleKey"
     );
-    assert.strictEqual(
-      juniorInJournal.tp1,
-      4000,
-      `TP младшего сетапа в журнале ограничен входом старшего (4000), получено ${juniorInJournal.tp1}`
+    assert.ok(
+      juniorInJournal.tp1 < juniorInJournal.tp2 && juniorInJournal.tp2 < 4000,
+      `По модели 'вложенная лестница' TP1 (${juniorInJournal.tp1}) < TP2 (${juniorInJournal.tp2}) < вход старшего (4000)`
     );
 
     // Проверяем агрегацию бандла в computeIndicatorOverallStats: связка тренд+откат для TEST_TICKER считается как 1 бандл
@@ -1728,13 +1728,376 @@ async function runTests() {
     deleteIndicatorSetup(s2.id);
 
     console.log(
-      `✅ [PASS] Test 27 (г): Чистка журнала и бандл-статистика подтверждены: 1D SHORT (counterTrend=${seniorInJournal.counterTrend}) + 1H LONG (counterTrend=${juniorInJournal.counterTrend}, TP=${juniorInJournal.tp1}), бандл учтён как ${tickerStats.total} единица в статистике`
+      `✅ [PASS] Test 27 (г): Чистка журнала и бандл-статистика подтверждены: 1D SHORT (counterTrend=${seniorInJournal.counterTrend}) + 1H LONG (counterTrend=${juniorInJournal.counterTrend}, TP1=${juniorInJournal.tp1} < TP2=${juniorInJournal.tp2}), бандл учтён как ${tickerStats.total} единица в статистике`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 28: Вложенная лестница на синтетике с entryHTF = 4069.56:
+  // интрадей LONG даёт TP1 < TP2, оба <= 4069.3, R:R >= 1.2 / 2.0,
+  // иначе статус "СКАЛЬП (цель = потолок отката, размер 1/2)" / "NO_SETUP" (R:R < 1 запрещён)
+  // ---------------------------------------------------------------------------
+  {
+    const entryHtf = 4069.56;
+    const atrHtf = 12.0; // 0.2 * ATR_HTF = 2.4 -> потолок 4069.56 - 2.4 = 4067.16 <= 4069.3
+
+    // Сценарий А: Достаточный запас хода до entryHTF -> ПОЛНАЯ ЛЕСТНИЦА (TP1 < TP2 <= 4069.3, R:R >= 1.2 / 2.0)
+    const fullLadder = computeNestedLadderSetup({
+      entry: 4052.0,
+      rawSl: 4046.0, // risk = 6.0
+      isBull: true,
+      atrOwn: 8.0,
+      tfSec: 900, // 15m интрадей
+      counterTrend: true,
+      entryHtf,
+      atrHtf,
+      parentTrendTf: "1D",
+      structureLevels: [
+        { price: 4063.0, name: "Liq IT" },
+        { price: 4059.5, name: "EQ" }
+      ]
+    });
+
+    assert.ok(fullLadder.p2Tp1 < fullLadder.p3Tp2, `TP1 (${fullLadder.p2Tp1}) обязан быть строго меньше TP2 (${fullLadder.p3Tp2})`);
+    assert.ok(fullLadder.p2Tp1 <= 4069.3 && fullLadder.p3Tp2 <= 4069.3, `Оба тейка должны быть <= 4069.3: TP1=${fullLadder.p2Tp1}, TP2=${fullLadder.p3Tp2}`);
+    assert.ok(fullLadder.p3Tp2 - fullLadder.p2Tp1 >= 0.4 * 8.0 - 1e-6, `Зазор TP2 - TP1 (${fullLadder.p3Tp2 - fullLadder.p2Tp1}) должен быть >= 0.4*ATR_own (3.2)`);
+    assert.ok(fullLadder.rrTp1 >= 1.2 && fullLadder.rrTp2 >= 2.0, `R:R должны быть >= 1.2 / 2.0: получено rrTp1=${fullLadder.rrTp1}, rrTp2=${fullLadder.rrTp2}`);
+    assert.strictEqual(fullLadder.setupMode, "FULL_LADDER", "Должен быть режим FULL_LADDER");
+    assert.ok(fullLadder.tp2SourceTag.includes("[потолок: вход 1D]"), `Тег TP2 должен содержать '[потолок: вход 1D]', получено '${fullLadder.tp2SourceTag}'`);
+    assert.ok(fullLadder.tp1SourceTag.includes("[структура: Liq IT"), `Тег TP1 должен содержать '[структура: Liq IT ...]', получено '${fullLadder.tp1SourceTag}'`);
+
+    // Сценарий Б: Узкий запас до потолка (R:R(TP1) >= 1.0, но R:R(TP2) < 2.0) -> СКАЛЬП (цель = потолок отката, размер 1/2)
+    const scalpSetup = computeNestedLadderSetup({
+      entry: 4059.0,
+      rawSl: 4053.5, // risk = 5.5
+      isBull: true,
+      atrOwn: 6.0,
+      tfSec: 900,
+      counterTrend: true,
+      entryHtf,
+      atrHtf: 2.0, // потолок ~ 4069.16 (<= 4069.3) -> rew2 ~ 10.16 -> R:R(TP2) = 1.85 < 2.0, R:R(TP1) = 1.41 >= 1.2
+      parentTrendTf: "1D",
+      structureLevels: [{ price: 4066.76, name: "Liq IT" }]
+    });
+
+    assert.ok(scalpSetup.p2Tp1 < scalpSetup.p3Tp2, "Даже в режиме СКАЛЬП TP1 < TP2");
+    assert.ok(scalpSetup.p2Tp1 <= 4069.3 && scalpSetup.p3Tp2 <= 4069.3, "Оба уровня <= 4069.3");
+    assert.strictEqual(scalpSetup.status, "SCALP", "При R:R(TP2) < 2.0 статус должен быть SCALP");
+    assert.strictEqual(scalpSetup.lockRole, "СКАЛЬП (цель = потолок отката, размер 1/2)");
+    assert.strictEqual(scalpSetup.hideTp2Line, true, "В режиме СКАЛЬП полная лесенка (TP2) скрывается");
+
+    // Сценарий В: Цена вплотную к потолку (R:R < 1.0) -> NO_SETUP (линии с R:R < 1 запрещены)
+    const noSetup = computeNestedLadderSetup({
+      entry: 4065.5,
+      rawSl: 4059.5, // risk = 6.0, а до потолка 4069.16 всего 3.66 (< 1.0R)
+      isBull: true,
+      atrOwn: 6.0,
+      tfSec: 900,
+      counterTrend: true,
+      entryHtf,
+      atrHtf: 2.0,
+      parentTrendTf: "1D"
+    });
+
+    assert.strictEqual(noSetup.status, "NO_SETUP", "При R:R < 1.0 статус обязан быть NO_SETUP");
+    assert.strictEqual(noSetup.hasValidSetup, false, "hasValidSetup = false при R:R < 1.0");
+    assert.strictEqual(noSetup.hideTp1Line, true, "Линия TP1 с R:R < 1 запрещена");
+    assert.strictEqual(noSetup.hideTp2Line, true, "Линия TP2 с R:R < 1 запрещена");
+
+    console.log(
+      `✅ [PASS] Test 28: Синтетика entryHTF=4069.56 подтверждена: FULL_LADDER (TP1=${fullLadder.p2Tp1} < TP2=${fullLadder.p3Tp2} <= 4069.3, R:R=${fullLadder.rrTp1}/${fullLadder.rrTp2}, теги ${fullLadder.tp1SourceTag} / ${fullLadder.tp2SourceTag}), SCALP ('${scalpSetup.lockRole}'), NO_SETUP (R:R < 1 запрещён)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 29: Инвариант: TP1 == TP2 невозможен ни на одном ТФ (мин. зазор >= 0.3 * ATR)
+  // ---------------------------------------------------------------------------
+  {
+    const tfSecondsList = [60, 300, 900, 1800, 3600, 14400, 86400];
+    for (const tfSec of tfSecondsList) {
+      for (const isBull of [true, false]) {
+        for (const counterTrend of [false, true]) {
+          // Даже если передать вырожденные rawTp1 === rawTp2 === 4000 и одинаковые пулы
+          const res = computeNestedLadderSetup({
+            entry: 3980,
+            rawSl: isBull ? 3972 : 3988,
+            isBull,
+            atrOwn: 10,
+            tfSec,
+            counterTrend,
+            entryHtf: isBull ? 4010 : 3950,
+            atrHtf: 15,
+            gexPools: {
+              maxPain: isBull ? 3995 : 3965,
+              callWall: isBull ? 3995 : 4020,
+              putWall: isBull ? 3940 : 3965
+            },
+            rawTp1: isBull ? 3995 : 3965,
+            rawTp2: isBull ? 3995 : 3965
+          });
+
+          const gap = Math.abs(res.p3Tp2 - res.p2Tp1);
+          assert.notStrictEqual(res.p2Tp1, res.p3Tp2, `TP1 == TP2 категорически запрещён (tfSec=${tfSec}, isBull=${isBull}, counterTrend=${counterTrend})`);
+          assert.ok(
+            gap >= 0.3 * 10 - 1e-6,
+            `Зазор |TP2 - TP1| (${gap}) обязан быть >= 0.3*ATR (3.0) на ТФ ${tfSec}с`
+          );
+        }
+      }
+    }
+
+    console.log(
+      `✅ [PASS] Test 29: Инвариант TP1 != TP2 подтверждён на всех 7 таймфреймах (1m..1d) в трендовом и контртрендовом режимах (минимальный зазор >= 0.3*ATR)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 30: 1D SHORT: TP1 == Magnet или PW (а не дальний свинг), TP2 == следующий пул
+  // ---------------------------------------------------------------------------
+  {
+    const short1d = computeNestedLadderSetup({
+      entry: 4069.56,
+      rawSl: 4092.0,
+      isBull: false,
+      atrOwn: 28.0,
+      tfSec: 86400, // 1D
+      counterTrend: false,
+      gexPools: {
+        maxPain: 4045.0, // Ближайший пул (Магнит)
+        putWall: 4010.0, // Следующий пул (PW)
+        callWall: 4100.0,
+        gammaFlip: 4060.0
+      },
+      // Передаём дальний свинг в rawTp1 (например 3960), чтобы убедиться, что 1D SHORT берёт именно ближайший пул Magnet (4045), а не дальний свинг!
+      rawTp1: 3960.0,
+      rawTp2: 3910.0
+    });
+
+    assert.strictEqual(
+      short1d.p2Tp1,
+      4045.0,
+      `На 1D SHORT TP1 обязан вставать на ближайший пул (Магнит 4045.0), а не на дальний свинг 3960. Получено: ${short1d.p2Tp1}`
+    );
+    assert.strictEqual(
+      short1d.p3Tp2,
+      4010.0,
+      `На 1D SHORT TP2 обязан вставать на следующий пул (PW 4010.0). Получено: ${short1d.p3Tp2}`
+    );
+    assert.strictEqual(short1d.tp1SourceTag, "[пул: Магнит 4045]", `Ожидался тег '[пул: Магнит 4045]', получено '${short1d.tp1SourceTag}'`);
+    assert.strictEqual(short1d.tp2SourceTag, "[пул: PW 4010]", `Ожидался тег '[пул: PW 4010]', получено '${short1d.tp2SourceTag}'`);
+
+    console.log(
+      `✅ [PASS] Test 30: 1D SHORT снапинг к пулам подтверждён: TP1=${short1d.p2Tp1} ${short1d.tp1SourceTag}, TP2=${short1d.p3Tp2} ${short1d.tp2SourceTag}, TP3=${short1d.p5Tp3} ${short1d.tp3SourceTag}`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 31: Стоп-пул конфликт: SL никогда не попадает в ±0.3*ATR от Magnet/PW/CW/Flip
+  // (выносится за пул с буфером +0.15*ATR)
+  // ---------------------------------------------------------------------------
+  {
+    const atr = 10.0;
+    const pools = [
+      { price: 4045.0, name: "Магнит" },
+      { price: 4020.0, name: "PW" },
+      { price: 4080.0, name: "CW" },
+      { price: 4055.0, name: "Flip" }
+    ];
+
+    // 1. LONG: вход 4052, rawSl = 4046.0 (попадает внутрь ±0.3*ATR = ±3.0 от Магнита 4045.0!)
+    const longSlRes = resolveStopPoolConflict(4046.0, 4052.0, true, atr, pools);
+    for (const p of pools) {
+      const dist = Math.abs(longSlRes.sl - p.price);
+      assert.ok(
+        dist > 0.3 * atr,
+        `LONG SL (${longSlRes.sl}) не имеет права находиться внутри ±0.3*ATR (3.0) от пула ${p.name} (${p.price}), дистанция=${dist}`
+      );
+    }
+    assert.ok(longSlRes.sl <= 4045.0 - 0.3 * atr, `LONG SL (${longSlRes.sl}) должен быть вынесен ниже пула 4045 с буфером`);
+    assert.ok(longSlRes.slSourceTag.includes("Магнит"), `Тег SL должен указывать вынос за Магнит: '${longSlRes.slSourceTag}'`);
+
+    // 2. SHORT: вход 4048, rawSl = 4054.0 (попадает внутрь ±0.3*ATR от Flip 4055.0!)
+    const shortSlRes = resolveStopPoolConflict(4054.0, 4048.0, false, atr, pools);
+    for (const p of pools) {
+      const dist = Math.abs(shortSlRes.sl - p.price);
+      assert.ok(
+        dist > 0.3 * atr,
+        `SHORT SL (${shortSlRes.sl}) не имеет права находиться внутри ±0.3*ATR (3.0) от пула ${p.name} (${p.price}), дистанция=${dist}`
+      );
+    }
+    assert.ok(shortSlRes.sl >= 4055.0 + 0.3 * atr, `SHORT SL (${shortSlRes.sl}) должен быть вынесен выше пула 4055 с буфером`);
+
+    console.log(
+      `✅ [PASS] Test 31: Защита Стоп-Пул Конфликта подтверждена: LONG SL 4046 -> ${longSlRes.sl} ${longSlRes.slSourceTag}, SHORT SL 4054 -> ${shortSlRes.sl} ${shortSlRes.slSourceTag} (строго вне ±0.3*ATR от всех пулов)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 32: Большие движения:
+  // (а) missed + подтверждающий BOS порождает breakout-сетап с входом на ретесте пробитого уровня вместо серого "НЕДОХОД";
+  // (б) TP1 + BOS своего ТФ по направлению сделки передвигает TP2 на следующий пул (вход и стоп не меняются)
+  // ---------------------------------------------------------------------------
+  {
+    const baseTime = 1762100000;
+    const tfSec15m = 900;
+
+    // ЧАСТЬ А: missed entry + подтверждающий BOS -> breakout-сетап на ретесте пробитого уровня (4025)
+    const candlesBreakout: Candle[] = [
+      // Бар #0: анкор LONG сетапа (close=4012, ждём лимитный откат p1Entry=4008, TP1=4025, TP2=4040, TP3=4055)
+      { time: baseTime, open: 4010, high: 4014, low: 4009, close: 4012, volume: 1000 },
+      // Бар #1: цена НЕ дошла до лимита 4008 (low=4011 > 4008) и мощным импульсом с BOS закрылась ВЫШЕ TP1 4025 (close=4028 > 4025)
+      { time: baseTime + tfSec15m, open: 4012, high: 4030, low: 4011, close: 4028, volume: 2500 },
+      // Бар #2: цена делает ретест пробитого уровня 4025 (low=4024.5 <= 4025) -> активирует breakout-вход!
+      { time: baseTime + tfSec15m * 2, open: 4028, high: 4033, low: 4024.5, close: 4031, volume: 1800 }
+    ];
+
+    const missedCandidateItem: AnchoredForecastItem = {
+      key: "XAUUSD_15m_breakout",
+      anchorCandleTime: baseTime,
+      highestPriceSinceStart: 4014,
+      lowestPriceSinceStart: 4009,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: true,
+        probability: 75,
+        startBar: 0,
+        startTime: baseTime,
+        startPrice: 4012,
+        p1Entry: 4008,
+        p2Tp1: 4025,
+        p3Tp2: 4040,
+        p5Tp3: 4055,
+        invalidLevelSl: 4000,
+        activeTrailingSl: 4000,
+        trailingStageStr: "🛡️ Начальный SL",
+        trailingStageIdx: 0,
+        leg1Hit: false,
+        leg2Hit: false,
+        leg3Hit: false,
+        leg4Hit: false,
+        leg5Hit: false,
+        isPlanBActive: false,
+        isWickSweep: false,
+        altTp1: 3985,
+        altTp2: 3970,
+        altTp3: 3955,
+        isHighRunaway: true,
+        noPullbackProb: 75
+      }
+    };
+
+    const breakoutEval = evaluateSetupRange(
+      missedCandidateItem,
+      0,
+      2,
+      candlesBreakout,
+      [10, 10, 10],
+      10,
+      tfSec15m,
+      ["bullish", "bullish", "bullish"],
+      true,
+      3990,
+      {
+        bosByBar: [false, true, false],
+        nextPools: [{ price: 4055, name: "CW" }]
+      }
+    );
+
+    const bf = breakoutEval.updatedForecast;
+    assert.strictEqual(bf.isMissedEntry, false, "При подтверждающем BOS сетап НЕ должен уходить в серый НЕДОХОД");
+    assert.strictEqual(bf.isBreakoutSetup, true, "Должен быть создан breakout-сетап (isBreakoutSetup=true)");
+    assert.strictEqual(bf.setupMode, "BREAKOUT", "setupMode должен быть BREAKOUT");
+    assert.strictEqual(bf.p1Entry, 4025, "Новый вход breakout-сетапа должен встать на ретест пробитого уровня (4025)");
+    assert.strictEqual(bf.p2Tp1, 4040, "Новая TP1 переходит на 4040");
+    assert.strictEqual(bf.p3Tp2, 4055, "Новая TP2 переходит на следующий пул CW 4055");
+    assert.strictEqual(bf.leg1Hit, true, "На баре #2 ретест уровня 4025 активировал вход (leg1Hit=true)");
+    assert.strictEqual(bf.status, "ACTIVE", "Breakout-сетап активен после ретеста");
+
+    // ЧАСТЬ Б: TP1 + BOS своего ТФ по направлению сделки передвигает TP2 на следующий пул (вход и стоп НЕ меняются)
+    const candlesExtendTp2: Candle[] = [
+      // Бар #0: анкор LONG (p1Entry=4005, SL=3997, TP1=4020, TP2=4035, следующий пул CW=4055)
+      { time: baseTime, open: 4008, high: 4010, low: 4004, close: 4007, volume: 1200 },
+      // Бар #1: вход взят на 4005 (low=4004.5 <= 4005)
+      { time: baseTime + tfSec15m, open: 4007, high: 4015, low: 4004.5, close: 4014, volume: 1400 },
+      // Бар #2: TP1 (4020) взят + подтверждающий BOS по направлению сделки (close=4026 > 4020)
+      { time: baseTime + tfSec15m * 2, open: 4014, high: 4028, low: 4013, close: 4026, volume: 2200 }
+    ];
+
+    const tp1BosItem: AnchoredForecastItem = {
+      key: "XAUUSD_15m_tp2ext",
+      anchorCandleTime: baseTime,
+      highestPriceSinceStart: 4010,
+      lowestPriceSinceStart: 4004,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: true,
+        probability: 78,
+        startBar: 0,
+        startTime: baseTime,
+        startPrice: 4007,
+        p1Entry: 4005,
+        p2Tp1: 4020,
+        p3Tp2: 4035,
+        p5Tp3: 4055,
+        invalidLevelSl: 3997,
+        activeTrailingSl: 3997,
+        trailingStageStr: "🛡️ Начальный SL",
+        trailingStageIdx: 0,
+        leg1Hit: false,
+        leg2Hit: false,
+        leg3Hit: false,
+        leg4Hit: false,
+        leg5Hit: false,
+        isPlanBActive: false,
+        isWickSweep: false,
+        altTp1: 3982,
+        altTp2: 3968,
+        altTp3: 3955,
+        isHighRunaway: false,
+        noPullbackProb: 20
+      }
+    };
+
+    const tp2ExtEval = evaluateSetupRange(
+      tp1BosItem,
+      0,
+      2,
+      candlesExtendTp2,
+      [10, 10, 10],
+      10,
+      tfSec15m,
+      ["bullish", "bullish", "bullish"],
+      true,
+      3990,
+      {
+        bosByBar: [false, false, true],
+        nextPools: [{ price: 4055, name: "CW" }]
+      }
+    );
+
+    const ef = tp2ExtEval.updatedForecast;
+    assert.strictEqual(ef.leg2Hit, true, "TP1 достигнут");
+    assert.strictEqual(ef.tp2ExtendedByBos, true, "Флаг tp2ExtendedByBos должен стать true после TP1 + BOS");
+    assert.strictEqual(ef.p3Tp2, 4055, `TP2 должен передвинуться с 4035 на следующий пул 4055, получено ${ef.p3Tp2}`);
+    assert.strictEqual(ef.p1Entry, 4005, "Вход (p1Entry) НЕ должен меняться при сдвиге TP2 по BOS");
+    assert.strictEqual(ef.invalidLevelSl, 3997, "Начальный стоп (invalidLevelSl) НЕ должен меняться при сдвиге TP2 по BOS");
+    assert.ok(ef.tp2SourceTag?.includes("BOS"), `Тег TP2 должен указывать BOS-удлинение: '${ef.tp2SourceTag}'`);
+
+    console.log(
+      `✅ [PASS] Test 32: Большие движения подтверждены: (а) missed + BOS создал BREAKOUT-сетап на ретесте ${bf.p1Entry} ${bf.entrySourceTag} -> TP1=${bf.p2Tp1}, TP2=${bf.p3Tp2}; (б) TP1 + BOS передвинул TP2 4035 -> ${ef.p3Tp2} ${ef.tp2SourceTag} при неизменных Entry=${ef.p1Entry} и SL=${ef.invalidLevelSl}`
     );
     passed++;
   }
 
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/27 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/32 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 

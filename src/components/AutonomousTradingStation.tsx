@@ -2974,7 +2974,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           borderColor: "#1e293b",
           timeVisible: true,
           secondsVisible: false,
-          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 24 : 36,
           barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
           minBarSpacing: 2.5,
           fixLeftEdge: false,
@@ -3405,7 +3405,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   const handleResetChart = () => {
     if (!chartInstanceRef.current || !candles || candles.length === 0) return;
-    const dynamicOffset = typeof window !== "undefined" && window.innerWidth < 768 ? 14 : 22;
+    const dynamicOffset = typeof window !== "undefined" && window.innerWidth < 768 ? 24 : 36;
     const visibleBars = typeof window !== "undefined" && window.innerWidth < 768 ? 42 : 65;
     const fromIdx = Math.max(0, candles.length - visibleBars);
     const toIdx = candles.length + dynamicOffset;
@@ -3465,7 +3465,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
-          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 24 : 36,
           barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
           minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
@@ -3620,7 +3620,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
-          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 24 : 36,
           barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
           minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
@@ -3762,7 +3762,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           visible: true,
           timeVisible: true,
           secondsVisible: false,
-          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 12 : 16,
+          rightOffset: typeof window !== "undefined" && window.innerWidth < 768 ? 24 : 36,
           barSpacing: typeof window !== "undefined" && window.innerWidth < 768 ? 10 : 10.5,
           minBarSpacing: 2.5,
           tickMarkFormatter: (time: number) => {
@@ -4069,7 +4069,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const cleanCandles = candles;
     const prevList = prevCleanCandlesRef.current;
     const isMobileW = typeof window !== "undefined" && window.innerWidth < 768;
-    const dynamicOffset = Math.max(labelOffset + 4, isMobileW ? 12 : 18);
+    const dynamicOffset = Math.max(labelOffset + 20, isMobileW ? 24 : 36);
 
     const shouldResetViewport =
       isNewAssetOrTf ||
@@ -4525,9 +4525,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const oteBot = isBull ? highSw - range * 0.786 : lowSw + range * 0.618;
 
       const oteStartIdx = Math.max(0, lastIdx - lineLen);
-      const oteEndIdx = lastIdx + labelOffset;
+      const oteEndIdx = lastIdx + 3;
       const oteStartTime = cleanCandles[oteStartIdx]?.time ?? recent[0].time;
-      const oteEndTime = lastCandle.time + tfSec * labelOffset;
+      const oteEndTime = lastCandle.time + tfSec * 3;
 
       zoneBoxes.push({
         id: "ote_zone",
@@ -4559,8 +4559,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     if (showSrZones && cleanCandles.length >= 10) {
       const atrArr = calculateATR(cleanCandles, 14);
       const atrVal = atrArr.length > 0 ? atrArr[atrArr.length - 1] : ((lastCandle.high - lastCandle.low) || 10);
-      const srEndLogical = lastIdx + labelOffset;
-      const srEndTime = lastCandle.time + tfSec * labelOffset;
+      const srEndLogical = lastIdx + 3;
+      const srEndTime = lastCandle.time + tfSec * 3;
 
       // 1. Single source of truth: verified confirmed pivots from indicator engine
       let engineSr = indicatorOutput?.srZones;
@@ -4758,22 +4758,28 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const boundedLines: BoundedPriceLine[] = [];
     const gx1 = Math.max(0, lastIdx - lineLen);
     const gx1Time = cleanCandles[gx1]?.time ?? lastCandle.time;
-    const gx2Base = lastIdx + labelOffset + 8;
-    const gx2BaseTime = lastCandle.time + tfSec * (labelOffset + 8);
+    const gx2Base = lastIdx + 3;
+    const gx2BaseTime = lastCandle.time + tfSec * 3;
 
     const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
 
-    if (showForecast && computedTp1 > 0) {
-      // In original Pine Script: line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, ...)
-      // where x0 = setupAnchorLog (bar where signal originated), and lineEnd extends forward into right margin
-      const lineStartLog = setupAnchorLog;
-      const lineEndLog = lastIdx + Math.max(labelOffset, 16);
-      const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
-      const lineEndTime = lastCandle.time + tfSec * Math.max(labelOffset, 16);
+    const fc = indicatorOutput?.forecast;
+    const isNoSetup = fc?.status === "NO_SETUP" || fc?.hasValidSetup === false;
 
-      const fc = indicatorOutput?.forecast;
+    if (showForecast && computedTp1 > 0 && !isNoSetup) {
+      // In original Pine Script: line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, ...)
+      // where x0 = setupAnchorLog (bar where signal originated), and lineEnd stops just past the last candle so labels sit to the right of the line
+      const lineStartLog = setupAnchorLog;
+      const lineEndLog = lastIdx + 3;
+      const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
+      const lineEndTime = lastCandle.time + tfSec * 3;
+
       const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
       const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
+      const slTagSuffix = fc?.slSourceTag ? ` ${fc.slSourceTag}` : "";
+      const entryTagSuffix = fc?.entrySourceTag ? ` ${fc.entrySourceTag}` : "";
+      const tp1TagSuffix = fc?.tp1SourceTag ? ` ${fc.tp1SourceTag}` : "";
+      const tp2TagSuffix = fc?.tp2SourceTag ? ` ${fc.tp2SourceTag}` : "";
 
       // SL (Red dashed line)
       boundedLines.push({
@@ -4787,14 +4793,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         lineWidth: 1,
         lineStyle: "dashed",
         label: fc?.isPlanBActive
-          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]`
-          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}`,
+          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}`
+          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}`,
         labelBg: "rgba(30, 9, 13, 0.98)",
         labelBorderColor: "#f87171",
         labelTextColor: "#fecdd3"
       });
 
       // Вход (Amber dotted or solid green if hit)
+      const scalpBadgeSuffix = fc?.isScalpMode ? ` • СКАЛЬП (цель = потолок отката, размер 1/2)` : "";
       const entryRoleSuffix = fc?.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : "";
       const entryMaeSuffix = fc?.maeBadge ? ` [${fc.maeBadge}]` : "";
       boundedLines.push({
@@ -4808,32 +4815,36 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         lineWidth: 1,
         lineStyle: fc?.leg1Hit ? "solid" : "dotted",
         label: fc?.leg1Hit
-          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryRoleSuffix}${entryMaeSuffix}`
-          : `ВХОД: ${computedEntry.toFixed(dec)}${entryRoleSuffix}${entryMaeSuffix}`,
+          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}`
+          : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}`,
         labelBg: "rgba(24, 18, 6, 0.98)",
         labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
         labelTextColor: "#fef3c7"
       });
 
-      // TP1 (Teal/Cyan dashed line matching original chart design)
-      boundedLines.push({
-        id: "tp1_line",
-        price: Number(computedTp1.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
-        lineWidth: 1,
-        lineStyle: "dashed",
-        label: fc?.leg2Hit ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓` : `TP1: ${computedTp1.toFixed(dec)}`,
-        labelBg: "rgba(6, 24, 20, 0.98)",
-        labelBorderColor: "#2dd4bf",
-        labelTextColor: "#ccfbf1"
-      });
+      // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line)
+      if (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0)) {
+        boundedLines.push({
+          id: "tp1_line",
+          price: Number(computedTp1.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
+          lineWidth: 1,
+          lineStyle: "dashed",
+          label: fc?.leg2Hit
+            ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}`
+            : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}`,
+          labelBg: "rgba(6, 24, 20, 0.98)",
+          labelBorderColor: "#2dd4bf",
+          labelTextColor: "#ccfbf1"
+        });
+      }
 
-      // TP2 (Sky-Blue dashed line matching original chart design)
-      if (computedTp2 > 0) {
+      // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true)
+      if (computedTp2 > 0 && !fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)) {
         boundedLines.push({
           id: "tp2_line",
           price: Number(computedTp2.toFixed(dec)),
@@ -4844,7 +4855,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: fc?.leg3Hit ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓` : `TP2: ${computedTp2.toFixed(dec)}`,
+          label: fc?.leg3Hit
+            ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}`
+            : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}`,
           labelBg: "rgba(6, 18, 28, 0.98)",
           labelBorderColor: "#38bdf8",
           labelTextColor: "#e0f2fe"
@@ -4995,8 +5008,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       if (showGexEm) {
         const gx1Em = Math.max(0, lastIdx - Math.min(18, lineLen));
         const gx1EmTime = cleanCandles[gx1Em]?.time ?? lastCandle.time;
-        const gx2Em = gx2Base + 38;
-        const gx2EmTime = lastCandle.time + tfSec * (labelOffset + 46);
+        const gx2Em = gx2Base;
+        const gx2EmTime = gx2BaseTime;
 
         boundedLines.push({
           id: "em_h68",
@@ -5084,6 +5097,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       floatingPriceAxisTags,
       chartFontSize: chartLabelFontSize,
       showBadgeBorders: showChartBadgeBorders,
+      lastCandleLogical: lastIdx,
+      lastCandleTime: lastCandle.time,
       currentPriceCountdown: lastCandle ? {
         price: lastCandle.close,
         text: barCountdown.formatted,

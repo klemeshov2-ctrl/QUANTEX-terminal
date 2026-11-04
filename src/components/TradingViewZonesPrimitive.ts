@@ -143,6 +143,8 @@ export interface TradingViewPrimitiveData {
   floatingPriceAxisTags?: FloatingPriceAxisTag[];
   chartFontSize?: number;
   showBadgeBorders?: boolean;
+  lastCandleLogical?: number;
+  lastCandleTime?: number;
 }
 
 const getDpr = (): number =>
@@ -159,6 +161,36 @@ const snapHalf = (v: number): number => {
   const dpr = getDpr();
   return (Math.floor(v * dpr) + 0.5) / dpr;
 };
+
+/**
+ * Helper to measure exact pixel width of a chart badge before drawing lines.
+ */
+function measureBadgeWidth(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  mediaW: number,
+  fontSize: number = 10,
+  opts?: { customFontSize?: number }
+): number {
+  const isMobile = mediaW < 640;
+  let baseFontSize = opts?.customFontSize || fontSize;
+  try {
+    const saved = typeof window !== "undefined" ? Number(localStorage.getItem("quantex_chart_font_size")) : 0;
+    if (saved && saved >= 6 && saved <= 16) {
+      baseFontSize = saved;
+    }
+  } catch {}
+  const effectiveFontSize = isMobile ? Math.min(baseFontSize, 8) : baseFontSize;
+  ctx.save();
+  try {
+    ctx.font = `600 ${effectiveFontSize}px "JetBrains Mono", ui-monospace, SFMono-Regular, -apple-system, BlinkMacSystemFont, sans-serif`;
+    const textW = Math.ceil(ctx.measureText(text).width);
+    const padX = isMobile ? 3 : 5;
+    return Math.round(textW + padX * 2);
+  } finally {
+    ctx.restore();
+  }
+}
 
 /**
  * Helper to draw a sleek, rounded, razor-sharp badge for chart labels.
@@ -467,6 +499,16 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
           }
         } catch {}
 
+        // Compute right edge of the last candlestick so labels never overlap candles
+        let candleEndX = 0;
+        if (typeof data.lastCandleLogical === "number") {
+          const cx = timeScale.logicalToCoordinate(data.lastCandleLogical as any);
+          if (cx !== null) candleEndX = (cx as number) + barSpacing * 0.65;
+        } else if (typeof data.lastCandleTime === "number") {
+          const cx = timeScale.timeToCoordinate(data.lastCandleTime as any);
+          if (cx !== null) candleEndX = (cx as number) + barSpacing * 0.65;
+        }
+
         // 1. Draw Zones (OB, FVG, OTE)
         if (data.zones && data.zones.length > 0) {
           for (const zone of data.zones) {
@@ -511,7 +553,13 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
             const yBot = rawYBot as number;
 
             const left = snapHalf(Math.min(x1, x2));
-            const width = snapPx(Math.max(Math.abs(x2 - x1), 10));
+            const rawRight = Math.max(x1, x2);
+            const zoneBadgeW = zone.label ? measureBadgeWidth(ctx, zone.label, mediaW, 9) : 0;
+            const maxZoneRight = zone.label ? Math.max(left + 10, mediaW - zoneBadgeW - 8) : mediaW;
+            const targetRight = zone.label && candleEndX > 0
+              ? Math.min(maxZoneRight, Math.max(rawRight, candleEndX + 6))
+              : Math.min(maxZoneRight, rawRight);
+            const width = snapPx(Math.max(targetRight - left, 10));
             const top = snapHalf(Math.min(yTop, yBot));
             const height = snapPx(Math.max(Math.abs(yBot - yTop), 2));
 
@@ -536,28 +584,21 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
             ctx.strokeRect(left, top, width, height);
             ctx.setLineDash([]);
 
-            // Compact TradingView label inside or at the end of the zone box
-            if (zone.label && width >= 20) {
-              if (zone.type === "sr") {
-                drawBadge(
-                  ctx,
-                  zone.label,
-                  left + width + 4,
-                  top + height / 2,
-                  "rgba(8, 12, 21, 0.94)",
-                  zone.borderColor,
-                  zone.borderColor,
-                  mediaW,
-                  "left",
-                  9
-                );
-              } else if (height >= 4) {
-                ctx.fillStyle = zone.borderColor;
-                ctx.font = `600 9px "JetBrains Mono", ui-monospace, -apple-system, BlinkMacSystemFont, sans-serif`;
-                ctx.textAlign = "left";
-                ctx.textBaseline = "top";
-                ctx.fillText(zone.label, snapPx(left + 4), snapPx(top + 2));
-              }
+            // Position label strictly to the right of the zone box and to the right of candlesticks
+            if (zone.label && width >= 10) {
+              const labelX = snapPx(Math.max(left + width + 5, candleEndX > 0 ? candleEndX + 6 : 0));
+              drawBadge(
+                ctx,
+                zone.label,
+                labelX,
+                top + height / 2,
+                "rgba(8, 12, 21, 0.94)",
+                zone.borderColor,
+                zone.borderColor,
+                mediaW,
+                "left",
+                9
+              );
             }
           }
         }
@@ -598,8 +639,11 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
 
           if (x1 !== null && x2 !== null && rawY !== null) {
             const y = snapHalf(rawY as number);
+            const eqLabel = data.eqLine.label || "0.50 EQ";
+            const eqBadgeW = measureBadgeWidth(ctx, eqLabel, mediaW, 9);
             const lineLeft = snapPx(Math.min(x1, x2));
-            const lineRight = snapPx(Math.max(x1, x2));
+            const rawRight = Math.max(x1, x2, candleEndX > 0 ? candleEndX + 8 : 0);
+            const lineRight = snapPx(Math.max(lineLeft + 10, Math.min(rawRight, mediaW - eqBadgeW - 8)));
 
             ctx.strokeStyle = "rgba(250, 204, 21, 0.85)";
             ctx.lineWidth = 1.2;
@@ -610,11 +654,11 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Right End Badge
+            // Right End Badge strictly to the right of the line and candlesticks
             drawBadge(
               ctx,
-              data.eqLine.label || "0.50 EQ",
-              lineRight + 4,
+              eqLabel,
+              snapPx(Math.max(lineRight + 5, candleEndX > 0 ? candleEndX + 6 : 0)),
               y,
               "rgba(8, 12, 21, 0.94)",
               "rgba(250, 204, 21, 0.75)",
@@ -670,6 +714,16 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           }
         } catch {}
 
+        // Compute right edge of the last candlestick so labels never overlap candles
+        let candleEndX = 0;
+        if (typeof data.lastCandleLogical === "number") {
+          const cx = timeScale.logicalToCoordinate(data.lastCandleLogical as any);
+          if (cx !== null) candleEndX = (cx as number) + barSpacing * 0.65;
+        } else if (typeof data.lastCandleTime === "number") {
+          const cx = timeScale.timeToCoordinate(data.lastCandleTime as any);
+          if (cx !== null) candleEndX = (cx as number) + barSpacing * 0.65;
+        }
+
         // 1. Draw BOS (Break of Structure)
         if (data.bos) {
           let x: number | null = null;
@@ -685,20 +739,21 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
           if (x !== null && rawY !== null) {
             const y = snapHalf(rawY as number);
+            const bosRight = snapPx(Math.max(x + 18, candleEndX > 0 ? candleEndX + 8 : x + 18));
             ctx.strokeStyle = "#facc15";
             ctx.lineWidth = 1.2;
             ctx.setLineDash([5, 3]);
             ctx.beginPath();
             ctx.moveTo(snapPx(x - 18), y);
-            ctx.lineTo(snapPx(x + 18), y);
+            ctx.lineTo(bosRight, y);
             ctx.stroke();
             ctx.setLineDash([]);
 
             ctx.fillStyle = "#facc15";
             ctx.font = `600 8.5px "JetBrains Mono", monospace`;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "bottom";
-            ctx.fillText(data.bos.label, snapPx(x), snapPx(y - 2));
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(data.bos.label, snapPx(bosRight + 5), y);
           }
         }
 
@@ -843,13 +898,13 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             ctx.arc(p1.x, p1.y, 2.5, 0, Math.PI * 2);
             ctx.fill();
 
-            // Label for Plan B right next to p1
+            // Label for Plan B strictly to the right of p1 and candlesticks
             const label1 = alt.labelTp1 || `План Б: ${alt.tp1Price}`;
             ctx.font = `600 ${fontSize}px "JetBrains Mono", ui-monospace, sans-serif`;
             ctx.fillStyle = altTextColor;
             ctx.textAlign = "left";
             ctx.textBaseline = "middle";
-            ctx.fillText(label1, p1.x + 6, p1.y);
+            ctx.fillText(label1, snapPx(Math.max(p1.x + 6, candleEndX > 0 ? candleEndX + 8 : p1.x + 6)), p1.y);
           }
 
           if (p2) {
@@ -859,13 +914,13 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             ctx.arc(p2.x, p2.y, 2.5, 0, Math.PI * 2);
             ctx.fill();
 
-            // Label for Target 2 right next to p2
+            // Label for Target 2 strictly to the right of p2 and candlesticks
             const label2 = alt.labelTp2 || `Цель 2: ${alt.tp2Price}`;
             ctx.font = `600 ${fontSize}px "JetBrains Mono", ui-monospace, sans-serif`;
             ctx.fillStyle = altTextColor;
             ctx.textAlign = "left";
             ctx.textBaseline = "middle";
-            ctx.fillText(label2, p2.x + 6, p2.y);
+            ctx.fillText(label2, snapPx(Math.max(p2.x + 6, candleEndX > 0 ? candleEndX + 8 : p2.x + 6)), p2.y);
           }
           ctx.restore();
         }
@@ -889,7 +944,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               if (c2 !== null) eqX2 = c2 as number;
             }
             if (eqY !== null && eqX2 !== null) {
-              fixedObstacles.push({ id: "eqLine", x: snapPx(eqX2 + 4), y: snapPx(eqY as number) });
+              fixedObstacles.push({ id: "eqLine", x: snapPx(eqX2 + 5), y: snapPx(eqY as number) });
             }
           }
           if (data.zones) {
@@ -901,7 +956,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 if (topY !== null && botY !== null && endX !== null) {
                   fixedObstacles.push({
                     id: z.label,
-                    x: snapPx((endX as number) + 4),
+                    x: snapPx((endX as number) + 5),
                     y: snapPx(((topY as number) + (botY as number)) / 2)
                   });
                 }
@@ -950,8 +1005,17 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           }
 
           const badgesToRender: AntiCollisionBadgeItem[] = [];
+          interface PendingLineToDraw {
+            pl: BoundedPriceLine;
+            left: number;
+            right: number;
+            y: number;
+            rawY: number;
+            badgeItem?: AntiCollisionBadgeItem;
+          }
+          const linesToDraw: PendingLineToDraw[] = [];
 
-          // PASS 1: Calculate coordinates and draw all horizontal level lines first
+          // PASS 1: Calculate coordinates and badge widths first so every label sits strictly to the right of its line
           for (const pl of data.lines) {
             if (pl.label && seenLabels.has(pl.label)) continue;
             if (pl.label) seenLabels.add(pl.label);
@@ -1003,30 +1067,20 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
             const y = snapHalf(rawY as number);
             const left = snapPx(Math.min(x1, x2));
-            const right = snapPx(Math.max(x1, x2));
+            const rawRight = Math.max(x1, x2);
+            const badgeW = pl.label ? measureBadgeWidth(ctx, pl.label, mediaW, 9.5) : 0;
 
-            // Stable anti-flicker horizontal level lines (drawn when within canvas vertical bounds)
-            if ((rawY as number) >= -2 && (rawY as number) <= mediaH + 2) {
-              ctx.strokeStyle = pl.color;
-              ctx.lineWidth = isMobile ? 1.0 : 1.25;
-              if (pl.lineStyle === "dashed") {
-                ctx.setLineDash([6, 4]);
-              } else if (pl.lineStyle === "dotted") {
-                ctx.setLineDash([4, 3]);
-              } else {
-                ctx.setLineDash([]);
-              }
-              ctx.beginPath();
-              ctx.moveTo(left, y);
-              ctx.lineTo(right, y);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            }
+            // Stop the horizontal line in the right margin before its badge so the badge is always strictly to the right of the line
+            const minRightPastCandles = candleEndX > 0 ? candleEndX + Math.max(8, barSpacing * 1.2) : left + 16;
+            const maxRightForBadge = pl.label ? Math.max(left + 10, mediaW - badgeW - 8) : mediaW - 4;
+            const right = snapPx(Math.max(left + 10, Math.min(Math.max(rawRight, minRightPastCandles), maxRightForBadge)));
+
+            let badgeItem: AntiCollisionBadgeItem | undefined;
 
             // Collect badge for deterministic vertical anti-collision solver
             if (pl.label) {
               const anchorY = snapPx(clampedRawY);
-              const badgeX = snapPx(right + 4);
+              const badgeX = snapPx(right + 5);
 
               const isFlip = pl.id === "flip_line" || pl.label.includes("Граница Гаммы");
               const isSl = pl.id === "sl_line" || pl.label.includes("SL");
@@ -1061,24 +1115,63 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 ? "#fecdd3"
                 : "#ffffff");
 
-              badgesToRender.push({
+              badgeItem = {
                 id: pl.id || pl.label,
                 label: pl.label,
                 x: badgeX,
                 y: anchorY,
                 anchorY,
+                width: badgeW,
                 lineRight: right,
                 lineColor: labelBorder,
                 bg: labelBg,
                 border: labelBorder,
                 textColor: labelText,
                 showBorder: true
-              });
+              };
+              badgesToRender.push(badgeItem);
             }
+
+            linesToDraw.push({ pl, left, right, y, rawY: rawY as number, badgeItem });
           }
 
           // PASS 1.5: Deterministic multi-pass vertical anti-collision solver (including spot, EMA9, EMA21, EMA200 tags)
           solveBadgeAntiCollision(badgesToRender, fixedObstacles, mediaW, mediaH, minVertGap);
+
+          // Enforce that every badge remains strictly to the right of candlesticks and its line ends strictly to the left of the badge
+          for (const item of linesToDraw) {
+            let actualRight = item.right;
+            if (item.badgeItem) {
+              const b = item.badgeItem;
+              const bw = b.width || measureBadgeWidth(ctx, b.label, mediaW, 9.5);
+              if (candleEndX > 0 && candleEndX + bw + 12 < mediaW) {
+                b.x = Math.max(b.x, snapPx(candleEndX + 8));
+              }
+              if (b.x + bw > mediaW - 3) {
+                b.x = Math.max(3, snapPx(mediaW - bw - 3));
+              }
+              // Trim the line's right end so it finishes 5px to the left of the badge (label is strictly to the right of the line)
+              actualRight = snapPx(Math.max(item.left + 6, Math.min(item.right, b.x - 5)));
+              b.x = snapPx(Math.max(b.x, actualRight + 5));
+            }
+
+            if (item.rawY >= -2 && item.rawY <= mediaH + 2) {
+              ctx.strokeStyle = item.pl.color;
+              ctx.lineWidth = isMobile ? 1.0 : 1.25;
+              if (item.pl.lineStyle === "dashed") {
+                ctx.setLineDash([6, 4]);
+              } else if (item.pl.lineStyle === "dotted") {
+                ctx.setLineDash([4, 3]);
+              } else {
+                ctx.setLineDash([]);
+              }
+              ctx.beginPath();
+              ctx.moveTo(item.left, item.y);
+              ctx.lineTo(actualRight, item.y);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+          }
 
           // PASS 2: Render all badges ON TOP of all lines (leader lines removed: badges stay directly on their lines)
           for (const b of badgesToRender) {

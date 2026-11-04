@@ -396,15 +396,21 @@ function enforceJournalOpposingLockArbitration(target: IndicatorSetupItem): void
       senior.linkedSetupId = cur.id;
       cur.linkedSetupId = senior.id;
 
-      // Cap junior TP at senior entry Price if not already capped
+      // Apply Nested Ladder constraint for counter-trend junior setup (TP1 == TP2 is strictly forbidden)
+      const atrHtf = Math.max(1.5, Math.abs(senior.entryPrice - senior.initialSl) / 0.72 || 10);
+      const atrOwn = Math.max(0.5, Math.abs(cur.entryPrice - cur.initialSl) / 0.72 || 5);
+      const htfBuffer = Math.max(0.26, 0.2 * atrHtf);
+
       if (cur.direction === "LONG" && senior.entryPrice > cur.entryPrice) {
-        cur.tp1 = Math.min(cur.tp1, senior.entryPrice);
-        cur.tp2 = Math.min(cur.tp2, senior.entryPrice);
-        cur.tp3 = Math.min(cur.tp3, senior.entryPrice);
+        const ceiling = Math.round((senior.entryPrice - htfBuffer) * 100) / 100;
+        cur.tp2 = Math.min(cur.tp2, ceiling);
+        cur.tp1 = Math.min(cur.tp1, Math.round((cur.tp2 - 0.4 * atrOwn) * 100) / 100);
+        cur.tp3 = Math.min(cur.tp3, ceiling);
       } else if (cur.direction === "SHORT" && senior.entryPrice < cur.entryPrice) {
-        cur.tp1 = Math.max(cur.tp1, senior.entryPrice);
-        cur.tp2 = Math.max(cur.tp2, senior.entryPrice);
-        cur.tp3 = Math.max(cur.tp3, senior.entryPrice);
+        const floor = Math.round((senior.entryPrice + htfBuffer) * 100) / 100;
+        cur.tp2 = Math.max(cur.tp2, floor);
+        cur.tp1 = Math.max(cur.tp1, Math.round((cur.tp2 + 0.4 * atrOwn) * 100) / 100);
+        cur.tp3 = Math.max(cur.tp3, floor);
       }
     }
   }
