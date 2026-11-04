@@ -1592,6 +1592,21 @@ export function computePineScriptEngine(
   };
 }
 
+// --- PERSISTENT GEX LEVEL MIGRATION & SHIFT TRACKER ---
+export * from "./server/gexTracker";
+import {
+  GexTrackerSnapshot,
+  gexTrackersHistory,
+  recordGexMigrationSnapshot,
+  loadGexTrackersHistoryFromDisk,
+  clearGexTrackersHistory,
+  saveGexTrackersHistorySync,
+  GEX_TRACKERS_HISTORY_FILE
+} from "./server/gexTracker";
+
+// Initial boot load of GEX trackers history
+loadGexTrackersHistoryFromDisk();
+
 export interface DualMarketFetchOverrides {
   forceUnavailableOanda?: boolean;
   forceUnavailableMoex?: boolean;
@@ -1971,6 +1986,28 @@ export async function fetchDualGoldMarketData(
     cachedDualMarketData = payload;
     lastDualMarketFetchTime = now;
   }
+
+  // Background GEX migration tracker (throttled to 1 snapshot / 60 sec per ticker)
+  if (oandaPrice && Number.isFinite(oandaPrice) && oandaPrice > 0) {
+    (async () => {
+      try {
+        const dayRep = liveGexReport || (await getStabilizedGexReport("XAUUSD", "DAY", oandaPrice).catch(() => null));
+        const monthRep = await getStabilizedGexReport("XAUUSD", "MONTH", oandaPrice).catch(() => null);
+        if (dayRep || monthRep) {
+          recordGexMigrationSnapshot("XAUUSD", {
+            dayCw: dayRep?.callWall,
+            dayPw: dayRep?.putWall,
+            monthCw: monthRep?.callWall || dayRep?.callWall,
+            monthPw: monthRep?.putWall || dayRep?.putWall,
+            flip: dayRep?.zeroGex || dayRep?.gammaFlip,
+            pain: dayRep?.maxPain,
+            spot: oandaPrice
+          });
+        }
+      } catch {}
+    })();
+  }
+
   return payload;
 }
 
@@ -4617,14 +4654,28 @@ app.get("/api/gex/report", async (req, res) => {
   }
 });
 
-// 1.1 Reset Stabilized GEX Cache & Engine Cache (Immediate recalculation without 1h cooldown)
+// 1.1 Reset Stabilized GEX Cache & Engine Cache (Immediate recalculation without cooldown)
 const handleResetGexCache = async (req: express.Request, res: express.Response) => {
   try {
     const asset = ((req.body?.asset || req.query?.asset) as string) || undefined;
+    const horizon = ((req.body?.horizon || req.query?.horizon) as any) || undefined;
+    const force = Boolean(req.body?.force === true || req.body?.force === "true" || req.query?.force === "true" || req.query?.force === "1");
     const spotPrice = (req.body?.spot || req.query?.spot) ? Number(req.body?.spot || req.query?.spot) : undefined;
+
+    // 3. Guard кнопки reset: если есть активный locked-сетап (status ACTIVE_IN_TRADE или WAITING_FOR_ENTRY),
+    // reset возвращает ответ с предупреждением и НЕ меняет уровни, пока не передан явный флаг force:true
+    const resetResult = resetStabilizedGexCache(asset, horizon, { force });
+    if (resetResult.blocked) {
+      return res.status(200).json({
+        success: false,
+        blocked: true,
+        warning: resetResult.warning || "Активна сделка — уровни прыгнут под позицией. Продолжить?",
+        message: resetResult.warning
+      });
+    }
+
     clearGexEngineCache();
-    resetStabilizedGexCache(asset);
-    addServerLog("INFO", `Кэш стабилизатора GEX и опционного движка сброшен (${asset || "ВСЕ АКТИВЫ"})`);
+    addServerLog("INFO", `Кэш стабилизатора GEX и опционного движка сброшен (${asset || "ВСЕ АКТИВЫ"}${force ? ", force=true" : ""})`);
 
     const targetAsset = asset || "XAUUSD";
     const [dayReport, weekReport, monthReport] = await Promise.all([
@@ -4637,6 +4688,7 @@ const handleResetGexCache = async (req: express.Request, res: express.Response) 
       success: true,
       asset: targetAsset,
       message: `Кэш стабилизатора GEX для ${targetAsset} успешно сброшен, уровни пересчитаны`,
+      diff: resetResult.diff,
       horizons: {
         DAY: {
           putWall: dayReport.putWall,
@@ -4677,6 +4729,8 @@ const handleResetGexCache = async (req: express.Request, res: express.Response) 
   }
 };
 
+app.post("/api/gex/reset", handleResetGexCache);
+app.get("/api/gex/reset", handleResetGexCache);
 app.post("/api/gex/reset-cache", handleResetGexCache);
 app.get("/api/gex/reset-cache", handleResetGexCache);
 
@@ -4702,19 +4756,24 @@ app.get("/api/gex/migration-log", async (req, res) => {
   try {
     const asset = req.query.asset as string | undefined;
     const horizon = req.query.horizon as any;
-    const stabilizerAuditLog = getStabilizerMigrationLog(asset, horizon);
-    let logs: any[] = [];
+    const stabilizerRaw = getStabilizerMigrationLog(asset, horizon);
+    const stabilizerAuditLog = stabilizerRaw.map((e: any) => ({
+      ...e,
+      source: "stabilizer"
+    }));
+
+    let diskLogs: any[] = [];
     try {
       const raw = await fs.promises.readFile(GEX_MIGRATION_LOG_FILE, "utf-8");
-      logs = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) diskLogs = parsed;
     } catch {
-      logs = [];
+      diskLogs = [];
     }
 
-    if (!Array.isArray(logs)) logs = [];
     if (asset) {
       const assetUpper = asset.toUpperCase();
-      logs = logs.filter((l: any) => {
+      diskLogs = diskLogs.filter((l: any) => {
         if (!l.asset) return true;
         const lUpper = l.asset.toUpperCase();
         if (lUpper === assetUpper) return true;
@@ -4722,7 +4781,60 @@ app.get("/api/gex/migration-log", async (req, res) => {
         return false;
       });
     }
-    return res.json({ success: true, logs, stabilizerAuditLog });
+
+    // Build background tracker entries from persistent gexTrackersHistory
+    const trackerEntries: any[] = [];
+    const assetFilter = asset ? asset.toUpperCase().trim() : "";
+    for (const [tickerKey, snapshots] of gexTrackersHistory.entries()) {
+      if (assetFilter) {
+        if (tickerKey !== assetFilter && !((assetFilter.includes("XAU") || assetFilter.includes("GOLD")) && (tickerKey.includes("XAU") || tickerKey.includes("GOLD")))) {
+          continue;
+        }
+      }
+      for (let i = 0; i < snapshots.length; i++) {
+        const snap = snapshots[i];
+        const prevSnap = i > 0 ? snapshots[i - 1] : null;
+        trackerEntries.push({
+          timestamp: new Date(snap.timestamp).toISOString(),
+          asset: snap.ticker,
+          source: "background_tracker",
+          horizon: horizon || "ALL",
+          level: "SNAPSHOT",
+          oldValue: prevSnap ? prevSnap.dayCallWall : null,
+          newValue: snap.dayCallWall,
+          spotPrice: snap.spotPrice,
+          reason: "periodic_snapshot",
+          details: `Day [${snap.dayPutWall}..${snap.dayCallWall}] | Month [${snap.monthPutWall}..${snap.monthCallWall}] | Flip ${snap.gammaFlip} | Pain ${snap.maxPain} | Spot ${snap.spotPrice}`,
+          dayCallWall: snap.dayCallWall,
+          dayPutWall: snap.dayPutWall,
+          monthCallWall: snap.monthCallWall,
+          monthPutWall: snap.monthPutWall,
+          gammaFlip: snap.gammaFlip,
+          maxPain: snap.maxPain
+        });
+      }
+    }
+
+    // Combine all sources into unified log with explicit `source` field:
+    const combinedLogs = [
+      ...stabilizerAuditLog,
+      ...trackerEntries,
+      ...diskLogs.map((e: any) => ({ ...e, source: e.source || "stabilizer" }))
+    ];
+
+    // Sort descending by timestamp (newest first)
+    combinedLogs.sort((a, b) => {
+      const ta = new Date(a.timestamp || 0).getTime();
+      const tb = new Date(b.timestamp || 0).getTime();
+      return tb - ta;
+    });
+
+    return res.json({
+      success: true,
+      logs: combinedLogs,
+      stabilizerAuditLog,
+      backgroundTrackerLog: trackerEntries
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message, logs: [], stabilizerAuditLog: [] });
   }
@@ -10949,21 +11061,7 @@ function computeHonest5TfConsensus(
   };
 }
 
-// --- IN-MEMORY GEX LEVEL MIGRATION & SHIFT TRACKER ---
-interface GexTrackerSnapshot {
-  ticker: string;
-  timestamp: number;
-  timeMsk: string;
-  dayCallWall: number;
-  dayPutWall: number;
-  monthCallWall: number;
-  monthPutWall: number;
-  gammaFlip: number;
-  maxPain: number;
-  spotPrice: number;
-}
-
-const gexTrackersHistory: Map<string, GexTrackerSnapshot[]> = new Map();
+// (GexTrackerSnapshot & persistent gexTrackersHistory are exported at top of server.ts)
 
 // --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
 app.post("/api/ai-analyst/generate-plan", async (req, res) => {
@@ -11395,52 +11493,75 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     if (!currentFlip) currentFlip = Math.round((currentDayCw + currentDayPw) / 2);
     if (!currentMaxPain) currentMaxPain = Math.round((currentDayCw + currentDayPw) / 2);
 
-    let prevDayCw = currentDayCw;
-    let prevDayPw = currentDayPw;
-    let prevMonthCw = currentMonthCw;
-    let prevMonthPw = currentMonthPw;
-
     const gexHistory = gexTrackersHistory.get(ticker) || [];
 
-    if (previousGex && (previousGex.monthCallWall || previousGex.dayCallWall)) {
-      if (previousGex.monthCallWall) prevMonthCw = Number(previousGex.monthCallWall);
-      if (previousGex.dayCallWall) prevDayCw = Number(previousGex.dayCallWall);
-      if (previousGex.monthPutWall) prevMonthPw = Number(previousGex.monthPutWall);
-      if (previousGex.dayPutWall) prevDayPw = Number(previousGex.dayPutWall);
-    }
-    
-    // If previous still equals current, look back in in-memory history for the last distinct level
-    if (prevMonthCw === currentMonthCw && prevDayCw === currentDayCw && gexHistory.length > 0) {
-      const lastDiff = gexHistory.slice().reverse().find(s => 
-        (s.monthCallWall && s.monthCallWall !== currentMonthCw) ||
-        (s.dayCallWall && s.dayCallWall !== currentDayCw) ||
-        (s.monthPutWall && s.monthPutWall !== currentMonthPw) ||
-        (s.dayPutWall && s.dayPutWall !== currentDayPw)
+    let hasPreviousSnapshot = false;
+    let prevDayCw: number | null = null;
+    let prevDayPw: number | null = null;
+    let prevMonthCw: number | null = null;
+    let prevMonthPw: number | null = null;
+    let prevTimestamp = 0;
+
+    // Step 1: Read previous levels from persistent server history
+    if (gexHistory.length >= 2) {
+      // Find the most recent snapshot in history that had different levels,
+      // or the immediately preceding snapshot (gexHistory[length - 2])
+      const priorDiff = gexHistory.slice(0, -1).reverse().find(s =>
+        (s.monthCallWall !== undefined && s.monthCallWall !== currentMonthCw) ||
+        (s.dayCallWall !== undefined && s.dayCallWall !== currentDayCw) ||
+        (s.monthPutWall !== undefined && s.monthPutWall !== currentMonthPw) ||
+        (s.dayPutWall !== undefined && s.dayPutWall !== currentDayPw)
       );
-      if (lastDiff) {
-        prevMonthCw = lastDiff.monthCallWall || prevMonthCw;
-        prevDayCw = lastDiff.dayCallWall || prevDayCw;
-        prevMonthPw = lastDiff.monthPutWall || prevMonthPw;
-        prevDayPw = lastDiff.dayPutWall || prevDayPw;
+      const chosenSnap = priorDiff || gexHistory[gexHistory.length - 2];
+      if (chosenSnap) {
+        prevMonthCw = chosenSnap.monthCallWall ?? null;
+        prevDayCw = chosenSnap.dayCallWall ?? null;
+        prevMonthPw = chosenSnap.monthPutWall ?? null;
+        prevDayPw = chosenSnap.dayPutWall ?? null;
+        prevTimestamp = chosenSnap.timestamp || 0;
+        hasPreviousSnapshot = prevMonthCw !== null || prevDayCw !== null;
+      }
+    } else if (gexHistory.length === 1) {
+      const singleSnap = gexHistory[0];
+      const isDiff =
+        (singleSnap.monthCallWall !== undefined && singleSnap.monthCallWall !== currentMonthCw) ||
+        (singleSnap.dayCallWall !== undefined && singleSnap.dayCallWall !== currentDayCw) ||
+        (singleSnap.monthPutWall !== undefined && singleSnap.monthPutWall !== currentMonthPw) ||
+        (singleSnap.dayPutWall !== undefined && singleSnap.dayPutWall !== currentDayPw);
+      if (isDiff) {
+        prevMonthCw = singleSnap.monthCallWall ?? null;
+        prevDayCw = singleSnap.dayCallWall ?? null;
+        prevMonthPw = singleSnap.monthPutWall ?? null;
+        prevDayPw = singleSnap.dayPutWall ?? null;
+        prevTimestamp = singleSnap.timestamp || 0;
+        hasPreviousSnapshot = prevMonthCw !== null || prevDayCw !== null;
       }
     }
 
-    if (prevMonthCw === currentMonthCw && prevDayCw === currentDayCw && gexHistory.length === 0) {
-      // First boot: if price is testing or pressing into Day Call Wall (e.g. price ~4020-4030),
-      // open interest migration has caused Month Call Wall to shift up (e.g. was 4120, became 4130)
-      if (currentPriceNum >= currentDayCw - 5) {
-        prevMonthCw = currentMonthCw - 10;
-        prevDayCw = Math.max(currentDayCw - 10, Math.round(currentPriceNum - 5));
-      } else if (currentPriceNum <= currentDayPw + 5) {
-        prevMonthPw = currentMonthPw + 10;
-        prevDayPw = Math.min(currentDayPw + 10, Math.round(currentPriceNum + 5));
+    // Step 2: Client previousGex as override ONLY if fresher than server snapshot
+    if (previousGex && (previousGex.monthCallWall || previousGex.dayCallWall)) {
+      const clientTs = Number(previousGex.timestamp) || 0;
+      if (clientTs > prevTimestamp) {
+        if (previousGex.monthCallWall !== undefined && previousGex.monthCallWall !== null) {
+          prevMonthCw = Number(previousGex.monthCallWall);
+        }
+        if (previousGex.dayCallWall !== undefined && previousGex.dayCallWall !== null) {
+          prevDayCw = Number(previousGex.dayCallWall);
+        }
+        if (previousGex.monthPutWall !== undefined && previousGex.monthPutWall !== null) {
+          prevMonthPw = Number(previousGex.monthPutWall);
+        }
+        if (previousGex.dayPutWall !== undefined && previousGex.dayPutWall !== null) {
+          prevDayPw = Number(previousGex.dayPutWall);
+        }
+        hasPreviousSnapshot = prevMonthCw !== null || prevDayCw !== null;
       }
     }
 
-    const dayCwShift = currentDayCw - prevDayCw;
-    const monthCwShift = currentMonthCw - prevMonthCw;
-    const dayPwShift = currentDayPw - prevDayPw;
-    const monthPwShift = currentMonthPw - prevMonthPw;
+    const dayCwShift = (hasPreviousSnapshot && prevDayCw !== null) ? (currentDayCw - prevDayCw) : 0;
+    const monthCwShift = (hasPreviousSnapshot && prevMonthCw !== null) ? (currentMonthCw - prevMonthCw) : 0;
+    const dayPwShift = (hasPreviousSnapshot && prevDayPw !== null) ? (currentDayPw - prevDayPw) : 0;
+    const monthPwShift = (hasPreviousSnapshot && prevMonthPw !== null) ? (currentMonthPw - prevMonthPw) : 0;
 
     const formatShiftLabel = (diff: number) => {
       if (diff === 0) return "без сдвига";
@@ -11453,8 +11574,14 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     const monthPwShiftLabel = formatShiftLabel(monthPwShift);
 
     const isPositiveGamma = currentPriceNum >= currentFlip;
-    const isCallWallRunningAway = (monthCwShift > 0 || dayCwShift > 0) || (currentPriceNum >= prevDayCw && monthCwShift >= 0);
-    const isPutWallRunningAway = (monthPwShift < 0 || dayPwShift < 0) || (currentPriceNum <= prevDayPw && monthPwShift <= 0);
+    const isCallWallRunningAway = hasPreviousSnapshot && (
+      (monthCwShift > 0 || dayCwShift > 0) ||
+      (prevDayCw !== null && currentPriceNum >= prevDayCw && monthCwShift >= 0 && (monthCwShift > 0 || dayCwShift > 0))
+    );
+    const isPutWallRunningAway = hasPreviousSnapshot && (
+      (monthPwShift < 0 || dayPwShift < 0) ||
+      (prevDayPw !== null && currentPriceNum <= prevDayPw && monthPwShift <= 0 && (monthPwShift < 0 || dayPwShift < 0))
+    );
 
     // -------------------------------------------------------------
     // ↔️ ANTI-CHOP & TREND CONTEXT (RANGE DETECTION & GAMMA SQUEEZE)
@@ -11477,7 +11604,10 @@ ${marketInfo.isCrypto && marketInfo.isWeekend ? `
     let migrationDiagnosis = "";
     let migrationSummaryShort = "";
 
-    if (isCallWallRunningAway) {
+    if (!hasPreviousSnapshot) {
+      migrationDiagnosis = `ℹ️ История миграций ещё накапливается, сдвиг не определён. Текущие опционные уровни: Дневной CW ${currentDayCw}, PW ${currentDayPw}, Месячный CW ${currentMonthCw}, PW ${currentMonthPw}. Zero-Flip: ${currentFlip} [${isPositiveGamma ? "Positive Gamma (+GEX): уровни держат цену" : "Negative Gamma (-GEX): уровни пробиваются"}]. ${antiChopTrendClause}`;
+      migrationSummaryShort = `История миграций ещё накапливается, сдвиг не определён (Дневной CW ${currentDayCw}, PW ${currentDayPw}). [${antiChopTrendClause}]`;
+    } else if (isCallWallRunningAway) {
       migrationDiagnosis = `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх! Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel}). Дневной Call Wall: был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel}).
 Открытый интерес мигрирует выше вслед за ценой, дилеры вынуждены покупать базовый актив/фьючерсы для дельта-хеджа (Gamma Squeeze).
 ⚠️ Шорт от старого пробитого уровня (${prevDayCw}) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН! Старый Call Wall превращается в поддержку (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень ${currentMonthCw}.
@@ -11501,23 +11631,24 @@ ${antiChopTrendClause}
       migrationSummaryShort = `${antiChopTrendClause} Уровни пробиваются, тренд ускоряется. Работаем по тренду, контртренд запрещен.`;
     }
 
-    // Save snapshot in history
-    if (!gexHistory.some(h => Math.abs(h.timestamp - now.getTime()) < 20000)) {
-      gexHistory.push({
-        ticker,
-        timestamp: now.getTime(),
-        timeMsk,
-        dayCallWall: currentDayCw,
-        dayPutWall: currentDayPw,
-        monthCallWall: currentMonthCw,
-        monthPutWall: currentMonthPw,
-        gammaFlip: currentFlip,
-        maxPain: currentMaxPain,
-        spotPrice: currentPriceNum
-      });
-      if (gexHistory.length > 50) gexHistory.shift();
-      gexTrackersHistory.set(ticker, gexHistory);
-    }
+    const gexDynamicRuleClause = hasPreviousSnapshot
+      ? `1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
+   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
+   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
+   - В этом случае ты ОБЯЗАН написать в вердикте: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».`
+      : `1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (ИСТОРИЯ НАКАПЛИВАЕТСЯ):
+   - История миграций ещё накапливается, сдвиг не определён.
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить строки «был X, стал Y», придумывать искусственные сдвиги ±10 или ложные предупреждения Gamma Squeeze. Оценивай текущие уровни как стабильные статические барьеры.`;
+
+    const promptShortGexLine = hasPreviousSnapshot
+      ? `2. GEX: Дневной CW ${currentDayCw} (Мес: ${prevMonthCw}➔${currentMonthCw} ${monthCwShiftLabel}), PW ${currentDayPw}, Flip ${currentFlip} [${isPositiveGamma ? "+GEX: Уровни держат" : "-GEX: Уровни пробиваются"}]. Консенсус ТФ: ${consensus5Str}.`
+      : `2. GEX: Дневной CW ${currentDayCw} (Мес: ${currentMonthCw}), PW ${currentDayPw}, Flip ${currentFlip} [${isPositiveGamma ? "+GEX: Уровни держат" : "-GEX: Уровни пробиваются"}]. Консенсус ТФ: ${consensus5Str}.`;
+
+    const promptDetailedGexWalls = hasPreviousSnapshot
+      ? `   - Call Wall (Сопротивление): Дневной ${currentDayCw} (${dayCwShiftLabel}) | Месячный: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
+   - Put Wall (Поддержка): Дневной ${currentDayPw} (${dayPwShiftLabel}) | Месячный: был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel})`
+      : `   - Call Wall (Сопротивление): Дневной ${currentDayCw} | Месячный: ${currentMonthCw} (история миграций ещё накапливается, сдвиг не определён)
+   - Put Wall (Поддержка): Дневной ${currentDayPw} | Месячный: ${currentMonthPw} (история миграций ещё накапливается, сдвиг не определён)`;
 
     const webSearchStatusClause = isWebSearchActive
       ? `СТАТУС СИСТЕМЫ: Веб-поиск АКТИВЕН (Live Web Search ON). У тебя есть полный доступ к интернету. Если новостей за последние часы нет, так и напиши: 'Свежих новостей за последние часы не поступало'. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать 'интернет отключен' или 'работаю по локальным данным'.
@@ -11541,10 +11672,7 @@ ${webSearchStatusClause}
 ${interfaceProhibitionClause}
 
 ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX, РЕЖИМА ГАММЫ И АНТИ-ПИЛЫ:
-1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
-   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
-   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
-   - В этом случае ты ОБЯЗАН ответить: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».
+${gexDynamicRuleClause}
 
 2. ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
    - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
@@ -11577,10 +11705,7 @@ ${webSearchStatusClause}
 ${interfaceProhibitionClause}
 
 ПРАВИЛА АУДИТА ОПЦИОННЫХ УРОВНЕЙ GEX, МИГРАЦИИ И РЕЖИМА ГАММЫ:
-1. АНАЛИЗ ДИНАМИКИ УРОВНЕЙ (СДВИГ УРОВНЕЙ):
-   - Оценивай не только текущий уровень GEX, но и предыдущий (например: «Месячный Call Wall: был ${prevMonthCw}, стал ${currentMonthCw}»).
-   - Если уровень сдвигается в сторону движения цены (догоняет цену) — это признак сильного институционального тренда и вынужденного дельта-хеджирования дилеров (Gamma Squeeze).
-   - В этом случае ты ОБЯЗАН написать в вердикте: «ВНИМАНИЕ: Уровень убегает. Тренд сильный, шорт от пробитого уровня опасен. Рекомендую искать вход по тренду (LONG)».
+${gexDynamicRuleClause}
 
 2. ЖЕСТКИЙ ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
    - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
@@ -11623,7 +11748,7 @@ ${imminentInfo.isImminent ? `- 🚨 ВНИМАНИЕ: До новости «${im
 
 ${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
 1. ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Календарь событий: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
-2. GEX: Дневной CW ${currentDayCw} (Мес: ${prevMonthCw}➔${currentMonthCw} ${monthCwShiftLabel}), PW ${currentDayPw}, Flip ${currentFlip} [${isPositiveGamma ? "+GEX: Уровни держат" : "-GEX: Уровни пробиваются"}]. Консенсус ТФ: ${consensus5Str}.
+${promptShortGexLine}
 ${isCallWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень Call Wall убегает вверх. Шорт от старого уровня запрещен, работаем по тренду (LONG)!" : isPutWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень поддержки убегает вниз. Ловля ножей запрещена, работаем по тренду (SHORT)!" : ""}
 3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) && !isCallWallRunningAway ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}) | TP2: ${tp2Formatted} (${tp2Rationale}).
 4. Вердикт: 1 короткое резюме риск-менеджера (например: "Ждем ${entryRationale} ${entryPriceFormatted} для безопасного входа со стопом ${slFormatted}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
@@ -11635,8 +11760,7 @@ ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${
    ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Внимание: до важных новостей более 30 минут! Запрещено выводить предупреждение "ВНИМАНИЕ". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
 
 2. 📊 Опционные уровни (GEX) и динамика миграции:
-   - Call Wall (Сопротивление): Дневной ${currentDayCw} (${dayCwShiftLabel}) | Месячный: был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
-   - Put Wall (Поддержка): Дневной ${currentDayPw} (${dayPwShiftLabel}) | Месячный: был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel})
+${promptDetailedGexWalls}
    - Zero-Flip (Рубеж смены режима): ${currentFlip} | Max Pain: ${currentMaxPain}
    - Гамма-режим: ${isPositiveGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
    - Динамика уровней и миграция открытого интереса:
@@ -12265,7 +12389,9 @@ ${liveWorldNewsFormatted}
       dateMsk,
       responseStyle,
       marketInfo,
-      liveWorldNews
+      liveWorldNews,
+      migrationDiagnosis,
+      hasPreviousSnapshot
     }), sanitizeOpts);
 
     const isApiKeyMissingOrInvalid = !effectiveGeminiKey || effectiveGeminiKey.startsWith("AIzaSyAhY9_") || effectiveGeminiKey.length < 10;
@@ -12411,10 +12537,32 @@ setInterval(() => {
     }
     evaluateForecastOutcomes(priceMap);
     evaluateIndicatorSetups(priceMap);
+
+    // Background GEX migration tracker (throttled to 1 snapshot / 60 sec per ticker)
+    const xauSpot = priceMap["XAUUSD"]?.currentPrice || cachedDualMarketData?.oanda?.price;
+    if (xauSpot && Number.isFinite(xauSpot) && xauSpot > 0) {
+      (async () => {
+        try {
+          const dayRep = await getStabilizedGexReport("XAUUSD", "DAY", xauSpot).catch(() => null);
+          const monthRep = await getStabilizedGexReport("XAUUSD", "MONTH", xauSpot).catch(() => null);
+          if (dayRep || monthRep) {
+            recordGexMigrationSnapshot("XAUUSD", {
+              dayCw: dayRep?.callWall,
+              dayPw: dayRep?.putWall,
+              monthCw: monthRep?.callWall || dayRep?.callWall,
+              monthPw: monthRep?.putWall || dayRep?.putWall,
+              flip: dayRep?.zeroGex || dayRep?.gammaFlip,
+              pain: dayRep?.maxPain,
+              spot: xauSpot
+            });
+          }
+        } catch {}
+      })();
+    }
   } catch {}
 }, 15000);
 
-function generateAutonomousAiPlan(params: {
+export function generateAutonomousAiPlan(params: {
   ticker: string;
   timeframe: string;
   currentPrice: number;
@@ -12431,6 +12579,8 @@ function generateAutonomousAiPlan(params: {
   marketInfo?: MarketScheduleInfo;
   liveWorldNews?: LiveWorldNewsItem[];
   marketRegimeContext?: any;
+  migrationDiagnosis?: string;
+  hasPreviousSnapshot?: boolean;
 }): string {
   const {
     ticker,
@@ -13120,8 +13270,9 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
   const isPosGamma = Number(currentPrice) >= autoFlip;
   const monthCwVal = gex?.monthCallWall || (Number(cw) + 50).toFixed(dec);
   const monthPwVal = gex?.monthPutWall || (Number(pw) - 50).toFixed(dec);
-  const isCwSqueeze = Number(currentPrice) >= Number(cw) - 5;
-  const isPwSqueeze = Number(currentPrice) <= Number(pw) + 5;
+  const hasPrev = params.hasPreviousSnapshot !== false;
+  const isCwSqueeze = hasPrev && Number(currentPrice) >= Number(cw) - 5;
+  const isPwSqueeze = hasPrev && Number(currentPrice) <= Number(pw) + 5;
 
   const isRangeModeDetected = Boolean(marketRegimeContext?.isRangeMode);
   const rangeBounces = Number(marketRegimeContext?.totalBounces ?? 0);
@@ -13135,7 +13286,9 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
     ? `Режим: Боковик (+GEX). Уровни держат цену. Рекомендуется торговля от границ (отбой).`
     : `Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду.`;
 
-  const gexMigrationNote = isCwSqueeze
+  const gexMigrationNote = (!hasPrev || params.migrationDiagnosis?.includes("история миграций ещё накапливается"))
+    ? (params.migrationDiagnosis || "ℹ️ История миграций ещё накапливается, сдвиг не определён.")
+    : isCwSqueeze
     ? `🚨 ВНИМАНИЕ: Уровень Call Wall убегает вверх вслед за ценой! Шорт от пробитого уровня ${cw} опасен (Gamma Squeeze). Рекомендуется искать вход по тренду (LONG) к следующей цели ${monthCwVal}.`
     : isPwSqueeze
     ? `🚨 ВНИМАНИЕ: Уровень поддержки убегает вниз! Ловля ножей (LONG) запрещена. Рекомендуется работать по тренду (SHORT) к цели ${monthPwVal}.`
@@ -13147,8 +13300,8 @@ ${userQuery ? `**Запрос:** *"${userQuery.trim()}"*\n` : ""}• **📊 Ко
 ${formattedNewsFacts}
 
 2. 📊 Опционные уровни (GEX) и динамика миграции:
-- Call Wall (Сопротивление): Дневной ${cw} | Месячный: ${monthCwVal}
-- Put Wall (Поддержка): Дневной ${pw} | Месячный: ${monthPwVal}
+- Call Wall (Сопротивление): Дневной ${cw} | Месячный: ${monthCwVal}${!hasPrev ? " (история миграций ещё накапливается, сдвиг не определён)" : ""}
+- Put Wall (Поддержка): Дневной ${pw} | Месячный: ${monthPwVal}${!hasPrev ? " (история миграций ещё накапливается, сдвиг не определён)" : ""}
 - Zero-Flip: ${autoFlip} | Max Pain: ${maxPain}
 - Гамма-режим: ${isPosGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
 - Режим рынка (Anti-Chop & Trend): ${antiChopTrendNote}
@@ -13223,6 +13376,8 @@ async function startServer() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-startServer().catch((err) => {
-  console.error("Failed to start server:", err);
-});
+if (process.env.NODE_ENV !== "test" && process.env.QUANTEX_UNIT_TEST !== "1") {
+  startServer().catch((err) => {
+    console.error("Failed to start server:", err);
+  });
+}

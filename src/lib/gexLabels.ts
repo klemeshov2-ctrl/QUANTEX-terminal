@@ -217,3 +217,55 @@ export function formatGexLevelLabel(
 
   return `${titleWithExpiry}: ${pStr}`;
 }
+
+export interface GexFreshDiffPreview {
+  text: string;
+  hasDivergence: boolean;
+  diffs: string[];
+}
+
+/**
+ * Рассчитывает расхождение "стаб → свеж" по CW/PW/Flip/Pain для предпросмотра в UI и логирования
+ */
+export function formatGexFreshDiffPreview(
+  report?: {
+    callWall?: number;
+    putWall?: number;
+    gammaFlip?: number;
+    maxPain?: number;
+    freshValues?: {
+      callWall: number;
+      putWall: number;
+      gammaFlip: number;
+      maxPain: number;
+    };
+  } | null
+): GexFreshDiffPreview {
+  if (!report || !report.freshValues) {
+    return { text: "Синхронизировано", hasDivergence: false, diffs: [] };
+  }
+  const f = report.freshValues;
+  const diffs: string[] = [];
+
+  if (typeof report.callWall === "number" && typeof f.callWall === "number" && report.callWall !== f.callWall) {
+    diffs.push(`CW ${report.callWall}→${f.callWall}`);
+  }
+  if (typeof report.putWall === "number" && typeof f.putWall === "number" && report.putWall !== f.putWall) {
+    diffs.push(`PW ${report.putWall}→${f.putWall}`);
+  }
+  if (
+    typeof report.gammaFlip === "number" &&
+    typeof f.gammaFlip === "number" &&
+    Math.round(report.gammaFlip) !== Math.round(f.gammaFlip)
+  ) {
+    diffs.push(`Flip ${Math.round(report.gammaFlip)}→${Math.round(f.gammaFlip)}`);
+  }
+  if (typeof report.maxPain === "number" && typeof f.maxPain === "number" && report.maxPain !== f.maxPain) {
+    diffs.push(`Pain ${report.maxPain}→${f.maxPain}`);
+  }
+
+  if (diffs.length === 0) {
+    return { text: "Синхронизировано", hasDivergence: false, diffs: [] };
+  }
+  return { text: diffs.join(", "), hasDivergence: true, diffs };
+}

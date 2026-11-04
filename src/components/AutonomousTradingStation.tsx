@@ -72,7 +72,7 @@ import {
   Menu
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData } from "../../server/gexEngine";
-import { getLevelRole, getExpirySuffix } from "../lib/gexLabels";
+import { getLevelRole, getExpirySuffix, formatGexFreshDiffPreview } from "../lib/gexLabels";
 import { AutonomousAiAnalystPanel, MacroNewsItem } from "./AutonomousAiAnalystPanel";
 import { GexAdvancedModules } from "./GexAdvancedModules";
 import { GexProbabilityHero } from "./GexProbabilityHero";
@@ -479,7 +479,9 @@ import {
   evaluateSuperIndicator,
   SuperIndicatorOutput,
   resetIndicatorForecast,
-  hydrateSetupsFromServer
+  hydrateSetupsFromServer,
+  computePineSrZones,
+  formatSrZoneLabel
 } from "../lib/pineSuperIndicatorEngine";
 
 interface ChartOverlaysProps {
@@ -2458,8 +2460,11 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   // 2c. Reset Stabilized GEX Cache & Engine Cache for active asset
   const [isResettingGexCache, setIsResettingGexCache] = useState(false);
-  const handleResetStabilizedGexCache = async () => {
+  const [resetGuardWarning, setResetGuardWarning] = useState<string | null>(null);
+
+  const handleResetStabilizedGexCache = async (force: boolean = false) => {
     setIsResettingGexCache(true);
+    setResetGuardWarning(null);
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (typeof window !== "undefined") {
@@ -2469,10 +2474,14 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const res = await fetch("/api/gex/reset-cache", {
         method: "POST",
         headers,
-        body: JSON.stringify({ asset: activeAsset })
+        body: JSON.stringify({ asset: activeAsset, force })
       });
       if (res.ok) {
         const data = await res.json();
+        if (data.blocked) {
+          setResetGuardWarning(data.warning || "Активна сделка — уровни прыгнут под позицией. Продолжить?");
+          return;
+        }
         const curHorizon = gexHorizonRef.current;
         if (data.reports) {
           if (data.reports.DAY) setDayGexReport(data.reports.DAY);
@@ -2499,6 +2508,13 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       setIsResettingGexCache(false);
     }
   };
+
+  // Preview расхождения "стаб → свеж" по CW/PW/Flip/Pain перед нажатием кнопки сброса
+  const activeReportForPreview = gexReport || dayGexReport;
+  const gexPreviewDiff = useMemo(() => {
+    if (!activeReportForPreview || !activeReportForPreview.freshValues) return null;
+    return formatGexFreshDiffPreview(activeReportForPreview, activeReportForPreview.freshValues);
+  }, [activeReportForPreview]);
 
   // 3. Fetch Economic Calendar from local server (with Moscow date & time synchronization)
   const fetchCalendar = async () => {
@@ -4525,89 +4541,79 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
 
     // S&R Liquidity Zones (Liq LT & Liq IT)
-    if (showSrZones && cleanCandles.length >= 30) {
+    // Anchored strictly to confirmed pivots (Pine scriptSuper.txt), coordinates remain frozen across ticks
+    if (showSrZones && cleanCandles.length >= 10) {
       const atrArr = calculateATR(cleanCandles, 14);
       const atrVal = atrArr.length > 0 ? atrArr[atrArr.length - 1] : ((lastCandle.high - lastCandle.low) || 10);
-      const srHalfH = Math.max(atrVal * 0.08, 0.4);
-
-      const ltRecent = cleanCandles.slice(-40);
-      const phLt = Math.max(...ltRecent.map(c => c.high));
-      const plLt = Math.min(...ltRecent.map(c => c.low));
-      const ltOffset = 35;
       const srEndLogical = lastIdx + labelOffset;
       const srEndTime = lastCandle.time + tfSec * labelOffset;
 
-      const ltStartLogical = Math.max(0, lastIdx - ltOffset);
-      const ltStartTime = cleanCandles[ltStartLogical]?.time ?? cleanCandles[0].time;
-
-      // Resistance (Liq LT Сопр.)
-      zoneBoxes.push({
-        id: "sr_res_lt",
-        type: "sr",
-        startTime: ltStartTime,
-        endTime: srEndTime,
-        startLogical: ltStartLogical,
-        endLogical: srEndLogical,
-        topPrice: phLt + srHalfH,
-        bottomPrice: phLt - srHalfH,
-        label: `Liq LT [${phLt > 1000 ? (phLt / 1000).toFixed(1) + "K" : phLt.toFixed(0)}] Сопр.`,
-        fillColor: "rgba(242, 54, 69, 0.10)",
-        borderColor: "rgba(242, 54, 69, 0.45)",
-        borderStyle: "solid"
-      });
-
-      // Support (Liq LT Подд.)
-      zoneBoxes.push({
-        id: "sr_sup_lt",
-        type: "sr",
-        startTime: ltStartTime,
-        endTime: srEndTime,
-        startLogical: ltStartLogical,
-        endLogical: srEndLogical,
-        topPrice: plLt + srHalfH,
-        bottomPrice: plLt - srHalfH,
-        label: `Liq LT [${plLt > 1000 ? (plLt / 1000).toFixed(1) + "K" : plLt.toFixed(0)}] Подд.`,
-        fillColor: "rgba(8, 153, 129, 0.10)",
-        borderColor: "rgba(8, 153, 129, 0.45)",
-        borderStyle: "solid"
-      });
-
-      // Intermediate Pivots (IT - offset 15)
-      const itRecent = cleanCandles.slice(-18);
-      const phIt = Math.max(...itRecent.map(c => c.high));
-      const plIt = Math.min(...itRecent.map(c => c.low));
-      if (Math.abs(phIt - phLt) / phLt > 0.003) {
-        const itStartLogical = Math.max(0, lastIdx - 15);
-        zoneBoxes.push({
-          id: "sr_res_it",
-          type: "sr",
-          startTime: cleanCandles[itStartLogical]?.time ?? lastCandle.time,
-          endTime: srEndTime,
-          startLogical: itStartLogical,
-          endLogical: srEndLogical,
-          topPrice: phIt + srHalfH,
-          bottomPrice: phIt - srHalfH,
-          label: `Liq IT [${phIt > 1000 ? (phIt / 1000).toFixed(1) + "K" : phIt.toFixed(0)}]`,
-          fillColor: "rgba(242, 54, 69, 0.08)",
-          borderColor: "rgba(242, 54, 69, 0.35)",
-          borderStyle: "dashed"
-        });
+      // 1. Single source of truth: verified confirmed pivots from indicator engine
+      let engineSr = indicatorOutput?.srZones;
+      if (!engineSr || engineSr.length === 0) {
+        engineSr = computePineSrZones(
+          cleanCandles,
+          cleanCandles.map(c => c.high),
+          cleanCandles.map(c => c.low),
+          atrVal,
+          indicatorOutput?.deltaCurrent !== undefined ? [indicatorOutput.deltaCurrent] : undefined
+        );
       }
-      if (Math.abs(plIt - plLt) / plLt > 0.003) {
-        const itStartLogical = Math.max(0, lastIdx - 15);
+
+      // 2. Render each confirmed zone
+      for (const sr of engineSr) {
+        // Mitigation check against forming candle (lastCandle)
+        const isBreachedByCurrent = sr.isSup
+          ? (lastCandle.low < sr.bottom)
+          : (lastCandle.high > sr.top);
+
+        const isMitigated = sr.isMitigated || isBreachedByCurrent;
+
+        // Requirement 3: НЕ рисуй resistance-зону, если lastCandle.high > zone.top
+        // (пул ликвидности уже снят), и НЕ рисуй support-зону, если lastCandle.low < zone.bottom
+        if (isMitigated) {
+          // Опционально: держи пробитую зону ещё 20 баров с меткой "Liq LT (снят)" и прозрачностью 0.04 — но координаты после пробоя заморозь.
+          const barsSinceMit = sr.mitigatedIndex !== undefined ? (lastIdx - sr.mitigatedIndex) : (isBreachedByCurrent ? 0 : 999);
+          if (barsSinceMit <= 20) {
+            const startLog = sr.confirmIndex ?? Math.max(0, lastIdx - sr.offset);
+            const startT = sr.confirmTime ?? cleanCandles[startLog]?.time ?? cleanCandles[0].time;
+            const zoneType = sr.type || (sr.isLt ? "LT" : "IT");
+            zoneBoxes.push({
+              id: `sr_${sr.isSup ? "sup" : "res"}_${zoneType.toLowerCase()}_mit_${sr.level.toFixed(1)}`,
+              type: "sr",
+              startTime: startT,
+              endTime: srEndTime,
+              startLogical: startLog,
+              endLogical: srEndLogical,
+              topPrice: sr.top,
+              bottomPrice: sr.bottom,
+              label: formatSrZoneLabel(zoneType, sr.isSup, sr.level, sr.volume, true),
+              fillColor: sr.isSup ? "rgba(8, 153, 129, 0.04)" : "rgba(242, 54, 69, 0.04)",
+              borderColor: sr.isSup ? "rgba(8, 153, 129, 0.15)" : "rgba(242, 54, 69, 0.15)",
+              borderStyle: "dotted"
+            });
+          }
+          continue;
+        }
+
+        // Active unmitigated zone: coordinates are frozen to confirmed pivot
+        const startLog = sr.confirmIndex ?? Math.max(0, lastIdx - sr.offset);
+        const startT = sr.confirmTime ?? cleanCandles[startLog]?.time ?? cleanCandles[0].time;
+        const zoneType = sr.type || (sr.isLt ? "LT" : "IT");
+
         zoneBoxes.push({
-          id: "sr_sup_it",
+          id: `sr_${sr.isSup ? "sup" : "res"}_${zoneType.toLowerCase()}_${sr.level.toFixed(1)}`,
           type: "sr",
-          startTime: cleanCandles[itStartLogical]?.time ?? lastCandle.time,
+          startTime: startT,
           endTime: srEndTime,
-          startLogical: itStartLogical,
+          startLogical: startLog,
           endLogical: srEndLogical,
-          topPrice: plIt + srHalfH,
-          bottomPrice: plIt - srHalfH,
-          label: `Liq IT [${plIt > 1000 ? (plIt / 1000).toFixed(1) + "K" : plIt.toFixed(0)}]`,
-          fillColor: "rgba(8, 153, 129, 0.08)",
-          borderColor: "rgba(8, 153, 129, 0.35)",
-          borderStyle: "dashed"
+          topPrice: sr.top,
+          bottomPrice: sr.bottom,
+          label: sr.label || formatSrZoneLabel(zoneType, sr.isSup, sr.level, sr.volume),
+          fillColor: sr.isSup ? "rgba(8, 153, 129, 0.10)" : "rgba(242, 54, 69, 0.10)",
+          borderColor: sr.isSup ? "rgba(8, 153, 129, 0.45)" : "rgba(242, 54, 69, 0.45)",
+          borderStyle: sr.isLt ? "solid" : "dashed"
         });
       }
     }
@@ -6658,16 +6664,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <span>ИИ-Аналитик</span>
                 </button>
 
-                {/* Reset Stabilizer Cache Button */}
-                <button
-                  onClick={handleResetStabilizedGexCache}
-                  disabled={isResettingGexCache}
-                  className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 flex items-center gap-1 transition cursor-pointer shadow-sm whitespace-nowrap shrink-0 disabled:opacity-50"
-                  title="Сбросить кэш стабилизатора GEX и пересчитать уровни без ожидания часового кулдауна"
-                >
-                  <RefreshCw className={`h-3 w-3 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
-                  <span>Сбросить кэш стабилизатора</span>
-                </button>
+                {/* Reset Stabilizer Cache Button with Preview */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => handleResetStabilizedGexCache(false)}
+                    disabled={isResettingGexCache}
+                    className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 flex items-center gap-1 transition cursor-pointer shadow-sm whitespace-nowrap shrink-0 disabled:opacity-50"
+                    title="Сбросить кэш стабилизатора GEX и пересчитать уровни без ожидания кулдауна"
+                  >
+                    <RefreshCw className={`h-3 w-3 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
+                    <span>Сбросить кэш</span>
+                  </button>
+                  {gexPreviewDiff && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono border flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                        gexPreviewDiff.hasDivergence
+                          ? "bg-amber-500/20 text-amber-200 border-amber-500/50 font-bold"
+                          : "bg-emerald-500/10 text-emerald-400/80 border-emerald-500/20"
+                      }`}
+                      title={
+                        gexPreviewDiff.hasDivergence
+                          ? `Свежие данные книги: ${gexPreviewDiff.diffs.join(", ")}`
+                          : "Уровни синхронизированы со свежими данными книги"
+                      }
+                    >
+                      {gexPreviewDiff.hasDivergence ? `Δ ${gexPreviewDiff.text}` : "✓ Синхр."}
+                    </span>
+                  )}
+                </div>
 
                 {/* Low OI Density Guard Badge on Terminal (Chart) Tab */}
                 {(gexReport?.lowConfidence || dayGexReport?.lowConfidence) && (
@@ -7515,15 +7539,34 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   <span>ВСЕ (Total GEX)</span>
                 </button>
 
-                <button
-                  onClick={handleResetStabilizedGexCache}
-                  disabled={isResettingGexCache}
-                  className="px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 font-bold disabled:opacity-50"
-                  title="Сбросить кэш стабилизатора GEX и пересчитать уровни свежей логикой без ожидания часового кулдауна"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
-                  <span>Сбросить кэш стабилизатора</span>
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => handleResetStabilizedGexCache(false)}
+                    disabled={isResettingGexCache}
+                    className="px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 font-bold disabled:opacity-50"
+                    title="Сбросить кэш стабилизатора GEX и пересчитать уровни свежей логикой без ожидания кулдауна"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 text-amber-400 ${isResettingGexCache ? "animate-spin" : ""}`} />
+                    <span>Сбросить кэш стабилизатора</span>
+                  </button>
+                  {gexPreviewDiff && (
+                    <div
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-mono border flex items-center gap-1.5 whitespace-nowrap ${
+                        gexPreviewDiff.hasDivergence
+                          ? "bg-amber-500/20 text-amber-200 border-amber-500/40 font-bold"
+                          : "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                      }`}
+                      title={
+                        gexPreviewDiff.hasDivergence
+                          ? `Расхождение уровней со стаканом: ${gexPreviewDiff.diffs.join(", ")}`
+                          : "Стабилизированные уровни синхронизированы со свежими данными"
+                      }
+                    >
+                      <span>{gexPreviewDiff.hasDivergence ? "⚡ Свеж:" : "✓"}</span>
+                      <span>{gexPreviewDiff.hasDivergence ? gexPreviewDiff.text : "Синхронизировано"}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -9887,6 +9930,47 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[11px] cursor-pointer transition shadow-md"
                 >
                   Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reset Guard Confirmation Dialog */}
+        {resetGuardWarning && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+            <div className="bg-gray-900 border border-amber-500/50 rounded-xl p-5 max-w-md w-full shadow-2xl flex flex-col gap-4 text-white">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 shrink-0">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-amber-300 text-sm">Внимание: Активный сетап</h3>
+                  <p className="text-xs text-gray-300 mt-1">{resetGuardWarning}</p>
+                </div>
+              </div>
+              {gexPreviewDiff && gexPreviewDiff.hasDivergence && (
+                <div className="bg-amber-950/40 border border-amber-500/30 rounded-lg p-2.5 text-[11px] font-mono text-amber-200">
+                  <div className="text-[10px] text-amber-400 font-bold mb-1">Ожидаемый сдвиг уровней (стаб → свеж):</div>
+                  <div>{gexPreviewDiff.text}</div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 mt-1">
+                <button
+                  type="button"
+                  onClick={() => setResetGuardWarning(null)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition cursor-pointer"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleResetStabilizedGexCache(true);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white shadow-md transition cursor-pointer"
+                >
+                  Продолжить сброс (Force)
                 </button>
               </div>
             </div>

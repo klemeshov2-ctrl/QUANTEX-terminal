@@ -37,6 +37,33 @@ export interface SrZone {
   offset: number;
   label: string;
   isLt: boolean;
+  type?: "LT" | "IT" | "ST";
+  pivotIndex?: number;
+  pivotTime?: number;
+  confirmIndex?: number;
+  confirmTime?: number;
+  volume?: number;
+  delta?: number;
+  isMitigated?: boolean;
+  mitigatedIndex?: number;
+  mitigatedTime?: number;
+}
+
+export function formatSrZoneLabel(
+  type: "LT" | "IT" | "ST",
+  isSup: boolean,
+  level: number,
+  volume?: number,
+  isMitigated?: boolean
+): string {
+  const role = isSup ? "Подд." : "Сопр.";
+  const mitSuffix = isMitigated ? " (снят)" : "";
+  const priceStr = level.toFixed(1);
+  if (volume !== undefined && volume > 0) {
+    const volStr = (volume / 1000).toFixed(1) + "K";
+    return `Liq ${type}${mitSuffix} [${volStr} | ${priceStr}] ${role}`;
+  }
+  return `Liq ${type}${mitSuffix} [${priceStr}] ${role}`;
 }
 
 export interface BoxItem {
@@ -943,6 +970,364 @@ export function tfToSeconds(tf: string): number {
 }
 
 // ============================================================================
+// 2.5. PINE S&R ZONES ENGINE (Liq LT 35, Liq IT 15, Liq ST 5)
+// Tracks confirmed unmitigated pivots and frozen coordinates across bars
+// ============================================================================
+
+export function computePineSrZones(
+  candles: Candle[],
+  highs: number[],
+  lows: number[],
+  atrVal: number,
+  deltaCurrent?: number[]
+): SrZone[] {
+  const n = candles.length;
+  if (n < 10) return [];
+
+  const effectiveAtr = atrVal > 0 ? atrVal : Math.max(1, (candles[n - 1].high - candles[n - 1].low) || 5);
+  const srHalfH = Math.max(effectiveAtr * 0.08, 0.4);
+  const activeRes: SrZone[] = [];
+  const activeSup: SrZone[] = [];
+  const maxBoxes = 5;
+
+  const mergeOrPush = (arr: SrZone[], zone: SrZone) => {
+    for (let i = 0; i < arr.length; i++) {
+      const ex = arr[i];
+      if (ex.type === zone.type && Math.abs(ex.level - zone.level) < effectiveAtr * 0.5) {
+        ex.top = Math.max(ex.top, zone.top);
+        ex.bottom = Math.min(ex.bottom, zone.bottom);
+        ex.level = (ex.top + ex.bottom) / 2.0;
+        ex.label = zone.label;
+        ex.volume = zone.volume;
+        ex.pivotIndex = zone.pivotIndex;
+        ex.pivotTime = zone.pivotTime;
+        ex.confirmIndex = zone.confirmIndex;
+        ex.confirmTime = zone.confirmTime;
+        return;
+      }
+    }
+    arr.push(zone);
+    if (arr.length > maxBoxes) {
+      arr.shift();
+    }
+  };
+
+  // Bar-by-bar progression across candles up to closedCount (n - 1)
+  const closedCount = n - 1;
+
+  for (let b = 10; b <= closedCount; b++) {
+    // 1. Check mitigation on bar b
+    const curH = candles[b].high;
+    const curL = candles[b].low;
+
+    for (let r = activeRes.length - 1; r >= 0; r--) {
+      if (curH > activeRes[r].top) {
+        activeRes[r].isMitigated = true;
+        activeRes[r].mitigatedIndex = b;
+        activeRes[r].mitigatedTime = candles[b].time;
+        activeRes.splice(r, 1);
+      }
+    }
+    for (let s = activeSup.length - 1; s >= 0; s--) {
+      if (curL < activeSup[s].bottom) {
+        activeSup[s].isMitigated = true;
+        activeSup[s].mitigatedIndex = b;
+        activeSup[s].mitigatedTime = candles[b].time;
+        activeSup.splice(s, 1);
+      }
+    }
+
+    // 2. Pivot confirmation on closed bars (b < closedCount)
+    if (b < closedCount) {
+      // LT (35, 35)
+      const phLt = findPivotHigh(highs, b, 35, 35);
+      if (phLt !== null) {
+        const pIdx = b - 35;
+        const vol = candles[pIdx]?.volume || 0;
+        const dVal = deltaCurrent ? deltaCurrent[pIdx] : undefined;
+        mergeOrPush(activeRes, {
+          isSup: false,
+          level: phLt,
+          top: phLt + srHalfH,
+          bottom: phLt - srHalfH,
+          offset: 35,
+          label: formatSrZoneLabel("LT", false, phLt, vol),
+          isLt: true,
+          type: "LT",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          delta: dVal,
+          isMitigated: false
+        });
+      }
+
+      const plLt = findPivotLow(lows, b, 35, 35);
+      if (plLt !== null) {
+        const pIdx = b - 35;
+        const vol = candles[pIdx]?.volume || 0;
+        const dVal = deltaCurrent ? deltaCurrent[pIdx] : undefined;
+        mergeOrPush(activeSup, {
+          isSup: true,
+          level: plLt,
+          top: plLt + srHalfH,
+          bottom: plLt - srHalfH,
+          offset: 35,
+          label: formatSrZoneLabel("LT", true, plLt, vol),
+          isLt: true,
+          type: "LT",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          delta: dVal,
+          isMitigated: false
+        });
+      }
+
+      // IT (15, 15)
+      const phIt = findPivotHigh(highs, b, 15, 15);
+      if (phIt !== null) {
+        const pIdx = b - 15;
+        const vol = candles[pIdx]?.volume || 0;
+        const dVal = deltaCurrent ? deltaCurrent[pIdx] : undefined;
+        mergeOrPush(activeRes, {
+          isSup: false,
+          level: phIt,
+          top: phIt + srHalfH,
+          bottom: phIt - srHalfH,
+          offset: 15,
+          label: formatSrZoneLabel("IT", false, phIt, vol),
+          isLt: false,
+          type: "IT",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          delta: dVal,
+          isMitigated: false
+        });
+      }
+
+      const plIt = findPivotLow(lows, b, 15, 15);
+      if (plIt !== null) {
+        const pIdx = b - 15;
+        const vol = candles[pIdx]?.volume || 0;
+        const dVal = deltaCurrent ? deltaCurrent[pIdx] : undefined;
+        mergeOrPush(activeSup, {
+          isSup: true,
+          level: plIt,
+          top: plIt + srHalfH,
+          bottom: plIt - srHalfH,
+          offset: 15,
+          label: formatSrZoneLabel("IT", true, plIt, vol),
+          isLt: false,
+          type: "IT",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          delta: dVal,
+          isMitigated: false
+        });
+      }
+
+      // ST (5, 5)
+      const phSt = findPivotHigh(highs, b, 5, 5);
+      if (phSt !== null) {
+        const pIdx = b - 5;
+        const vol = candles[pIdx]?.volume || 0;
+        mergeOrPush(activeRes, {
+          isSup: false,
+          level: phSt,
+          top: phSt + srHalfH,
+          bottom: phSt - srHalfH,
+          offset: 5,
+          label: formatSrZoneLabel("ST", false, phSt, vol),
+          isLt: false,
+          type: "ST",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          isMitigated: false
+        });
+      }
+
+      const plSt = findPivotLow(lows, b, 5, 5);
+      if (plSt !== null) {
+        const pIdx = b - 5;
+        const vol = candles[pIdx]?.volume || 0;
+        mergeOrPush(activeSup, {
+          isSup: true,
+          level: plSt,
+          top: plSt + srHalfH,
+          bottom: plSt - srHalfH,
+          offset: 5,
+          label: formatSrZoneLabel("ST", true, plSt, vol),
+          isLt: false,
+          type: "ST",
+          pivotIndex: pIdx,
+          pivotTime: candles[pIdx].time,
+          confirmIndex: b,
+          confirmTime: candles[b].time,
+          volume: vol,
+          isMitigated: false
+        });
+      }
+    }
+  }
+
+  // Fallback for short histories or if no LT zone confirmed in history:
+  // Take closed candles closed.slice(-40) (excluding forming bar closedCount = n - 1)
+  const hasLtRes = activeRes.some(z => z.type === "LT");
+  const hasLtSup = activeSup.some(z => z.type === "LT");
+
+  if (!hasLtRes && n >= 15) {
+    const lookback = Math.min(40, closedCount);
+    let maxIdx = closedCount - lookback;
+    let maxH = highs[maxIdx];
+    for (let k = maxIdx + 1; k < closedCount; k++) {
+      if (highs[k] >= maxH) {
+        maxH = highs[k];
+        maxIdx = k;
+      }
+    }
+    const top = maxH + srHalfH;
+    const isMit = candles.slice(maxIdx + 1).some(c => c.high > top);
+    if (!isMit) {
+      const vol = candles[maxIdx]?.volume || 0;
+      activeRes.push({
+        isSup: false,
+        level: maxH,
+        top,
+        bottom: maxH - srHalfH,
+        offset: closedCount - maxIdx,
+        label: formatSrZoneLabel("LT", false, maxH, vol),
+        isLt: true,
+        type: "LT",
+        pivotIndex: maxIdx,
+        pivotTime: candles[maxIdx].time,
+        confirmIndex: maxIdx + 1,
+        confirmTime: candles[Math.min(maxIdx + 1, closedCount)].time,
+        volume: vol,
+        isMitigated: false
+      });
+    }
+  }
+
+  if (!hasLtSup && n >= 15) {
+    const lookback = Math.min(40, closedCount);
+    let minIdx = closedCount - lookback;
+    let minL = lows[minIdx];
+    for (let k = minIdx + 1; k < closedCount; k++) {
+      if (lows[k] <= minL) {
+        minL = lows[k];
+        minIdx = k;
+      }
+    }
+    const bottom = minL - srHalfH;
+    const isMit = candles.slice(minIdx + 1).some(c => c.low < bottom);
+    if (!isMit) {
+      const vol = candles[minIdx]?.volume || 0;
+      activeSup.push({
+        isSup: true,
+        level: minL,
+        top: minL + srHalfH,
+        bottom,
+        offset: closedCount - minIdx,
+        label: formatSrZoneLabel("LT", true, minL, vol),
+        isLt: true,
+        type: "LT",
+        pivotIndex: minIdx,
+        pivotTime: candles[minIdx].time,
+        confirmIndex: minIdx + 1,
+        confirmTime: candles[Math.min(minIdx + 1, closedCount)].time,
+        volume: vol,
+        isMitigated: false
+      });
+    }
+  }
+
+  const hasItRes = activeRes.some(z => z.type === "IT");
+  const hasItSup = activeSup.some(z => z.type === "IT");
+
+  if (!hasItRes && n >= 12) {
+    const lookback = Math.min(18, closedCount);
+    let maxIdx = closedCount - lookback;
+    let maxH = highs[maxIdx];
+    for (let k = maxIdx + 1; k < closedCount; k++) {
+      if (highs[k] >= maxH) {
+        maxH = highs[k];
+        maxIdx = k;
+      }
+    }
+    const top = maxH + srHalfH;
+    const isMit = candles.slice(maxIdx + 1).some(c => c.high > top);
+    if (!isMit) {
+      const vol = candles[maxIdx]?.volume || 0;
+      activeRes.push({
+        isSup: false,
+        level: maxH,
+        top,
+        bottom: maxH - srHalfH,
+        offset: closedCount - maxIdx,
+        label: formatSrZoneLabel("IT", false, maxH, vol),
+        isLt: false,
+        type: "IT",
+        pivotIndex: maxIdx,
+        pivotTime: candles[maxIdx].time,
+        confirmIndex: maxIdx + 1,
+        confirmTime: candles[Math.min(maxIdx + 1, closedCount)].time,
+        volume: vol,
+        isMitigated: false
+      });
+    }
+  }
+
+  if (!hasItSup && n >= 12) {
+    const lookback = Math.min(18, closedCount);
+    let minIdx = closedCount - lookback;
+    let minL = lows[minIdx];
+    for (let k = minIdx + 1; k < closedCount; k++) {
+      if (lows[k] <= minL) {
+        minL = lows[k];
+        minIdx = k;
+      }
+    }
+    const bottom = minL - srHalfH;
+    const isMit = candles.slice(minIdx + 1).some(c => c.low < bottom);
+    if (!isMit) {
+      const vol = candles[minIdx]?.volume || 0;
+      activeSup.push({
+        isSup: true,
+        level: minL,
+        top: minL + srHalfH,
+        bottom,
+        offset: closedCount - minIdx,
+        label: formatSrZoneLabel("IT", true, minL, vol),
+        isLt: false,
+        type: "IT",
+        pivotIndex: minIdx,
+        pivotTime: candles[minIdx].time,
+        confirmIndex: minIdx + 1,
+        confirmTime: candles[Math.min(minIdx + 1, closedCount)].time,
+        volume: vol,
+        isMitigated: false
+      });
+    }
+  }
+
+  return [...activeRes, ...activeSup];
+}
+
+// ============================================================================
 // 3. FULL PIPELINE EVALUATION (Runs on every bar / tick)
 // ============================================================================
 
@@ -1116,33 +1501,8 @@ export function evaluateSuperIndicator(
     }
   }
 
-  // 4. S&R Zones (Liq ST 5, Liq IT 15, Liq LT 35)
-  const srZones: SrZone[] = [];
-  const phLt = findPivotHigh(highs, n - 1, 35, 35);
-  const plLt = findPivotLow(lows, n - 1, 35, 35);
-  const phIt = findPivotHigh(highs, n - 1, 15, 15);
-  const plIt = findPivotLow(lows, n - 1, 15, 15);
-  const phSt = findPivotHigh(highs, n - 1, 5, 5);
-  const plSt = findPivotLow(lows, n - 1, 5, 5);
-
-  const addSrZone = (isSup: boolean, lvl: number, offset: number, label: string, isLt: boolean) => {
-    srZones.push({
-      isSup,
-      level: lvl,
-      top: lvl + atrVal * 0.08,
-      bottom: lvl - atrVal * 0.08,
-      offset,
-      label,
-      isLt
-    });
-  };
-
-  if (phLt !== null) addSrZone(false, phLt, 35, `Liq LT Сопр.`, true);
-  if (plLt !== null) addSrZone(true, plLt, 35, `Liq LT Подд.`, true);
-  if (phIt !== null) addSrZone(false, phIt, 15, `Liq IT Сопр.`, false);
-  if (plIt !== null) addSrZone(true, plIt, 15, `Liq IT Подд.`, false);
-  if (phSt !== null) addSrZone(false, phSt, 5, `Liq ST Сопр.`, false);
-  if (plSt !== null) addSrZone(true, plSt, 5, `Liq ST Подд.`, false);
+  // 4. S&R Zones (Liq ST 5, Liq IT 15, Liq LT 35) matching Pine scriptSuper.txt
+  const srZones: SrZone[] = computePineSrZones(candles, highs, lows, atrVal, deltas);
 
   // 5. Order Blocks (OB) & Fair Value Gaps (FVG)
   const bullObBoxes: BoxItem[] = [];

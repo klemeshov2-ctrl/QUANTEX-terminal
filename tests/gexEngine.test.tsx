@@ -1,3 +1,6 @@
+process.env.NODE_ENV = "test";
+process.env.QUANTEX_UNIT_TEST = "1";
+
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -15,8 +18,27 @@ import {
   GexStrikeData,
   GexMarketReport
 } from "../server/gexEngine";
-import { enrichReportWithStandardLabels } from "../server/gexStateManager";
+import {
+  enrichReportWithStandardLabels,
+  getHorizonCooldownMs,
+  getHorizonHysteresisThreshold,
+  getStabilizedGexReport,
+  resetStabilizedGexCache,
+  registerActiveTradeChecker,
+  getStabilizerMigrationLog
+} from "../server/gexStateManager";
+import { formatGexFreshDiffPreview } from "../src/lib/gexLabels";
 import { GexProbabilityHero } from "../src/components/GexProbabilityHero";
+import {
+  recordGexMigrationSnapshot,
+  clearGexTrackersHistory,
+  loadGexTrackersHistoryFromDisk,
+  saveGexTrackersHistorySync,
+  gexTrackersHistory,
+  GEX_TRACKERS_HISTORY_FILE,
+  resolveGexMigrationContext,
+  buildGexTradePlanSection
+} from "../server/gexTracker";
 
 async function runTests() {
   console.log("═══════════════════════════════════════════════════════════════════");
@@ -732,8 +754,548 @@ async function runTests() {
     passed++;
   }
 
+  // ---------------------------------------------------------------------------
+  // TEST 16: Фоновое накопление снапшотов GEX без вызова generate-plan (3 мин -> >=2 снапшота)
+  // ---------------------------------------------------------------------------
+  {
+    const TEST_TICKER = "XAUUSD_BG_TEST";
+    clearGexTrackersHistory(TEST_TICKER);
+
+    const baseTime = Date.now() - 200000;
+
+    // Симуляция фоновых тактов за 3 минуты (180 сек) БЕЗ вызова generate-plan
+    // 1. Такт t=0с: первичная фоновая фиксация
+    const snap1 = recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3950,
+      dayPw: 3900,
+      monthCw: 4000,
+      monthPw: 3850,
+      flip: 3925,
+      pain: 3920,
+      spot: 3920,
+      timestamp: baseTime
+    });
+    assert.ok(snap1 !== null, "Первый фоновый снапшот должен быть успешно записан");
+
+    // 2. Такт t=30с: попытка записи раньше 60 секунд -> должна быть заблокирована троттлингом (null)
+    const snapThrottled = recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3950,
+      dayPw: 3900,
+      monthCw: 4000,
+      monthPw: 3850,
+      flip: 3925,
+      pain: 3920,
+      spot: 3922,
+      timestamp: baseTime + 30000
+    });
+    assert.strictEqual(snapThrottled, null, "Запись раньше 60 сек должна блокироваться троттлингом");
+
+    // 3. Такт t=65с (>60с): второй фоновый снапшот
+    const snap2 = recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3955,
+      dayPw: 3900,
+      monthCw: 4005,
+      monthPw: 3850,
+      flip: 3928,
+      pain: 3925,
+      spot: 3930,
+      timestamp: baseTime + 65000
+    });
+    assert.ok(snap2 !== null, "Снапшот через 65с должен быть записан");
+
+    // 4. Такт t=130с: третий фоновый снапшот
+    const snap3 = recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3960,
+      dayPw: 3900,
+      monthCw: 4010,
+      monthPw: 3850,
+      flip: 3930,
+      pain: 3930,
+      spot: 3938,
+      timestamp: baseTime + 130000
+    });
+    assert.ok(snap3 !== null, "Снапшот через 130с должен быть записан");
+
+    // 5. Такт t=195с (3+ минуты): четвёртый фоновый снапшот
+    const snap4 = recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3960,
+      dayPw: 3905,
+      monthCw: 4010,
+      monthPw: 3855,
+      flip: 3932,
+      pain: 3930,
+      spot: 3942,
+      timestamp: baseTime + 195000
+    });
+    assert.ok(snap4 !== null, "Снапшот через 195с (3+ мин) должен быть записан");
+
+    const history = gexTrackersHistory.get(TEST_TICKER) || [];
+    assert.ok(history.length >= 2, `В истории за 3 минуты должно быть >= 2 снапшотов, получено: ${history.length}`);
+    assert.strictEqual(history.length, 4, "Должно быть ровно 4 снапшота (один раз в ~60 сек)");
+
+    // Проверка уникальности и возрастания меток времени
+    for (let i = 1; i < history.length; i++) {
+      assert.ok(
+        history[i].timestamp > history[i - 1].timestamp,
+        `Метки времени должны строго возрастать: ${history[i].timestamp} > ${history[i - 1].timestamp}`
+      );
+    }
+
+    console.log(
+      `✅ [PASS] Test 16: Фоновое накопление за 3 мин без ИИ: накоплено ${history.length} снапшота (>= 2) с разными timestamp, троттлинг 60с подтвержден`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 17: Пустая история миграций GEX: отсутствие "был X стал Y" и отсутствие фабрикаций +-10
+  // ---------------------------------------------------------------------------
+  {
+    const TEST_TICKER = "XAUUSD_EMPTY_TEST";
+    clearGexTrackersHistory(TEST_TICKER);
+
+    // Цена тестирует Day Call Wall (3995 при CW=4000, расстояние <= 5 п.),
+    // где старый код фабриковал prevMonthCw = currentMonthCw - 10 и сквиз
+    const gexCtx = resolveGexMigrationContext(
+      TEST_TICKER,
+      {
+        dayCw: 4000,
+        dayPw: 3900,
+        monthCw: 4100,
+        monthPw: 3850,
+        flip: 3950,
+        pain: 3940,
+        spot: 3995
+      },
+      null
+    );
+
+    const planGexSection = buildGexTradePlanSection(gexCtx);
+
+    // 1. План обязан содержать фразу о накоплении истории
+    assert.strictEqual(gexCtx.hasPreviousSnapshot, false, "При пустой истории hasPreviousSnapshot=false");
+    assert.strictEqual(gexCtx.prevMonthCw, null, "При пустой истории prevMonthCw=null");
+    assert.strictEqual(gexCtx.prevDayCw, null, "При пустой истории prevDayCw=null");
+    assert.ok(
+      gexCtx.migrationDiagnosis.toLowerCase().includes("история миграций") &&
+      gexCtx.migrationDiagnosis.toLowerCase().includes("сдвиг не определён"),
+      `Диагноз должен содержать уведомление о накоплении истории. Диагноз:\n${gexCtx.migrationDiagnosis}`
+    );
+    assert.ok(
+      planGexSection.toLowerCase().includes("история миграций") &&
+      planGexSection.toLowerCase().includes("сдвиг не определён"),
+      `Вывод плана должен содержать уведомление о накоплении истории. Вывод:\n${planGexSection}`
+    );
+
+    // 2. В плане КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО наличие строк "был X, стал Y"
+    assert.strictEqual(
+      planGexSection.includes("был ") && planGexSection.includes("стал "),
+      false,
+      "При пустой истории строки 'был X, стал Y' категорически запрещены!"
+    );
+    assert.strictEqual(
+      gexCtx.promptDetailedGexWalls.includes("был ") && gexCtx.promptDetailedGexWalls.includes("стал "),
+      false,
+      "В промпте детальных стен строки 'был X, стал Y' категорически запрещены!"
+    );
+
+    // 3. Запрещены фабрикации +-10 п. (4090, 4110)
+    assert.strictEqual(
+      planGexSection.includes("4090") || planGexSection.includes("3990➔") || planGexSection.includes("➔4100"),
+      false,
+      "При пустой истории фабрикации сдвигов +-10 п. категорически запрещены!"
+    );
+
+    // 4. Запрещены ложные предупреждения о сквизе убегающего уровня при пустой истории
+    assert.strictEqual(
+      gexCtx.isCallWallRunningAway,
+      false,
+      "Ложный сквиз убегающего уровня (isCallWallRunningAway) при пустой истории запрещен!"
+    );
+    assert.strictEqual(
+      planGexSection.includes("Уровень Call Wall убегает вверх"),
+      false,
+      "Ложный сквиз убегающего уровня в тексте плана при пустой истории запрещен!"
+    );
+
+    console.log(
+      `✅ [PASS] Test 17: При пустой истории миграций: сдвиг не определён, строки 'был X стал Y' и фабрикации +-10 полностью отсутствуют`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 18: Персистентность gexTrackersHistory (сохранение на диск и загрузка при рестарте)
+  // ---------------------------------------------------------------------------
+  {
+    const TEST_TICKER = "XAUUSD_PERSIST_TEST";
+    clearGexTrackersHistory(TEST_TICKER);
+
+    const t1 = Date.now() - 80000;
+    const t2 = Date.now();
+
+    recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3950,
+      dayPw: 3900,
+      monthCw: 4000,
+      monthPw: 3850,
+      flip: 3925,
+      pain: 3920,
+      spot: 3925,
+      timestamp: t1
+    }, true);
+
+    recordGexMigrationSnapshot(TEST_TICKER, {
+      dayCw: 3960,
+      dayPw: 3905,
+      monthCw: 4020,
+      monthPw: 3850,
+      flip: 3930,
+      pain: 3925,
+      spot: 3940,
+      timestamp: t2
+    }, true);
+
+    // Принудительно сохраняем на диск
+    saveGexTrackersHistorySync();
+
+    const fs = await import("fs");
+    assert.ok(fs.existsSync(GEX_TRACKERS_HISTORY_FILE), "Файл data/gex-trackers-history.json должен существовать");
+
+    // Имитация полного перезапуска процесса сервера: очищаем оперативную память
+    gexTrackersHistory.clear();
+    assert.strictEqual(gexTrackersHistory.size, 0, "Память перед рестартом очищена");
+
+    // Имитируем старт сервера: читаем с диска
+    loadGexTrackersHistoryFromDisk();
+
+    const restored = gexTrackersHistory.get(TEST_TICKER);
+    assert.ok(restored !== undefined && restored.length === 2, "Снапшоты должны быть восстановлены из файла");
+    assert.strictEqual(restored[0].timestamp, t1, "Timestamp 1-го снапшота совпадает");
+    assert.strictEqual(restored[1].timestamp, t2, "Timestamp 2-го снапшота совпадает");
+    assert.strictEqual(restored[0].monthCallWall, 4000, "Month CW 1-го снапшота сохранен");
+    assert.strictEqual(restored[1].monthCallWall, 4020, "Month CW 2-го снапшота сохранен");
+    assert.strictEqual(restored[1].spotPrice, 3940, "Spot price 2-го снапшота сохранен");
+
+    // Очистка тестовых данных
+    clearGexTrackersHistory(TEST_TICKER);
+
+    console.log(
+      `✅ [PASS] Test 18: Персистентность gexTrackersHistory проверена: сохранение в JSON, симуляция рестарта и чтение без потерь подтверждены`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 19: Инвариант неподвижности зон Liq LT / IT и правило митигации
+  // 1. При обновлении хая формирующейся свечи зона Liq LT остаётся строго на старом пивоте
+  // 2. Объём в подписи берётся со свечи пивота (например 3.9K | 4036.0)
+  // 3. При volume=0 суффикс "K" не выводится ([4036.0])
+  // 4. При пробое хая свечой (lastCandle.high > zone.top) зона митигируется, а не уезжает на новый хай
+  // ---------------------------------------------------------------------------
+  {
+    const { computePineSrZones, formatSrZoneLabel } = await import("../src/lib/pineSuperIndicatorEngine");
+
+    // Создаём синтетический ряд из 80 свечей
+    // На баре 35 формируем ярко выраженный пивот-хай: 4036.0 с объёмом 3900 контрактов
+    const syntheticCandles: any[] = [];
+    const baseTime = 1793600000;
+    const tfSec = 900;
+
+    for (let i = 0; i < 80; i++) {
+      const time = baseTime + i * tfSec;
+      let open = 4000;
+      let close = 4005;
+      let high = 4010;
+      let low = 3995;
+      let volume = 1500;
+
+      if (i === 35) {
+        // Пивот-хай 35/35
+        high = 4036.0;
+        volume = 3900;
+      }
+
+      syntheticCandles.push({ time, open, high, low, close, volume });
+    }
+
+    const atrVal = 10.0;
+    const expectedTop = 4036.0 + atrVal * 0.08;
+    const expectedBottom = 4036.0 - atrVal * 0.08;
+
+    // РЕНДЕР 1: Формирующаяся свеча (бар 79) имеет high = 4012
+    syntheticCandles[79].high = 4012;
+    const highs1 = syntheticCandles.map(c => c.high);
+    const lows1 = syntheticCandles.map(c => c.low);
+
+    const zones1 = computePineSrZones(syntheticCandles, highs1, lows1, atrVal);
+    const ltRes1 = zones1.find(z => z.type === "LT" && !z.isSup);
+
+    assert.ok(ltRes1, "Зона Liq LT Сопр. должна быть найдена на подтверждённом пивоте 35/35");
+    assert.strictEqual(ltRes1.level, 4036.0, "Уровень зоны строго равен пивоту 4036.0");
+    assert.strictEqual(ltRes1.volume, 3900, "Объём взят со свечи пивота (3900)");
+    assert.strictEqual(ltRes1.top, expectedTop, "TopPrice равен 4036.0 + atr*0.08");
+    assert.strictEqual(ltRes1.bottom, expectedBottom, "BottomPrice равен 4036.0 - atr*0.08");
+    assert.strictEqual(
+      ltRes1.label,
+      "Liq LT [3.9K | 4036.0] Сопр.",
+      `Подпись зоны должна содержать объём и точную цену: получено '${ltRes1.label}'`
+    );
+
+    // РЕНДЕР 2: Новый тик на формирующейся свече (бар 79) поднял high с 4012 до 4030 (+18 пт)
+    syntheticCandles[79].high = 4030;
+    const highs2 = syntheticCandles.map(c => c.high);
+    const lows2 = syntheticCandles.map(c => c.low);
+
+    const zones2 = computePineSrZones(syntheticCandles, highs2, lows2, atrVal);
+    const ltRes2 = zones2.find(z => z.type === "LT" && !z.isSup);
+
+    assert.ok(ltRes2, "Зона Liq LT Сопр. сохраняется на Рендере 2");
+    // Инвариант неподвижности: координаты зоны НЕ изменились ни на один цент!
+    assert.strictEqual(ltRes2.level, ltRes1.level, "Инвариант неподвижности: level не изменился");
+    assert.strictEqual(ltRes2.top, ltRes1.top, "Инвариант неподвижности: topPrice не изменился");
+    assert.strictEqual(ltRes2.bottom, ltRes1.bottom, "Инвариант неподвижности: bottomPrice не изменился");
+    assert.strictEqual(ltRes2.label, ltRes1.label, "Инвариант неподвижности: label не изменился");
+
+    // РЕНДЕР 3: Пробой уровня текущей свечой (high = 4042 > expectedTop 4036.8)
+    syntheticCandles[79].high = 4042;
+    const highs3 = syntheticCandles.map(c => c.high);
+    const lows3 = syntheticCandles.map(c => c.low);
+
+    const zones3 = computePineSrZones(syntheticCandles, highs3, lows3, atrVal);
+    const ltRes3 = zones3.find(z => z.type === "LT" && !z.isSup && !z.isMitigated);
+
+    // Зона не должна переехать на 4042! Она митигирована/снята
+    assert.strictEqual(
+      ltRes3,
+      undefined,
+      "После пробоя хая 4036 свечой (4042) активная зона Liq LT снимается (митигирована) и НЕ переезжает на 4042!"
+    );
+
+    // ПРОВЕРКА 4: Форматирование при нулевом / отсутствующем объёме (суффикс 'K' исключён)
+    const zeroVolLabel = formatSrZoneLabel("LT", false, 4036.0, 0);
+    assert.strictEqual(
+      zeroVolLabel,
+      "Liq LT [4036.0] Сопр.",
+      `При volume=0 суффикс 'K' не должен имитировать объём: получено '${zeroVolLabel}'`
+    );
+
+    const itLabel = formatSrZoneLabel("IT", true, 3920.5, 2400);
+    assert.strictEqual(
+      itLabel,
+      "Liq IT [2.4K | 3920.5] Подд.",
+      `Поддержка IT с объёмом 2400: получено '${itLabel}'`
+    );
+
+    console.log(
+      `✅ [PASS] Test 19: Инвариант неподвижности зон Liq LT/IT подтверждён: при обновлении хая свечи зона остаётся на пивоте 4036.0 (top=${expectedTop}, bottom=${expectedBottom}), при пробое 4042 зона снимается и не следует за ценой, подписи: '${ltRes1.label}', без объёма: '${zeroVolLabel}'`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 20: Горизонтно-зависимые параметры стабилизатора (DAY, WEEK, MONTH/ALL)
+  // ---------------------------------------------------------------------------
+  {
+    // DAY: кулдаун 30 мин (1 800 000 мс), гистерезис 20%
+    assert.strictEqual(getHorizonCooldownMs("DAY"), 30 * 60 * 1000, "DAY cooldown must be 30 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("DAY"), 0.20, "DAY hysteresis threshold must be 0.20 (20%)");
+
+    // WEEK: кулдаун 60 мин (3 600 000 мс), гистерезис 25%
+    assert.strictEqual(getHorizonCooldownMs("WEEK"), 60 * 60 * 1000, "WEEK cooldown must be 60 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("WEEK"), 0.25, "WEEK hysteresis threshold must be 0.25 (25%)");
+
+    // MONTH / ALL: кулдаун 120 мин (7 200 000 мс), гистерезис 30%
+    assert.strictEqual(getHorizonCooldownMs("MONTH"), 120 * 60 * 1000, "MONTH cooldown must be 120 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("MONTH"), 0.30, "MONTH hysteresis threshold must be 0.30 (30%)");
+    assert.strictEqual(getHorizonCooldownMs("ALL"), 120 * 60 * 1000, "ALL cooldown must be 120 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("ALL"), 0.30, "ALL hysteresis threshold must be 0.30 (30%)");
+
+    console.log(
+      `✅ [PASS] Test 20: Горизонтно-зависимые параметры стабилизатора подтверждены: DAY(30м / 20%), WEEK(60м / 25%), MONTH(120м / 30%), ALL(120м / 30%)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 21: Авто-миграция reason="source_switch" при смене источника данных
+  // ---------------------------------------------------------------------------
+  {
+    // Сбросим кэш для тестового актива
+    resetStabilizedGexCache("TEST_SRC_SWITCH", "DAY", { force: true });
+
+    // Инициализируем запись от источника "CBOE Options Live"
+    const strikes1: GexStrikeData[] = [
+      { strike: 3900, callOi: 1000, putOi: 5000, totalOi: 6000, callVolume: 100, putVolume: 100, callGex: 1, putGex: -5, netGex: -4, iv: 0.18 },
+      { strike: 3950, callOi: 8000, putOi: 2000, totalOi: 10000, callVolume: 100, putVolume: 100, callGex: 8, putGex: -2, netGex: 6, iv: 0.18 }
+    ];
+    const initialReport: GexMarketReport = {
+      asset: "TEST_SRC_SWITCH",
+      horizon: "DAY",
+      spotPrice: 3925,
+      gammaFlip: 3925,
+      callWall: 3950,
+      putWall: 3900,
+      maxPain: 3925,
+      netGexTotal: 2,
+      regime: "POS_GEX",
+      callOiStrikesCount: 10,
+      putOiStrikesCount: 10,
+      strikes: strikes1,
+      source: "CBOE Options Live",
+      timestamp: new Date().toISOString()
+    };
+
+    const rep1 = await getStabilizedGexReport("TEST_SRC_SWITCH", "DAY", 3925, initialReport);
+    assert.strictEqual(rep1.callWall, 3950);
+    assert.strictEqual(rep1.putWall, 3900);
+
+    // Свежий отчёт поступает от другого источника "Yahoo Finance GC=F"
+    // Стены сместились на 3 страйка (3980 вместо 3950: дельта 30 > 2 * step 10)
+    const strikes2: GexStrikeData[] = [
+      { strike: 3880, callOi: 500, putOi: 8000, totalOi: 8500, callVolume: 100, putVolume: 100, callGex: 1, putGex: -8, netGex: -7, iv: 0.18 },
+      { strike: 3980, callOi: 12000, putOi: 1000, totalOi: 13000, callVolume: 100, putVolume: 100, callGex: 12, putGex: -1, netGex: 11, iv: 0.18 }
+    ];
+    const switchedSourceReport: GexMarketReport = {
+      asset: "TEST_SRC_SWITCH",
+      horizon: "DAY",
+      spotPrice: 3930,
+      gammaFlip: 3930,
+      callWall: 3980,
+      putWall: 3880,
+      maxPain: 3930,
+      netGexTotal: 4,
+      regime: "POS_GEX",
+      callOiStrikesCount: 10,
+      putOiStrikesCount: 10,
+      strikes: strikes2,
+      source: "Yahoo Finance GC=F",
+      timestamp: new Date().toISOString()
+    };
+
+    // Проверяем: миграция ДОЛЖНА произойти мгновенно без ожидания кулдауна с reason="source_switch"
+    const rep2 = await getStabilizedGexReport("TEST_SRC_SWITCH", "DAY", 3930, switchedSourceReport);
+    assert.strictEqual(rep2.callWall, 3980, "CW should immediately migrate on source_switch");
+    assert.strictEqual(rep2.putWall, 3880, "PW should immediately migrate on source_switch");
+
+    const history = getStabilizerMigrationLog("TEST_SRC_SWITCH");
+    const sourceSwitchLog = history.find(
+      (h) => h.asset === "TEST_SRC_SWITCH" && h.reason === "source_switch"
+    );
+    assert.ok(sourceSwitchLog, "Migration history must contain entry with reason 'source_switch'");
+    console.log(
+      `✅ [PASS] Test 21: Авто-миграция reason='source_switch' подтверждена: при смене источника CBOE -> Yahoo стены 3950/3900 мгновенно обновились до 3980/3880 без ожидания кулдауна`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 22: Guard кнопки reset при активной сделке (ACTIVE_IN_TRADE / WAITING_FOR_ENTRY)
+  // ---------------------------------------------------------------------------
+  {
+    // Регистрируем активную сделку
+    registerActiveTradeChecker(() => true);
+
+    // Сброс без force должен быть заблокирован с предупреждением
+    const blockedRes = resetStabilizedGexCache("TEST_GUARD_ASSET", "DAY", { force: false });
+    assert.strictEqual(blockedRes.success, false, "Reset without force must not succeed when trade is active");
+    assert.strictEqual(blockedRes.blocked, true, "blocked flag must be true");
+    assert.ok(
+      blockedRes.warning && blockedRes.warning.includes("Активна сделка"),
+      `Warning message must alert user: got '${blockedRes.warning}'`
+    );
+
+    // Сброс с явным force: true должен пройти
+    const forcedRes = resetStabilizedGexCache("TEST_GUARD_ASSET", "DAY", { force: true });
+    assert.strictEqual(forcedRes.success, true, "Reset with force:true must succeed");
+    assert.strictEqual(forcedRes.blocked, false, "blocked flag must be false with force:true");
+
+    // Возвращаем чекер обратно
+    registerActiveTradeChecker(() => false);
+
+    console.log(
+      `✅ [PASS] Test 22: Guard кнопки reset подтверждён: при активной сделке сброс без force блокируется с предупреждением '${blockedRes.warning}', с force:true успешно выполняется`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 23: Совпадение diff в preview и в reset
+  // ---------------------------------------------------------------------------
+  {
+    const stabilized = {
+      callWall: 3980,
+      putWall: 3930,
+      gammaFlip: 3970,
+      maxPain: 3930
+    };
+    const fresh = {
+      callWall: 3990,
+      putWall: 3930,
+      gammaFlip: 3970,
+      maxPain: 3935
+    };
+
+    // 1. Preview рассчитывает расхождение "стаб -> свеж"
+    const preview = formatGexFreshDiffPreview({ ...stabilized, freshValues: fresh });
+    assert.strictEqual(preview.hasDivergence, true, "Preview must detect divergence");
+    assert.strictEqual(
+      preview.text,
+      "CW 3980→3990, Pain 3930→3935",
+      `Preview text must match 'CW 3980→3990, Pain 3930→3935', got '${preview.text}'`
+    );
+
+    // 2. Инициализируем запись в кэше и выполняем сброс с передачей freshValues
+    resetStabilizedGexCache("TEST_PREVIEW_MATCH", "DAY", { force: true });
+    const mockRep: GexMarketReport = {
+      asset: "TEST_PREVIEW_MATCH",
+      horizon: "DAY",
+      spotPrice: 3940,
+      gammaFlip: stabilized.gammaFlip,
+      callWall: stabilized.callWall,
+      putWall: stabilized.putWall,
+      maxPain: stabilized.maxPain,
+      netGexTotal: 1,
+      regime: "POS_GEX",
+      callOiStrikesCount: 10,
+      putOiStrikesCount: 10,
+      strikes: [],
+      source: "Test Book",
+      timestamp: new Date().toISOString()
+    };
+    await getStabilizedGexReport("TEST_PREVIEW_MATCH", "DAY", 3940, mockRep);
+
+    // Сбрасываем с передачей freshValues
+    const resetRes = resetStabilizedGexCache("TEST_PREVIEW_MATCH", "DAY", {
+      force: true,
+      freshValues: fresh
+    });
+
+    assert.ok(resetRes.diff, "Reset result must provide diff");
+    assert.ok(
+      resetRes.diff.includes("CW 3980 -> 3990") && resetRes.diff.includes("Pain 3930 -> 3935"),
+      `Reset diff must contain the exact changes: got '${resetRes.diff}'`
+    );
+
+    // Проверяем запись в migration log
+    const history = getStabilizerMigrationLog("TEST_PREVIEW_MATCH");
+    const resetLog = history.slice().reverse().find(
+      (h) => h.asset === "TEST_PREVIEW_MATCH" && h.reason === "reset"
+    );
+    assert.ok(resetLog, "Migration log must contain 'reset' entry");
+    assert.ok(
+      resetLog.details.includes("CW 3980 -> 3990") && resetLog.details.includes("Pain 3930 -> 3935"),
+      `Migration log details must contain full 4-level diff: got '${resetLog.details}'`
+    );
+
+    console.log(
+      `✅ [PASS] Test 23: Совпадение diff в preview и в reset подтверждено: preview='${preview.text}', reset diff='${resetRes.diff}'`
+    );
+    passed++;
+  }
+
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/15 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/23 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 
