@@ -72,7 +72,14 @@ import {
   Menu
 } from "lucide-react";
 import { GexMarketReport, GexStrikeData } from "../../server/gexEngine";
-import { getLevelRole, getExpirySuffix, formatGexFreshDiffPreview } from "../lib/gexLabels";
+import {
+  getLevelRole,
+  getExpirySuffix,
+  formatGexFreshDiffPreview,
+  sanitizeDuplicatePriceSuffix,
+  resolveGexGridStep,
+  checkFlipPainCoincide
+} from "../lib/gexLabels";
 import { AutonomousAiAnalystPanel, MacroNewsItem } from "./AutonomousAiAnalystPanel";
 import { GexAdvancedModules } from "./GexAdvancedModules";
 import { GexProbabilityHero } from "./GexProbabilityHero";
@@ -481,7 +488,9 @@ import {
   resetIndicatorForecast,
   hydrateSetupsFromServer,
   computePineSrZones,
-  formatSrZoneLabel
+  formatSrZoneLabel,
+  createSetupLevelsForBar,
+  isValidAnchoredSetup
 } from "../lib/pineSuperIndicatorEngine";
 
 interface ChartOverlaysProps {
@@ -4766,7 +4775,79 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     const fc = indicatorOutput?.forecast;
     const isNoSetup = fc?.status === "NO_SETUP" || fc?.hasValidSetup === false;
 
-    if (showForecast && computedTp1 > 0 && !isNoSetup) {
+    if (showForecast) {
+      const isComputedValid =
+        Number.isFinite(computedEntry) && computedEntry > 0 &&
+        Number.isFinite(computedTp1) && computedTp1 > 0 &&
+        Number.isFinite(computedTp2) && computedTp2 > 0 &&
+        Number.isFinite(computedSl) && computedSl > 0 &&
+        Math.abs(computedTp1 - computedTp2) >= 0.01 &&
+        (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0) &&
+        !isNoSetup;
+
+      let fallbackSourceTags: {
+        entrySourceTag?: string;
+        tp1SourceTag?: string;
+        tp2SourceTag?: string;
+        slSourceTag?: string;
+      } = {};
+      const isFallbackRecalc = !isComputedValid;
+
+      if (isFallbackRecalc) {
+        if (fc && isValidAnchoredSetup(fc)) {
+          computedEntry = fc.p1Entry;
+          computedTp1 = fc.p2Tp1;
+          computedTp2 = fc.p3Tp2;
+          computedSl = fc.activeTrailingSl;
+        } else {
+          const liveFallback = createSetupLevelsForBar(
+            cleanCandles,
+            activeAsset,
+            timeframe,
+            lastIdx,
+            (gexReport || dayGexReport || indicatorOutput?.gex) as any
+          );
+          computedEntry = liveFallback.p1Entry;
+          computedTp1 = liveFallback.p2Tp1;
+          computedTp2 = liveFallback.p3Tp2;
+          computedSl = liveFallback.invalidLevelSl;
+          fallbackSourceTags = {
+            entrySourceTag: liveFallback.entrySourceTag,
+            tp1SourceTag: liveFallback.tp1SourceTag,
+            tp2SourceTag: liveFallback.tp2SourceTag,
+            slSourceTag: liveFallback.slSourceTag
+          };
+          if (!forecastData || !Number.isFinite(forecastData.tp1Price) || forecastData.tp1Price <= 0) {
+            forecastData = {
+              startTime: lastCandle.time,
+              startPrice: lastCandle.close,
+              startLogical: lastIdx,
+              pullbackTime: lastCandle.time + tfSec * 3,
+              pullbackPrice: computedEntry,
+              pullbackLogical: lastIdx + 3,
+              tp1Time: lastCandle.time + tfSec * 8,
+              tp1Price: computedTp1,
+              tp1Logical: lastIdx + 8,
+              tp2Time: lastCandle.time + tfSec * 14,
+              tp2Price: computedTp2,
+              tp2Logical: lastIdx + 14,
+              isBull: liveFallback.isBull,
+              labelStart: `${liveFallback.isBull ? "🟢 Long" : "🔴 Short"} • ⚠️ пересчёт`,
+              leg1Hit: false,
+              leg2Hit: false,
+              leg3Hit: false
+            };
+          } else if (forecastData && !forecastData.labelStart.includes("⚠️ пересчёт")) {
+            forecastData.pullbackPrice = computedEntry;
+            forecastData.tp1Price = computedTp1;
+            forecastData.tp2Price = computedTp2;
+            forecastData.labelStart = `${forecastData.labelStart} • ⚠️ пересчёт`;
+          }
+        }
+      }
+
+      const recalcBadgeSuffix = isFallbackRecalc ? " [⚠️ пересчёт]" : "";
+
       // In original Pine Script: line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, ...)
       // where x0 = setupAnchorLog (bar where signal originated), and lineEnd stops just past the last candle so labels sit to the right of the line
       const lineStartLog = setupAnchorLog;
@@ -4776,10 +4857,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
       const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
       const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
-      const slTagSuffix = fc?.slSourceTag ? ` ${fc.slSourceTag}` : "";
-      const entryTagSuffix = fc?.entrySourceTag ? ` ${fc.entrySourceTag}` : "";
-      const tp1TagSuffix = fc?.tp1SourceTag ? ` ${fc.tp1SourceTag}` : "";
-      const tp2TagSuffix = fc?.tp2SourceTag ? ` ${fc.tp2SourceTag}` : "";
+      const slTagSuffix = (fc?.slSourceTag || fallbackSourceTags.slSourceTag) ? ` ${fc?.slSourceTag || fallbackSourceTags.slSourceTag}` : "";
+      const entryTagSuffix = (fc?.entrySourceTag || fallbackSourceTags.entrySourceTag) ? ` ${fc?.entrySourceTag || fallbackSourceTags.entrySourceTag}` : "";
+      const tp1TagSuffix = (fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag) ? ` ${fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag}` : "";
+      const tp2TagSuffix = (fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag) ? ` ${fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag}` : "";
 
       // SL (Red dashed line)
       boundedLines.push({
@@ -4793,8 +4874,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         lineWidth: 1,
         lineStyle: "dashed",
         label: fc?.isPlanBActive
-          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}`
-          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}`,
+          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}${recalcBadgeSuffix}`
+          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}${recalcBadgeSuffix}`,
         labelBg: "rgba(30, 9, 13, 0.98)",
         labelBorderColor: "#f87171",
         labelTextColor: "#fecdd3"
@@ -4815,15 +4896,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         lineWidth: 1,
         lineStyle: fc?.leg1Hit ? "solid" : "dotted",
         label: fc?.leg1Hit
-          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}`
-          : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}`,
+          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`
+          : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`,
         labelBg: "rgba(24, 18, 6, 0.98)",
         labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
         labelTextColor: "#fef3c7"
       });
 
-      // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line)
-      if (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0)) {
+      // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line unless fallback recalc)
+      if (isFallbackRecalc || (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0))) {
         boundedLines.push({
           id: "tp1_line",
           price: Number(computedTp1.toFixed(dec)),
@@ -4835,16 +4916,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           lineWidth: 1,
           lineStyle: "dashed",
           label: fc?.leg2Hit
-            ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}`
-            : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}`,
+            ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}${recalcBadgeSuffix}`
+            : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}${recalcBadgeSuffix}`,
           labelBg: "rgba(6, 24, 20, 0.98)",
           labelBorderColor: "#2dd4bf",
           labelTextColor: "#ccfbf1"
         });
       }
 
-      // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true)
-      if (computedTp2 > 0 && !fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)) {
+      // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true unless fallback recalc)
+      if (computedTp2 > 0 && (isFallbackRecalc || (!fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)))) {
         boundedLines.push({
           id: "tp2_line",
           price: Number(computedTp2.toFixed(dec)),
@@ -4856,8 +4937,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           lineWidth: 1,
           lineStyle: "dashed",
           label: fc?.leg3Hit
-            ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}`
-            : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}`,
+            ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}${recalcBadgeSuffix}`
+            : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}${recalcBadgeSuffix}`,
           labelBg: "rgba(6, 18, 28, 0.98)",
           labelBorderColor: "#38bdf8",
           labelTextColor: "#e0f2fe"
@@ -4902,7 +4983,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#10b981",
           lineWidth: 1,
           lineStyle: "solid",
-          label: (effectiveGex as any).cwLabel ? `🏰 ${(effectiveGex as any).cwLabel}` : `🏰 ${cwInfo.fullName}${cwInfo.isBroken ? ` [${cwInfo.role}]` : ""}`,
+          label: sanitizeDuplicatePriceSuffix((effectiveGex as any).cwLabel ? `🏰 ${(effectiveGex as any).cwLabel}` : `🏰 ${cwInfo.fullName}${cwInfo.isBroken ? ` [${cwInfo.role}]` : ""}`),
           labelBg: "rgba(6, 24, 16, 0.98)",
           labelBorderColor: "#34d399",
           labelTextColor: "#d1fae5"
@@ -4918,75 +4999,109 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           color: "#ef4444",
           lineWidth: 1,
           lineStyle: "solid",
-          label: (effectiveGex as any).pwLabel ? `🛡️ ${(effectiveGex as any).pwLabel}` : `🛡️ ${pwInfo.fullName}${pwInfo.isBroken ? ` [${pwInfo.role}]` : ""}`,
+          label: sanitizeDuplicatePriceSuffix((effectiveGex as any).pwLabel ? `🛡️ ${(effectiveGex as any).pwLabel}` : `🛡️ ${pwInfo.fullName}${pwInfo.isBroken ? ` [${pwInfo.role}]` : ""}`),
           labelBg: "rgba(30, 9, 13, 0.98)",
           labelBorderColor: "#f87171",
           labelTextColor: "#fecdd3"
         });
       }
 
-      if (showGexFlip) {
-        const isFlipOut = Boolean(
+      const gexGridStep = resolveGexGridStep(spot, (effectiveGex as any).gexStep, activeAsset);
+      const flipPainCheck = checkFlipPainCoincide(effectiveGex.gammaFlip, effectiveGex.maxPain, gexGridStep);
+      const flipPainCoincide = showGexFlip && showGexPain && flipPainCheck.coincide;
+
+      if (flipPainCoincide) {
+        const isCombinedOut = Boolean(
           (effectiveGex as any).flipOutOfCorridor ||
+          (effectiveGex as any).painOutOfCorridor ||
           (effectiveGex.putWall &&
             effectiveGex.callWall &&
             (effectiveGex.gammaFlip < effectiveGex.putWall || effectiveGex.gammaFlip > effectiveGex.callWall))
         );
-        const rawFlipLabel = (effectiveGex as any).flipLabel
-          ? `⚡ ${(effectiveGex as any).flipLabel}`
-          : `⚡ ${flipInfo.fullName}`;
-        const finalFlipLabel =
-          isFlipOut && !rawFlipLabel.includes("⚠️")
-            ? `${rawFlipLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
-            : rawFlipLabel;
+        const finalCombinedLabel =
+          isCombinedOut && !flipPainCheck.combinedLabel.includes("⚠️")
+            ? `${flipPainCheck.combinedLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
+            : flipPainCheck.combinedLabel;
 
         boundedLines.push({
-          id: "flip_line",
+          id: "flip_pain_line",
           price: effectiveGex.gammaFlip,
           startTime: gx1Time,
           endTime: gx2BaseTime,
           startLogical: gx1,
           endLogical: gx2Base,
-          color: isFlipOut ? "#f59e0b" : "#a855f7",
+          color: isCombinedOut ? "#f59e0b" : "#a855f7",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: finalFlipLabel,
-          labelBg: isFlipOut ? "rgba(38, 22, 6, 0.98)" : "rgba(22, 10, 36, 0.98)",
-          labelBorderColor: isFlipOut ? "#fbbf24" : "#c084fc",
-          labelTextColor: isFlipOut ? "#fef3c7" : "#f3e8ff"
+          label: sanitizeDuplicatePriceSuffix(finalCombinedLabel),
+          labelBg: isCombinedOut ? "rgba(38, 22, 6, 0.98)" : "rgba(22, 10, 36, 0.98)",
+          labelBorderColor: isCombinedOut ? "#fbbf24" : "#c084fc",
+          labelTextColor: isCombinedOut ? "#fef3c7" : "#f3e8ff"
         });
-      }
+      } else {
+        if (showGexFlip) {
+          const isFlipOut = Boolean(
+            (effectiveGex as any).flipOutOfCorridor ||
+            (effectiveGex.putWall &&
+              effectiveGex.callWall &&
+              (effectiveGex.gammaFlip < effectiveGex.putWall || effectiveGex.gammaFlip > effectiveGex.callWall))
+          );
+          const rawFlipLabel = (effectiveGex as any).flipLabel
+            ? `⚡ ${(effectiveGex as any).flipLabel}`
+            : `⚡ ${flipInfo.fullName}`;
+          const finalFlipLabel =
+            isFlipOut && !rawFlipLabel.includes("⚠️")
+              ? `${rawFlipLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
+              : rawFlipLabel;
 
-      if (showGexPain) {
-        const isPainOut = Boolean(
-          (effectiveGex as any).painOutOfCorridor ||
-          (effectiveGex.putWall &&
-            effectiveGex.callWall &&
-            (effectiveGex.maxPain < effectiveGex.putWall || effectiveGex.maxPain > effectiveGex.callWall))
-        );
-        const rawPainLabel = (effectiveGex as any).painLabel
-          ? `🎯 ${(effectiveGex as any).painLabel}`
-          : `🎯 ${painInfo.fullName}`;
-        const finalPainLabel =
-          isPainOut && !rawPainLabel.includes("⚠️")
-            ? `${rawPainLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
-            : rawPainLabel;
+          boundedLines.push({
+            id: "flip_line",
+            price: effectiveGex.gammaFlip,
+            startTime: gx1Time,
+            endTime: gx2BaseTime,
+            startLogical: gx1,
+            endLogical: gx2Base,
+            color: isFlipOut ? "#f59e0b" : "#a855f7",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: sanitizeDuplicatePriceSuffix(finalFlipLabel),
+            labelBg: isFlipOut ? "rgba(38, 22, 6, 0.98)" : "rgba(22, 10, 36, 0.98)",
+            labelBorderColor: isFlipOut ? "#fbbf24" : "#c084fc",
+            labelTextColor: isFlipOut ? "#fef3c7" : "#f3e8ff"
+          });
+        }
 
-        boundedLines.push({
-          id: "pain_line",
-          price: effectiveGex.maxPain,
-          startTime: gx1Time,
-          endTime: gx2BaseTime,
-          startLogical: gx1,
-          endLogical: gx2Base,
-          color: isPainOut ? "#f59e0b" : "#06b6d4",
-          lineWidth: 1,
-          lineStyle: "dotted",
-          label: finalPainLabel,
-          labelBg: isPainOut ? "rgba(38, 22, 6, 0.98)" : "rgba(8, 22, 28, 0.98)",
-          labelBorderColor: isPainOut ? "#fbbf24" : "#22d3ee",
-          labelTextColor: isPainOut ? "#fef3c7" : "#cffafe"
-        });
+        if (showGexPain) {
+          const isPainOut = Boolean(
+            (effectiveGex as any).painOutOfCorridor ||
+            (effectiveGex.putWall &&
+              effectiveGex.callWall &&
+              (effectiveGex.maxPain < effectiveGex.putWall || effectiveGex.maxPain > effectiveGex.callWall))
+          );
+          const rawPainLabel = (effectiveGex as any).painLabel
+            ? `🎯 ${(effectiveGex as any).painLabel}`
+            : `🎯 ${painInfo.fullName}`;
+          const finalPainLabel =
+            isPainOut && !rawPainLabel.includes("⚠️")
+              ? `${rawPainLabel} ⚠️ [Вне коридора PW ${effectiveGex.putWall}–CW ${effectiveGex.callWall}]`
+              : rawPainLabel;
+
+          boundedLines.push({
+            id: "pain_line",
+            price: effectiveGex.maxPain,
+            startTime: gx1Time,
+            endTime: gx2BaseTime,
+            startLogical: gx1,
+            endLogical: gx2Base,
+            color: isPainOut ? "#f59e0b" : "#06b6d4",
+            lineWidth: 1,
+            lineStyle: "dotted",
+            label: sanitizeDuplicatePriceSuffix(finalPainLabel),
+            labelBg: isPainOut ? "rgba(38, 22, 6, 0.98)" : "rgba(8, 22, 28, 0.98)",
+            labelBorderColor: isPainOut ? "#fbbf24" : "#22d3ee",
+            labelTextColor: isPainOut ? "#fef3c7" : "#cffafe"
+          });
+        }
       }
 
       if (showGexSleepers) {

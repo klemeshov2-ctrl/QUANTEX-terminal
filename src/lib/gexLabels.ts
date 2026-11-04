@@ -269,3 +269,56 @@ export function formatGexFreshDiffPreview(
   }
   return { text: diffs.join(", "), hasDivergence: true, diffs };
 }
+
+/**
+ * Убирает дублирующийся хвост цены вида "4070.0 70.0" или "4070.0 4070.0" из подписи уровня
+ */
+export function sanitizeDuplicatePriceSuffix(label: string): string {
+  if (!label) return "";
+  return label
+    .replace(/(\d+\.\d+)\s+\d+\.\d+(?=\s|$|\[|⚠️)/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Определяет шаг опционной сетки страйков (gexStep) для проверки совпадения Флип+Магнит
+ */
+export function resolveGexGridStep(spotPrice: number, explicitStep?: number, symbol?: string): number {
+  if (typeof explicitStep === "number" && Number.isFinite(explicitStep) && explicitStep > 0) {
+    return explicitStep;
+  }
+  const sym = (symbol || "").toUpperCase();
+  if (sym.includes("BTC")) {
+    return spotPrice > 50000 ? 1000 : 500;
+  }
+  if (spotPrice > 9000) return 50;
+  if (spotPrice > 3500) return 25;
+  if (spotPrice > 1500) return 10;
+  if (spotPrice > 100) return 5;
+  return 0.5;
+}
+
+/**
+ * Проверяет слияние Флип + Магнит (|gammaFlip - maxPain| < шага сетки или равны, как flip_pain_coincide в Pine)
+ * и возвращает единый комбинированный бейдж "⚡Флип+Магнит: 4070.0" без дублирования цены.
+ */
+export function checkFlipPainCoincide(
+  gammaFlip: number,
+  maxPain: number,
+  gridStep: number
+): { coincide: boolean; combinedLabel: string; price: number } {
+  if (!Number.isFinite(gammaFlip) || !Number.isFinite(maxPain) || gammaFlip <= 0 || maxPain <= 0) {
+    return { coincide: false, combinedLabel: "", price: gammaFlip || maxPain || 0 };
+  }
+  const effStep = Number.isFinite(gridStep) && gridStep > 0 ? gridStep : resolveGexGridStep(gammaFlip);
+  const coincide = Math.abs(gammaFlip - maxPain) < effStep || Math.abs(gammaFlip - maxPain) < 1e-6;
+  const priceStr = gammaFlip >= 100 ? gammaFlip.toFixed(1) : gammaFlip.toFixed(2);
+  const combinedLabel = sanitizeDuplicatePriceSuffix(`⚡Флип+Магнит: ${priceStr}`);
+  return {
+    coincide,
+    combinedLabel,
+    price: gammaFlip
+  };
+}
+

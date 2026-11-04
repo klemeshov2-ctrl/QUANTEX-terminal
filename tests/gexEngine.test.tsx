@@ -2096,8 +2096,269 @@ async function runTests() {
     passed++;
   }
 
+  // ---------------------------------------------------------------------------
+  // TEST 33: ВАЛИДАЦИЯ ПРИ ГИДРАТАЦИИ (hydrateSetupsFromServer & POST /api/indicator/setups):
+  // сетап с p2Tp1=0 (или |p2Tp1-p3Tp2|<0.01, R:R<1.0, NaN) отклоняется, удаляется из хранилища
+  // и пересчитывается при вызове evaluateSuperIndicator
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      isValidAnchoredSetup,
+      hydrateSetupsFromServer,
+      getAnchoredForecastCache,
+      setAnchoredForecastCacheItem,
+      evaluateSuperIndicator
+    } = await import("../src/lib/pineSuperIndicatorEngine");
+    const {
+      isValidIndicatorSetupPayload,
+      handleIndicatorSetupsPost
+    } = await import("../server/indicatorStatsEngine");
+
+    const baseTime = Math.floor(Date.now() / 1000) - 900 * 30;
+    const key = "XAUUSD_15m";
+
+    // 1. Сетап с p2Tp1 = 0
+    const brokenZeroTp1: any = {
+      key,
+      anchorCandleTime: baseTime,
+      highestPriceSinceStart: 4065,
+      lowestPriceSinceStart: 4045,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: true,
+        probability: 75,
+        startBar: 10,
+        startTime: baseTime,
+        startPrice: 4055,
+        p1Entry: 4050,
+        p2Tp1: 0,
+        p3Tp2: 4075,
+        p5Tp3: 4090,
+        invalidLevelSl: 4040,
+        activeTrailingSl: 4040,
+        rrTp1: 1.5,
+        rrTp2: 2.5
+      }
+    };
+
+    // 2. Сетап с |p2Tp1 - p3Tp2| < 0.01
+    const brokenEqualTps: any = {
+      ...brokenZeroTp1,
+      forecast: { ...brokenZeroTp1.forecast, p2Tp1: 4065.00, p3Tp2: 4065.005 }
+    };
+
+    // 3. Сетап с R:R < 1.0
+    const brokenLowRr: any = {
+      ...brokenZeroTp1,
+      forecast: { ...brokenZeroTp1.forecast, p1Entry: 4050, invalidLevelSl: 4030, activeTrailingSl: 4030, p2Tp1: 4060, p3Tp2: 4080, rrTp1: 0.5 }
+    };
+
+    // 4. Сетап с NaN в activeTrailingSl
+    const brokenNanSl: any = {
+      ...brokenZeroTp1,
+      forecast: { ...brokenZeroTp1.forecast, p2Tp1: 4065, p3Tp2: 4080, activeTrailingSl: Number.NaN }
+    };
+
+    assert.strictEqual(isValidAnchoredSetup(brokenZeroTp1), false, "p2Tp1=0 должен отклоняться isValidAnchoredSetup");
+    assert.strictEqual(isValidAnchoredSetup(brokenEqualTps), false, "|p2Tp1-p3Tp2|<0.01 должен отклоняться");
+    assert.strictEqual(isValidAnchoredSetup(brokenLowRr), false, "R:R<1.0 должен отклоняться");
+    assert.strictEqual(isValidAnchoredSetup(brokenNanSl), false, "activeTrailingSl=NaN должен отклоняться");
+
+    assert.strictEqual(isValidIndicatorSetupPayload(brokenZeroTp1), false, "p2Tp1=0 должен отклоняться на сервере");
+    assert.strictEqual(isValidIndicatorSetupPayload(brokenEqualTps), false, "|p2Tp1-p3Tp2|<0.01 должен отклоняться на сервере");
+    assert.strictEqual(isValidIndicatorSetupPayload(brokenLowRr), false, "R:R<1.0 должен отклоняться на сервере");
+    assert.strictEqual(isValidIndicatorSetupPayload(brokenNanSl), false, "activeTrailingSl=NaN должен отклоняться на сервере");
+
+    // Проверяем POST-обработчик /api/indicator/setups: битая запись удаляется из хранилища, а не усыновляется
+    const serverStore: Record<string, any> = {
+      [key]: brokenZeroTp1
+    };
+    const postRes = handleIndicatorSetupsPost(serverStore, { key, item: brokenZeroTp1 });
+    assert.strictEqual(postRes.accepted, 0, "Битый сетап не должен приниматься");
+    assert.ok(postRes.rejected >= 1, "Битый сетап должен быть помечен как отклонённый");
+    assert.strictEqual(serverStore[key], undefined, "Битая запись должна быть удалена из серверного хранилища");
+
+    // Проверяем hydrateSetupsFromServer: битый сетап с p2Tp1=0 удаляется из кэша и хранилища, а затем пересчитывается
+    setAnchoredForecastCacheItem(key, brokenZeroTp1);
+    const serverPayload: Record<string, any> = { [key]: brokenZeroTp1 };
+    const hydrated = await hydrateSetupsFromServer(serverPayload);
+    assert.strictEqual(hydrated, false, "hydrateSetupsFromServer не должен усыновлять сетап с p2Tp1=0");
+    assert.strictEqual(serverPayload[key], undefined, "hydrateSetupsFromServer должен удалить битый ключ из объекта");
+    assert.strictEqual(getAnchoredForecastCache().has(key), false, "Битая запись должна быть удалена из anchoredForecastCache");
+
+    // Пересчёт через evaluateSuperIndicator после отклонения битого сетапа
+    const synthCandles = [];
+    for (let i = 0; i < 60; i++) {
+      const c = 4040 + i * 0.4;
+      synthCandles.push({
+        time: baseTime + i * 900,
+        open: c - 1.2,
+        high: c + 3.5,
+        low: c - 2.8,
+        close: c,
+        volume: 1200 + i * 10
+      });
+    }
+    const recalculated = evaluateSuperIndicator(synthCandles, "XAUUSD", "15m");
+    const recFc = recalculated.forecast;
+    assert.ok(
+      Number.isFinite(recFc.p1Entry) && recFc.p1Entry > 0 &&
+      Number.isFinite(recFc.p2Tp1) && recFc.p2Tp1 > 0 &&
+      Number.isFinite(recFc.p3Tp2) && recFc.p3Tp2 > 0 &&
+      Number.isFinite(recFc.activeTrailingSl) && recFc.activeTrailingSl > 0 &&
+      Math.abs(recFc.p2Tp1 - recFc.p3Tp2) >= 0.01,
+      `После отклонения p2Tp1=0 сетап должен быть пересчитан с валидными уровнями: Entry=${recFc.p1Entry}, TP1=${recFc.p2Tp1}, TP2=${recFc.p3Tp2}, SL=${recFc.activeTrailingSl}`
+    );
+
+    console.log(
+      `✅ [PASS] Test 33: Гидратация сетапа с p2Tp1=0 отклонена и удалена из хранилища → пересчитан валидный сетап: Entry=${recFc.p1Entry}, TP1=${recFc.p2Tp1}, TP2=${recFc.p3Tp2}, SL=${recFc.activeTrailingSl}`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 34: СЛИЯНИЕ МЕТОК ФЛИП+МАГНИТ (flip == pain или |gammaFlip - maxPain| < gexStep):
+  // один комбинированный бейдж "⚡Флип+Магнит: 4070.0" без дублирующего текста "4070.0 70.0"
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      checkFlipPainCoincide,
+      resolveGexGridStep,
+      sanitizeDuplicatePriceSuffix
+    } = await import("../src/lib/gexLabels");
+
+    const stepGold = resolveGexGridStep(4070, undefined, "XAUUSD");
+    assert.strictEqual(stepGold, 25, "Шаг сетки для XAUUSD при споте 4070 равен 25");
+
+    // 1. Точное совпадение flip == pain == 4070.0
+    const mergedExact = checkFlipPainCoincide(4070.0, 4070.0, stepGold);
+    assert.strictEqual(mergedExact.coincide, true, "При gammaFlip == maxPain == 4070.0 должно срабатывать слияние");
+    assert.strictEqual(
+      mergedExact.combinedLabel,
+      "⚡Флип+Магнит: 4070.0",
+      `Ожидался единый бейдж '⚡Флип+Магнит: 4070.0', получено '${mergedExact.combinedLabel}'`
+    );
+    assert.ok(
+      !mergedExact.combinedLabel.includes("4070.0 70.0"),
+      "В комбинированном бейдже не должно быть дублирующего текста '4070.0 70.0'"
+    );
+
+    // 2. Разница меньше шага сетки (|4070 - 4080| = 10 < 25)
+    const mergedWithinStep = checkFlipPainCoincide(4070.0, 4080.0, stepGold);
+    assert.strictEqual(mergedWithinStep.coincide, true, "При |gammaFlip - maxPain| < шага сетки должно срабатывать слияние");
+
+    // 3. Разница больше или равна шагу сетки (|4070 - 4100| = 30 >= 25)
+    const separateBeyondStep = checkFlipPainCoincide(4070.0, 4100.0, stepGold);
+    assert.strictEqual(separateBeyondStep.coincide, false, "При |gammaFlip - maxPain| >= шага сетки метки рисуются раздельно");
+
+    // 4. Очистка дублирующегося хвоста "4070.0 70.0"
+    const cleaned = sanitizeDuplicatePriceSuffix("⚡Флип+Магнит: 4070.0 70.0");
+    assert.strictEqual(cleaned, "⚡Флип+Магнит: 4070.0", `Ожидалось '⚡Флип+Магнит: 4070.0', получено '${cleaned}'`);
+
+    console.log(
+      `✅ [PASS] Test 34: Слияние меток Флип+Магнит (flip==pain==4070.0) → один комбинированный бейдж "${mergedExact.combinedLabel}", дубликат "4070.0 70.0" устранён`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 35: БЕЗОПАСНАЯ ЗОНА HUD (safeTop = 64px mobile / 46px desktop) в solveBadgeAntiCollision и clampedRawY
+  // ---------------------------------------------------------------------------
+  {
+    const { solveBadgeAntiCollision } = await import("../src/components/TradingViewZonesPrimitive");
+
+    // Desktop (mediaW = 1280 >= 640): safeTop = 46px
+    const desktopBadges = [
+      { id: "cw_line", label: "🏰 Потолок (CW, Месячный): 4250.0", x: 900, y: 12, anchorY: 12, lineRight: 880 },
+      { id: "flip_pain_line", label: "⚡Флип+Магнит: 4070.0", x: 900, y: 18, anchorY: 18, lineRight: 880 }
+    ];
+    const solvedDesktop = solveBadgeAntiCollision(desktopBadges, [], 1280, 720);
+    for (const b of solvedDesktop) {
+      assert.ok(b.y >= 46, `На desktop (1280px) бейдж ${b.id} должен иметь y >= 46px (safeTop), получено y=${b.y}`);
+    }
+
+    // Mobile (mediaW = 375 < 640): safeTop = 64px
+    const mobileBadges = [
+      { id: "cw_line", label: "🏰 Потолок (CW, Месячный): 4250.0", x: 220, y: 14, anchorY: 14, lineRight: 200 },
+      { id: "flip_pain_line", label: "⚡Флип+Магнит: 4070.0", x: 220, y: 20, anchorY: 20, lineRight: 200 }
+    ];
+    const solvedMobile = solveBadgeAntiCollision(mobileBadges, [], 375, 640);
+    for (const b of solvedMobile) {
+      assert.ok(b.y >= 64, `На mobile (375px) бейдж ${b.id} должен иметь y >= 64px (safeTop), получено y=${b.y}`);
+    }
+
+    console.log(
+      `✅ [PASS] Test 35: Безопасная зона HUD подтверждена: desktop y=${solvedDesktop.map(b => b.y).join(",")} (>= 46px), mobile y=${solvedMobile.map(b => b.y).join(",")} (>= 64px)`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 36: Линии ВХОД / TP1 / TP2 / SL присутствуют при любом валидном forecast
+  // и при срабатывании fallback (computedTp1 <= 0 -> createSetupLevelsForBar + бейдж "⚠️ пересчёт")
+  // ---------------------------------------------------------------------------
+  {
+    const fs = await import("fs");
+    const path = await import("path");
+    const {
+      evaluateSuperIndicator,
+      createSetupLevelsForBar
+    } = await import("../src/lib/pineSuperIndicatorEngine");
+
+    const baseTime = Math.floor(Date.now() / 1000) - 900 * 80;
+    const candles = [];
+    for (let i = 0; i < 80; i++) {
+      const c = 4030 + Math.sin(i * 0.25) * 8 + i * 0.35;
+      candles.push({
+        time: baseTime + i * 900,
+        open: c - 1.5,
+        high: c + 4.2,
+        low: c - 3.8,
+        close: c,
+        volume: 1500 + i * 15
+      });
+    }
+
+    // 1. Валидный forecast из evaluateSuperIndicator
+    const out = evaluateSuperIndicator(candles, "XAUUSD", "15m");
+    const fc = out.forecast;
+    assert.ok(fc.p1Entry > 0 && fc.p2Tp1 > 0 && fc.p3Tp2 > 0 && fc.activeTrailingSl > 0, "Уровни валидного forecast должны быть > 0");
+
+    // 2. Fallback createSetupLevelsForBar на текущем баре (когда computedTp1 невалиден / <= 0)
+    const fallbackLevels = createSetupLevelsForBar(candles, "XAUUSD", "15m", candles.length - 1, out.gex);
+    assert.ok(
+      Number.isFinite(fallbackLevels.p1Entry) && fallbackLevels.p1Entry > 0 &&
+      Number.isFinite(fallbackLevels.p2Tp1) && fallbackLevels.p2Tp1 > 0 &&
+      Number.isFinite(fallbackLevels.p3Tp2) && fallbackLevels.p3Tp2 > 0 &&
+      Number.isFinite(fallbackLevels.invalidLevelSl) && fallbackLevels.invalidLevelSl > 0 &&
+      Math.abs(fallbackLevels.p2Tp1 - fallbackLevels.p3Tp2) >= 0.01,
+      `createSetupLevelsForBar должен возвращать полную валидную лесенку: ВХОД=${fallbackLevels.p1Entry}, TP1=${fallbackLevels.p2Tp1}, TP2=${fallbackLevels.p3Tp2}, SL=${fallbackLevels.invalidLevelSl}`
+    );
+
+    // 3. Проверяем наличие логики fallback и всех 4 линий (sl_line, entry_line, tp1_line, tp2_line) и бейджа "⚠️ пересчёт" в AutonomousTradingStation.tsx
+    const stationSrc = fs.readFileSync(path.resolve(process.cwd(), "src/components/AutonomousTradingStation.tsx"), "utf-8");
+    assert.ok(
+      stationSrc.includes("createSetupLevelsForBar") && stationSrc.includes("⚠️ пересчёт"),
+      "AutonomousTradingStation.tsx должен использовать createSetupLevelsForBar и помечать бейдж '⚠️ пересчёт' при невалидном computedTp1"
+    );
+    assert.ok(
+      stationSrc.includes('id: "sl_line"') &&
+      stationSrc.includes('id: "entry_line"') &&
+      stationSrc.includes('id: "tp1_line"') &&
+      stationSrc.includes('id: "tp2_line"') &&
+      stationSrc.includes('id: "flip_pain_line"'),
+      "В AutonomousTradingStation.tsx должны формироваться sl_line, entry_line, tp1_line, tp2_line и объединённый flip_pain_line"
+    );
+
+    console.log(
+      `✅ [PASS] Test 36: Линии ВХОД (${fallbackLevels.p1Entry}) / TP1 (${fallbackLevels.p2Tp1}) / TP2 (${fallbackLevels.p3Tp2}) / SL (${fallbackLevels.invalidLevelSl}) присутствуют при любом валидном forecast и при fallback с бейджем "⚠️ пересчёт"`
+    );
+    passed++;
+  }
+
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/32 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/36 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 
@@ -2105,4 +2366,5 @@ runTests().catch((err) => {
   console.error("❌ TEST SUITE FAILED:", err);
   process.exit(1);
 });
+
 

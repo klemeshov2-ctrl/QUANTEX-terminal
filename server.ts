@@ -46,7 +46,9 @@ import {
   computeIndicatorOverallStats,
   getIndicatorSetupsHistory,
   deleteIndicatorSetup,
-  resetIndicatorStats
+  resetIndicatorStats,
+  isValidIndicatorSetupPayload,
+  handleIndicatorSetupsPost
 } from "./server/indicatorStatsEngine";
 
 dotenv.config();
@@ -8144,7 +8146,19 @@ function loadActiveIndicatorSetups() {
       const raw = fs.readFileSync(ACTIVE_SETUPS_FILE, "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object") {
-        activeIndicatorSetups = parsed;
+        let hadInvalid = false;
+        const cleanSetups: Record<string, any> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (isValidIndicatorSetupPayload(v)) {
+            cleanSetups[k] = v;
+          } else {
+            hadInvalid = true;
+          }
+        }
+        activeIndicatorSetups = cleanSetups;
+        if (hadInvalid) {
+          persistActiveIndicatorSetups();
+        }
       }
     }
   } catch (err: any) {
@@ -8167,6 +8181,17 @@ function persistActiveIndicatorSetups() {
 loadActiveIndicatorSetups();
 
 app.get("/api/indicator/setups", (_req, res) => {
+  // Purge any corrupted records before returning
+  let purged = false;
+  for (const [k, v] of Object.entries(activeIndicatorSetups)) {
+    if (!isValidIndicatorSetupPayload(v)) {
+      delete activeIndicatorSetups[k];
+      purged = true;
+    }
+  }
+  if (purged) {
+    persistActiveIndicatorSetups();
+  }
   res.json({
     success: true,
     setups: activeIndicatorSetups
@@ -8175,23 +8200,22 @@ app.get("/api/indicator/setups", (_req, res) => {
 
 app.post("/api/indicator/setups", (req, res) => {
   try {
-    const { key, item, setups } = req.body || {};
-    if (key && item && typeof item === "object") {
-      activeIndicatorSetups[String(key)] = item;
-      persistActiveIndicatorSetups();
-      // Record into permanent indicator setups statistics journal
-      recordOrUpdateIndicatorSetup(String(key), item);
-    } else if (setups && typeof setups === "object") {
-      activeIndicatorSetups = {
-        ...activeIndicatorSetups,
-        ...setups
-      };
-      persistActiveIndicatorSetups();
-      for (const [k, v] of Object.entries(setups)) {
-        recordOrUpdateIndicatorSetup(k, v);
-      }
+    const result = handleIndicatorSetupsPost(activeIndicatorSetups, req.body || {});
+    persistActiveIndicatorSetups();
+    if (result.accepted === 0 && result.rejected > 0 && req.body?.key) {
+      return res.status(400).json({
+        success: false,
+        rejected: true,
+        reason: "invalid_setup_levels",
+        count: result.count
+      });
     }
-    res.json({ success: true, count: Object.keys(activeIndicatorSetups).length });
+    res.json({
+      success: true,
+      accepted: result.accepted,
+      rejected: result.rejected,
+      count: result.count
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

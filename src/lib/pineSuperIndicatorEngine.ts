@@ -579,6 +579,72 @@ const LOCAL_STORAGE_SETUPS_KEY = "quantex_anchored_forecasts_v4";
 const anchoredForecastCache = new Map<string, AnchoredForecastItem>();
 const lastSyncedSignatureMap = new Map<string, string>();
 
+/**
+ * Строгая валидация сетапа при гидратации (hydrateSetupsFromServer / localStorage):
+ * Отбрасывает сетап, если любое из полей p1Entry/p2Tp1/p3Tp2/activeTrailingSl не isFinite,
+ * или p2Tp1 <= 0, или |p2Tp1 - p3Tp2| < 0.01, или R:R < 1.0.
+ */
+export function isValidAnchoredSetup(item: any): boolean {
+  if (!item || typeof item !== "object") return false;
+  const fc = item.forecast ?? item;
+  if (!fc || typeof fc !== "object") return false;
+  if (fc.status === "NO_SETUP" || fc.hasValidSetup === false) return false;
+
+  const p1Entry = Number(fc.p1Entry);
+  const p2Tp1 = Number(fc.p2Tp1);
+  const p3Tp2 = Number(fc.p3Tp2);
+  const activeTrailingSl = Number(fc.activeTrailingSl);
+
+  if (
+    !Number.isFinite(p1Entry) ||
+    !Number.isFinite(p2Tp1) ||
+    !Number.isFinite(p3Tp2) ||
+    !Number.isFinite(activeTrailingSl)
+  ) {
+    return false;
+  }
+
+  if (p2Tp1 <= 0 || p1Entry <= 0 || p3Tp2 <= 0 || activeTrailingSl <= 0) {
+    return false;
+  }
+
+  if (Math.abs(p2Tp1 - p3Tp2) < 0.01) {
+    return false;
+  }
+
+  const baseSl =
+    Number.isFinite(Number(fc.invalidLevelSl)) && Number(fc.invalidLevelSl) > 0
+      ? Number(fc.invalidLevelSl)
+      : activeTrailingSl;
+  const risk = Math.abs(p1Entry - baseSl);
+  const rew1 = Math.abs(p2Tp1 - p1Entry);
+  const calcRr1 = risk > 0 ? rew1 / risk : 0;
+  const rr1 = fc.rrTp1 !== undefined && fc.rrTp1 !== null ? Number(fc.rrTp1) : calcRr1;
+
+  if (!Number.isFinite(rr1) || rr1 < 1.0 || calcRr1 < 1.0 - 1e-6) {
+    return false;
+  }
+
+  return true;
+}
+
+export function getAnchoredForecastCache(): Map<string, AnchoredForecastItem> {
+  return anchoredForecastCache;
+}
+
+export function setAnchoredForecastCacheItem(key: string, item: AnchoredForecastItem): void {
+  anchoredForecastCache.set(key, item);
+}
+
+function deleteCorruptedSetupFromStorage(key: string): void {
+  anchoredForecastCache.delete(key);
+  lastSyncedSignatureMap.delete(key);
+  saveSetupsToLocalStorage();
+  if (typeof window !== "undefined" && typeof fetch === "function") {
+    fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+  }
+}
+
 // 1. Immediate synchronous hydration from localStorage so page reload (F5) has all setups before first render
 function hydrateSetupsFromLocalStorage(): void {
   if (typeof window === "undefined") return;
@@ -587,16 +653,25 @@ function hydrateSetupsFromLocalStorage(): void {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
+      let hadCorrupted = false;
       for (const [k, val] of Object.entries(parsed)) {
         const item = val as AnchoredForecastItem;
         if (
           item &&
           item.forecast &&
           typeof item.anchorCandleTime === "number" &&
-          item.mathVersion === CURRENT_FORECAST_MATH_VERSION
+          item.mathVersion === CURRENT_FORECAST_MATH_VERSION &&
+          isValidAnchoredSetup(item)
         ) {
           anchoredForecastCache.set(k, item);
+        } else {
+          anchoredForecastCache.delete(k);
+          lastSyncedSignatureMap.delete(k);
+          hadCorrupted = true;
         }
+      }
+      if (hadCorrupted) {
+        saveSetupsToLocalStorage();
       }
     }
   } catch {}
@@ -609,13 +684,19 @@ function saveSetupsToLocalStorage(): void {
   try {
     const obj: Record<string, AnchoredForecastItem> = {};
     for (const [k, v] of anchoredForecastCache.entries()) {
-      obj[k] = v;
+      if (isValidAnchoredSetup(v)) {
+        obj[k] = v;
+      }
     }
     window.localStorage.setItem(LOCAL_STORAGE_SETUPS_KEY, JSON.stringify(obj));
   } catch {}
 }
 
 function syncSetupToServer(key: string, item: AnchoredForecastItem): void {
+  if (!isValidAnchoredSetup(item)) {
+    deleteCorruptedSetupFromStorage(key);
+    return;
+  }
   if (typeof window === "undefined") return;
   const fc = item.forecast;
   const sig = `v${CURRENT_FORECAST_MATH_VERSION}_${item.anchorCandleTime}_${fc.p1Entry}_${fc.p2Tp1}_${fc.p3Tp2}_${fc.leg1Hit}_${fc.leg2Hit}_${fc.leg3Hit}_${fc.trailingStageIdx}_${fc.isPlanBActive}`;
@@ -631,39 +712,69 @@ function syncSetupToServer(key: string, item: AnchoredForecastItem): void {
 }
 
 // 2. Asynchronous hydration from Server disk storage (for cross-session / cross-device continuity)
-export async function hydrateSetupsFromServer(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
+export async function hydrateSetupsFromServer(injectedSetups?: Record<string, any>): Promise<boolean> {
   try {
-    const res = await fetch("/api/indicator/setups");
-    if (!res.ok) return false;
-    const data = await res.json();
-    if (data && data.setups && typeof data.setups === "object") {
+    let setupsMap: Record<string, any> | null = null;
+    if (injectedSetups && typeof injectedSetups === "object") {
+      setupsMap = injectedSetups;
+    } else if (typeof window !== "undefined" && typeof fetch === "function") {
+      const res = await fetch("/api/indicator/setups");
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data && data.setups && typeof data.setups === "object") {
+        setupsMap = data.setups;
+      }
+    } else {
+      return false;
+    }
+
+    if (setupsMap && typeof setupsMap === "object") {
       let updated = false;
-      for (const [k, val] of Object.entries(data.setups)) {
+      let purged = false;
+      for (const [k, val] of Object.entries(setupsMap)) {
         const serverItem = val as AnchoredForecastItem;
         if (
           !serverItem ||
           !serverItem.forecast ||
           typeof serverItem.anchorCandleTime !== "number" ||
-          serverItem.mathVersion !== CURRENT_FORECAST_MATH_VERSION
+          (serverItem.mathVersion !== undefined && serverItem.mathVersion !== CURRENT_FORECAST_MATH_VERSION) ||
+          !isValidAnchoredSetup(serverItem)
         ) {
+          // Битые записи удаляем из хранилища, а не усыновляем
+          delete setupsMap[k];
+          deleteCorruptedSetupFromStorage(k);
+          purged = true;
           continue;
         }
         const localItem = anchoredForecastCache.get(k);
+        if (localItem && !isValidAnchoredSetup(localItem)) {
+          anchoredForecastCache.delete(k);
+        }
+        const validLocal = anchoredForecastCache.get(k);
         // Adopt server setup if local doesn't exist or server setup has a newer anchor/progress
         if (
-          !localItem ||
-          serverItem.anchorCandleTime > localItem.anchorCandleTime ||
-          (serverItem.anchorCandleTime === localItem.anchorCandleTime &&
-            (Number(Boolean(serverItem.forecast.leg3Hit)) > Number(Boolean(localItem.forecast.leg3Hit)) ||
-              Number(Boolean(serverItem.forecast.leg2Hit)) > Number(Boolean(localItem.forecast.leg2Hit)) ||
-              Number(Boolean(serverItem.forecast.leg1Hit)) > Number(Boolean(localItem.forecast.leg1Hit))))
+          !validLocal ||
+          serverItem.anchorCandleTime > validLocal.anchorCandleTime ||
+          (serverItem.anchorCandleTime === validLocal.anchorCandleTime &&
+            (Number(Boolean(serverItem.forecast.leg3Hit)) > Number(Boolean(validLocal.forecast.leg3Hit)) ||
+              Number(Boolean(serverItem.forecast.leg2Hit)) > Number(Boolean(validLocal.forecast.leg2Hit)) ||
+              Number(Boolean(serverItem.forecast.leg1Hit)) > Number(Boolean(validLocal.forecast.leg1Hit))))
         ) {
-          anchoredForecastCache.set(k, serverItem);
+          anchoredForecastCache.set(k, {
+            ...serverItem,
+            mathVersion: CURRENT_FORECAST_MATH_VERSION
+          });
           updated = true;
         }
       }
-      if (updated) {
+      // Also purge any corrupted entries sitting in anchoredForecastCache
+      for (const [cacheKey, cacheVal] of Array.from(anchoredForecastCache.entries())) {
+        if (!isValidAnchoredSetup(cacheVal)) {
+          deleteCorruptedSetupFromStorage(cacheKey);
+          purged = true;
+        }
+      }
+      if (updated || purged) {
         saveSetupsToLocalStorage();
       }
       return updated;
@@ -2981,7 +3092,11 @@ export function evaluateSuperIndicator(
   // Persists across page refreshes (localStorage + Server) and replays historical bars so it never resets to the last candle on reload
   const cacheKey = `${symbol}_${tf}`;
   const isFallbackCandles = Boolean((candles[0] as any)?._isFallback);
-  const existingItem = anchoredForecastCache.get(cacheKey);
+  let existingItem = anchoredForecastCache.get(cacheKey);
+  if (existingItem && !isValidAnchoredSetup(existingItem)) {
+    deleteCorruptedSetupFromStorage(cacheKey);
+    existingItem = undefined;
+  }
   let finalForecast: ForecastState | null = null;
   let completedAtBarIdx: number | undefined = undefined;
 
@@ -4223,4 +4338,98 @@ export function calculateGexProbabilityEngine(
     factors
   };
 }
+
+/**
+ * Вычисляет живые уровни сетапа (ВХОД / TP1 / TP2 / TP3 / SL) на указанном баре (по умолчанию — текущем последнем баре)
+ * для fallback-восстановления лесенки в AutonomousTradingStation при невалидном кэшированном сетапе.
+ */
+export function createSetupLevelsForBar(
+  candles: Candle[],
+  symbol: string = "XAUUSD",
+  tf: string = "15m",
+  barIdx?: number,
+  externalGexReport?: Partial<GexReportCalculated> | null
+): SetupLevelsResult & { isBull: boolean; atrVal: number } {
+  const safeCandles = Array.isArray(candles) && candles.length > 0
+    ? candles
+    : [{ time: Math.floor(Date.now() / 1000), open: 4050, high: 4062, low: 4042, close: 4055, volume: 1000 }];
+  const targetIdx = typeof barIdx === "number" && barIdx >= 0 && barIdx < safeCandles.length
+    ? barIdx
+    : safeCandles.length - 1;
+  const sliced = safeCandles.slice(0, targetIdx + 1);
+  const lastC = sliced[sliced.length - 1];
+  const close = lastC.close > 0 ? lastC.close : 4050;
+  const atrs = calcATR(sliced, 14);
+  const rawAtr = atrs[atrs.length - 1] || Math.abs(lastC.high - lastC.low) || close * 0.004;
+  const atrVal = Math.max(close * 0.001, rawAtr);
+  const closes = sliced.map(c => c.close);
+  const ema50 = calcEMA(closes, Math.min(50, Math.max(2, closes.length)));
+  const isBull = close >= (ema50[ema50.length - 1] || close);
+  const tfSec = tf === "1m" ? 60 : tf === "5m" ? 300 : tf === "15m" ? 900 : tf === "30m" ? 1800 : tf === "1h" ? 3600 : tf === "4h" ? 14400 : 86400;
+
+  const entry = roundPriceForAsset(isBull ? close - atrVal * 0.25 : close + atrVal * 0.25, close);
+  const rawSl = roundPriceForAsset(isBull ? entry - atrVal * 0.65 : entry + atrVal * 0.65, close);
+  const rawTp1 = roundPriceForAsset(isBull ? entry + atrVal * 1.15 : entry - atrVal * 1.15, close);
+  const rawTp2 = roundPriceForAsset(isBull ? entry + atrVal * 2.15 : entry - atrVal * 2.15, close);
+  const rawTp3 = roundPriceForAsset(isBull ? rawTp2 + atrVal * 1.05 : rawTp2 - atrVal * 1.05, close);
+
+  const gexPools = {
+    maxPain: externalGexReport?.maxPain || roundPriceForAsset(isBull ? entry + atrVal * 1.25 : entry - atrVal * 1.25, close),
+    putWall: externalGexReport?.putWall || roundPriceForAsset(entry - atrVal * 2.4, close),
+    callWall: externalGexReport?.callWall || roundPriceForAsset(entry + atrVal * 2.4, close),
+    gammaFlip: externalGexReport?.gammaFlip || roundPriceForAsset(entry, close),
+    sleeperMagnet: externalGexReport?.sleeperMagnet || roundPriceForAsset(isBull ? entry + atrVal * 3.1 : entry - atrVal * 3.1, close),
+    expectedMove68: externalGexReport?.expectedMove68 || {
+      low: roundPriceForAsset(entry - atrVal * 2.2, close),
+      high: roundPriceForAsset(entry + atrVal * 2.2, close)
+    }
+  };
+
+  const ladder = computeNestedLadderSetup({
+    entry,
+    rawSl,
+    isBull,
+    atrOwn: atrVal,
+    tfSec,
+    gexPools,
+    structureLevels: [
+      { price: rawTp1, name: "Liq ST" },
+      { price: rawTp2, name: "Liq IT" }
+    ],
+    entrySourceTag: `[структура: Pullback ${entry}]`,
+    rawTp1,
+    rawTp2,
+    rawTp3
+  });
+
+  // Guarantee positive finite fallback levels so the ladder never vanishes
+  const finalEntry = Number.isFinite(ladder.p1Entry) && ladder.p1Entry > 0 ? ladder.p1Entry : entry;
+  const finalSl = Number.isFinite(ladder.invalidLevelSl) && ladder.invalidLevelSl > 0 ? ladder.invalidLevelSl : rawSl;
+  const finalTp1 = Number.isFinite(ladder.p2Tp1) && ladder.p2Tp1 > 0 ? ladder.p2Tp1 : rawTp1;
+  const finalTp2 =
+    Number.isFinite(ladder.p3Tp2) && ladder.p3Tp2 > 0 && Math.abs(ladder.p3Tp2 - finalTp1) >= 0.01
+      ? ladder.p3Tp2
+      : rawTp2;
+  const finalTp3 = Number.isFinite(ladder.p5Tp3) && ladder.p5Tp3 > 0 ? ladder.p5Tp3 : rawTp3;
+  const altTp1 = roundPriceForAsset(isBull ? finalSl - atrVal * 1.35 : finalSl + atrVal * 1.35, close);
+  const altTp2 = roundPriceForAsset(isBull ? finalSl - atrVal * 2.60 : finalSl + atrVal * 2.60, close);
+  const altTp3 = roundPriceForAsset(isBull ? altTp2 - atrVal * 1.15 : altTp2 + atrVal * 1.15, close);
+
+  return {
+    ...ladder,
+    p1Entry: finalEntry,
+    p2Tp1: finalTp1,
+    p3Tp2: finalTp2,
+    p5Tp3: finalTp3,
+    invalidLevelSl: finalSl,
+    hasValidSetup: true,
+    status: ladder.status === "NO_SETUP" ? "PENDING" : ladder.status,
+    altTp1,
+    altTp2,
+    altTp3,
+    isBull,
+    atrVal
+  };
+}
+
 

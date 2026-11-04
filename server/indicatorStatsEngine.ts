@@ -175,6 +175,107 @@ function persistIndicatorHistory(): void {
 loadIndicatorHistory();
 
 /**
+ * Строгая валидация сетапа при гидратации и сохранении (/api/indicator/setups):
+ * Отбрасывает сетап, если любое из полей p1Entry/p2Tp1/p3Tp2/activeTrailingSl не isFinite,
+ * или p2Tp1 <= 0, или |p2Tp1 - p3Tp2| < 0.01, или R:R < 1.0.
+ */
+export function isValidIndicatorSetupPayload(setupPayload: any): boolean {
+  if (!setupPayload || typeof setupPayload !== "object") return false;
+  const fc = setupPayload?.forecast || setupPayload;
+  if (!fc || typeof fc !== "object") return false;
+  if (fc.status === "NO_SETUP" || fc.executionStatus === "NO_SETUP" || fc.hasValidSetup === false) {
+    return false;
+  }
+
+  const p1Entry = Number(fc?.p1Entry ?? fc?.entryPrice);
+  const p2Tp1 = Number(fc?.p2Tp1 ?? fc?.tp1);
+  const p3Tp2 = Number(fc?.p3Tp2 ?? fc?.tp2);
+  const activeTrailingSl = Number(fc?.activeTrailingSl ?? fc?.trailingStop ?? fc?.invalidLevelSl ?? fc?.stopLoss ?? fc?.initialSl);
+
+  if (
+    !Number.isFinite(p1Entry) ||
+    !Number.isFinite(p2Tp1) ||
+    !Number.isFinite(p3Tp2) ||
+    !Number.isFinite(activeTrailingSl)
+  ) {
+    return false;
+  }
+
+  if (p2Tp1 <= 0 || p1Entry <= 0 || p3Tp2 <= 0 || activeTrailingSl <= 0) {
+    return false;
+  }
+
+  if (Math.abs(p2Tp1 - p3Tp2) < 0.01) {
+    return false;
+  }
+
+  const baseSl =
+    Number.isFinite(Number(fc?.invalidLevelSl)) && Number(fc?.invalidLevelSl) > 0
+      ? Number(fc.invalidLevelSl)
+      : activeTrailingSl;
+  const risk = Math.abs(p1Entry - baseSl);
+  const rew1 = Math.abs(p2Tp1 - p1Entry);
+  const calcRr1 = risk > 0 ? rew1 / risk : 0;
+  const explicitRr1 = fc?.rrTp1 !== undefined && fc?.rrTp1 !== null ? Number(fc.rrTp1) : calcRr1;
+
+  if (!Number.isFinite(explicitRr1) || explicitRr1 < 1.0 || calcRr1 < 1.0 - 1e-6) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Обработчик POST /api/indicator/setups: валидирует входящие сетапы,
+ * удаляет битые записи из хранилища activeIndicatorSetups (не усыновляет их) и обновляет журнал.
+ */
+export function handleIndicatorSetupsPost(
+  store: Record<string, any>,
+  body: { key?: string; item?: any; setups?: Record<string, any> }
+): { accepted: number; rejected: number; count: number } {
+  let accepted = 0;
+  let rejected = 0;
+  const { key, item, setups } = body || {};
+
+  if (key) {
+    const kStr = String(key);
+    if (isValidIndicatorSetupPayload(item)) {
+      store[kStr] = item;
+      recordOrUpdateIndicatorSetup(kStr, item);
+      accepted++;
+    } else {
+      delete store[kStr];
+      rejected++;
+    }
+  } else if (setups && typeof setups === "object") {
+    for (const [k, v] of Object.entries(setups)) {
+      if (isValidIndicatorSetupPayload(v)) {
+        store[k] = v;
+        recordOrUpdateIndicatorSetup(k, v);
+        accepted++;
+      } else {
+        delete store[k];
+        rejected++;
+      }
+    }
+  }
+
+  // Также очищаем уже существующие битые записи в хранилище
+  for (const [existingKey, existingVal] of Object.entries(store)) {
+    if (!isValidIndicatorSetupPayload(existingVal)) {
+      delete store[existingKey];
+      rejected++;
+    }
+  }
+
+  return {
+    accepted,
+    rejected,
+    count: Object.keys(store).length
+  };
+}
+
+/**
  * Record or update a setup from chart indicator evaluation.
  * Returns null if forecast does not contain real engine levels (no fabricated 3995.8 defaults).
  */
@@ -184,20 +285,32 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
   const timeframe = lastUnderscore > 0 ? key.slice(lastUnderscore + 1) : "15m";
   const fc = setupPayload?.forecast || setupPayload;
 
-  if (!fc || fc.status === "NO_SETUP" || fc.executionStatus === "NO_SETUP" || fc.hasValidSetup === false) {
+  if (!isValidIndicatorSetupPayload(setupPayload)) {
+    // Удаляем битые незавершённые записи для этого ключа из истории
+    const anchorTime = Number(setupPayload?.anchorCandleTime || fc?.startTime || 0);
+    const brokenIdx = indicatorSetupsHistory.findIndex(
+      s => s.ticker === ticker && s.timeframe === timeframe &&
+        (anchorTime > 0 ? s.anchorCandleTime === anchorTime : (s.status === "PENDING" || s.status === "ACTIVE")) &&
+        (!Number.isFinite(s.tp1) || s.tp1 <= 0 || Math.abs(s.tp1 - s.tp2) < 0.01)
+    );
+    if (brokenIdx >= 0) {
+      indicatorSetupsHistory.splice(brokenIdx, 1);
+      persistIndicatorHistory();
+    }
     return null;
   }
 
   const rawEntry = Number(fc?.p1Entry ?? fc?.entryPrice);
   const rawTp1 = Number(fc?.p2Tp1 ?? fc?.tp1);
-  const rawTp2 = Number(fc?.p3Tp2 ?? fc?.tp2 ?? rawTp1);
-  const rawSl = Number(fc?.invalidLevelSl ?? fc?.trailingStop ?? fc?.stopLoss ?? fc?.initialSl);
+  const rawTp2 = Number(fc?.p3Tp2 ?? fc?.tp2);
+  const rawSl = Number(fc?.invalidLevelSl ?? fc?.activeTrailingSl ?? fc?.trailingStop ?? fc?.stopLoss ?? fc?.initialSl);
 
   if (
     !Number.isFinite(rawEntry) || rawEntry <= 0 ||
     !Number.isFinite(rawTp1) || rawTp1 <= 0 ||
     !Number.isFinite(rawTp2) || rawTp2 <= 0 ||
-    !Number.isFinite(rawSl) || rawSl <= 0
+    !Number.isFinite(rawSl) || rawSl <= 0 ||
+    Math.abs(rawTp1 - rawTp2) < 0.01
   ) {
     return null;
   }
@@ -227,8 +340,8 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
   // Строгая проверка иерархии уровней перед записью
   const validHierarchy =
     direction === "LONG"
-      ? sl < entry && entry < tp1 && tp1 <= tp2
-      : sl > entry && entry > tp1 && tp1 >= tp2;
+      ? sl < entry && entry < tp1 && tp1 < tp2
+      : sl > entry && entry > tp1 && tp1 > tp2;
   if (!validHierarchy) {
     return null;
   }

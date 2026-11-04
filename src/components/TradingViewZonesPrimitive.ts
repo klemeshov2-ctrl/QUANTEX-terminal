@@ -316,16 +316,18 @@ export function solveBadgeAntiCollision<
 ): T[] {
   if (!badges || badges.length === 0) return badges;
   const isMobile = mediaW < 640;
+  const safeTop = isMobile ? 64 : 46;
   const badgeH = isMobile ? 15 : 17;
   const halfBadgeH = badgeH / 2;
 
-  // 1. Calculate estimated width and anchor all badges strictly to their price line (center Y = anchorY)
+  // 1. Calculate estimated width and anchor all badges strictly to their price line (center Y = anchorY, clamped >= safeTop)
   for (const b of badges) {
     const estW =
       b.width ??
       Math.min(mediaW - 8, Math.max(80, b.label.length * (isMobile ? 6.2 : 7.0) + 16));
     b.width = estW;
-    b.y = snapPx(b.anchorY); // Center Y strictly on its own price line
+    b.anchorY = Math.max(safeTop, Math.min(mediaH - 16, b.anchorY));
+    b.y = snapPx(b.anchorY); // Center Y strictly on its own price line (respecting safeTop)
 
     // Initial default X: to the right of the price line (or clamped inside right border)
     const baseX = typeof b.lineRight === "number" && b.lineRight > 0
@@ -427,7 +429,7 @@ export function solveBadgeAntiCollision<
         const microOffsets = [-halfBadgeH, halfBadgeH];
         for (const dy of microOffsets) {
           const testY = snapPx(b.anchorY + dy);
-          if (testY >= 10 && testY <= mediaH - 10) {
+          if (testY >= safeTop && testY <= mediaH - 10) {
             if (!collides(b.x, testY)) {
               currY = testY;
               currX = b.x;
@@ -450,7 +452,7 @@ export function solveBadgeAntiCollision<
     }
 
     b.x = snapPx(currX);
-    b.y = snapPx(currY);
+    b.y = snapPx(Math.max(safeTop, Math.min(mediaH - 10, currY)));
 
     placed.push({
       x1: b.x,
@@ -1056,13 +1058,17 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
             // Clamp rawY within visible canvas bounds for GEX levels (especially Monthly Magnet / Flip / Walls)
             // so even if the 15m chart is zoomed in tightly, the Monthly Magnet badge stays pinned at the canvas edge
+            // with top HUD safe zone safeTop = 64px (mobile) / 46px (desktop)
+            const isMobile = mediaW < 640;
+            const safeTop = isMobile ? 64 : 46;
             const isGexCoreLine =
               pl.id === "pain_line" ||
               pl.id === "flip_line" ||
+              pl.id === "flip_pain_line" ||
               pl.id === "cw_line" ||
               pl.id === "pw_line";
             const clampedRawY = isGexCoreLine
-              ? Math.max(16, Math.min(mediaH - 16, rawY as number))
+              ? Math.max(safeTop, Math.min(mediaH - 16, rawY as number))
               : (rawY as number);
 
             const y = snapHalf(rawY as number);
@@ -1082,7 +1088,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               const anchorY = snapPx(clampedRawY);
               const badgeX = snapPx(right + 5);
 
-              const isFlip = pl.id === "flip_line" || pl.label.includes("Граница Гаммы");
+              const isFlip = pl.id === "flip_line" || pl.id === "flip_pain_line" || pl.label.includes("Граница Гаммы") || pl.label.includes("Флип");
               const isSl = pl.id === "sl_line" || pl.label.includes("SL");
               const isPain = pl.id === "pain_line" || pl.label.includes("Магнит");
               const isAlt = pl.id === "alt_tp1_line" || pl.id === "alt_tp2_line" || pl.label.includes("План Б") || pl.label.includes("Цель 2");
