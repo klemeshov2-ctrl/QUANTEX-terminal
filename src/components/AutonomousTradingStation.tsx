@@ -667,6 +667,20 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
               <span className="text-emerald-400 hidden xs:inline text-[9px]">
                 TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
               </span>
+              {indicatorOutput?.hud?.trendAlignmentBadge && (
+                <span className={`px-1 py-0.2 rounded text-[8.5px] font-bold ${
+                  indicatorOutput.hud.isCounterTrend
+                    ? "bg-amber-500/25 text-amber-200 border border-amber-500/50"
+                    : "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40"
+                }`}>
+                  {indicatorOutput.hud.trendAlignmentBadge}
+                </span>
+              )}
+              {indicatorOutput?.hud?.maeBadge && (
+                <span className="px-1 py-0.2 rounded text-[8.5px] font-extrabold bg-rose-500/30 text-rose-200 border border-rose-500/60 animate-pulse">
+                  {indicatorOutput.hud.maeBadge}
+                </span>
+              )}
               <span className="text-cyan-400 text-[9px] font-bold">▾</span>
             </button>
           </div>
@@ -4695,7 +4709,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           tp2Price: fc.p3Tp2,
           tp2Logical: x3Log,
           isBull: fc.isBull,
-          labelStart: fc.isBull ? "🟢 Long" : "🔴 Short",
+          labelStart: `${fc.isBull ? "🟢 Long" : "🔴 Short"}${fc.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : ""}${fc.maeBadge ? ` • ${fc.maeBadge}` : ""}`,
           leg1Hit: fc.leg1Hit,
           leg2Hit: fc.leg2Hit,
           leg3Hit: fc.leg3Hit
@@ -4772,13 +4786,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: "#ef4444",
         lineWidth: 1,
         lineStyle: "dashed",
-        label: fc?.isPlanBActive ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]` : `SL: ${computedSl.toFixed(dec)}${trailingNote}`,
+        label: fc?.isPlanBActive
+          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]`
+          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}`,
         labelBg: "rgba(30, 9, 13, 0.98)",
         labelBorderColor: "#f87171",
         labelTextColor: "#fecdd3"
       });
 
       // Вход (Amber dotted or solid green if hit)
+      const entryRoleSuffix = fc?.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : "";
+      const entryMaeSuffix = fc?.maeBadge ? ` [${fc.maeBadge}]` : "";
       boundedLines.push({
         id: "entry_line",
         price: Number(computedEntry.toFixed(dec)),
@@ -4789,7 +4807,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
         lineWidth: 1,
         lineStyle: fc?.leg1Hit ? "solid" : "dotted",
-        label: fc?.leg1Hit ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓` : `ВХОД: ${computedEntry.toFixed(dec)}`,
+        label: fc?.leg1Hit
+          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryRoleSuffix}${entryMaeSuffix}`
+          : `ВХОД: ${computedEntry.toFixed(dec)}${entryRoleSuffix}${entryMaeSuffix}`,
         labelBg: "rgba(24, 18, 6, 0.98)",
         labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
         labelTextColor: "#fef3c7"
@@ -7130,27 +7150,43 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                       </div>
 
                       {/* Row 2: 📍 ПОЗИЦИЯ & УРОВНИ ВХОДА / ВЫХОДА */}
-                      <div className="pt-1 flex items-center justify-between text-[10.5px]">
-                        <span className="text-gray-400 font-bold flex items-center gap-1 shrink-0">
-                          <span>📍 Позиция:</span>
-                          <span className={`px-1 py-0.2 rounded text-[9.5px] font-bold ${
-                            indicatorOutput?.forecast.isBull
-                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                              : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
-                          }`}>
-                            {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 84}%)
+                      <div className="pt-1 flex flex-col gap-1 text-[10.5px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-400 font-bold flex items-center gap-1 shrink-0 flex-wrap">
+                            <span>📍 Позиция:</span>
+                            <span className={`px-1 py-0.2 rounded text-[9.5px] font-bold ${
+                              indicatorOutput?.forecast.isBull
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                            }`}>
+                              {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 84}%)
+                            </span>
+                            {indicatorOutput?.hud?.trendAlignmentBadge && (
+                              <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${
+                                indicatorOutput.hud.isCounterTrend
+                                  ? "bg-amber-500/20 text-amber-200 border border-amber-500/40"
+                                  : "bg-cyan-500/15 text-cyan-200 border border-cyan-500/30"
+                              }`}>
+                                {indicatorOutput.hud.trendAlignmentBadge}
+                              </span>
+                            )}
+                            {indicatorOutput?.hud?.maeBadge && (
+                              <span className="px-1 py-0.2 rounded text-[9px] font-extrabold bg-rose-500/25 text-rose-200 border border-rose-500/50 animate-pulse">
+                                {indicatorOutput.hud.maeBadge}
+                              </span>
+                            )}
                           </span>
-                        </span>
-                        <div className="flex items-center gap-1.5 font-mono text-[10px] text-right">
-                          <span className="text-gray-300" title="Точка входа">
-                            Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
-                          </span>
-                          <span className="text-emerald-400" title="Тейк-профит 1">
-                            TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
-                          </span>
-                          <span className="text-cyan-400" title="Тейк-профит 2">
-                            TP2: <strong>{indicatorOutput?.forecast.p3Tp2?.toFixed(1) ?? "-"}</strong>
-                          </span>
+                          <div className="flex items-center gap-1.5 font-mono text-[10px] text-right">
+                            <span className="text-gray-300" title="Точка входа">
+                              Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+                            </span>
+                            <span className="text-emerald-400" title="Тейк-профит 1">
+                              TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+                            </span>
+                            <span className="text-cyan-400" title="Тейк-профит 2">
+                              TP2: <strong>{indicatorOutput?.forecast.p3Tp2?.toFixed(1) ?? "-"}</strong>
+                            </span>
+                          </div>
                         </div>
                       </div>
 

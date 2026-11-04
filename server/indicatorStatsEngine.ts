@@ -53,7 +53,28 @@ export interface IndicatorSetupItem {
   leg2Hit?: boolean;
   leg3Hit?: boolean;
   isPlanBActive?: boolean;
+  counterTrend?: boolean;
+  lockRole?: string;
+  bundleKey?: string;
+  linkedSetupId?: string;
+  expirationReason?: string;
   notes?: string;
+}
+
+function tfToSecServer(tf: string): number {
+  switch ((tf || "").toLowerCase()) {
+    case "1m": return 60;
+    case "3m": return 180;
+    case "5m": return 300;
+    case "15m": return 900;
+    case "30m": return 1800;
+    case "1h": return 3600;
+    case "2h": return 7200;
+    case "4h": return 14400;
+    case "1d": return 86400;
+    case "1w": return 604800;
+    default: return 900;
+  }
 }
 
 export interface IndicatorTickerMetric {
@@ -158,9 +179,9 @@ loadIndicatorHistory();
  * Returns null if forecast does not contain real engine levels (no fabricated 3995.8 defaults).
  */
 export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): IndicatorSetupItem | null {
-  const parts = key.split("_");
-  const ticker = parts[0] || "XAUUSD";
-  const timeframe = parts[1] || "15m";
+  const lastUnderscore = key.lastIndexOf("_");
+  const ticker = lastUnderscore > 0 ? key.slice(0, lastUnderscore) : (key || "XAUUSD");
+  const timeframe = lastUnderscore > 0 ? key.slice(lastUnderscore + 1) : "15m";
   const fc = setupPayload?.forecast || setupPayload;
 
   if (!fc || fc.status === "NO_SETUP" || fc.executionStatus === "NO_SETUP" || fc.hasValidSetup === false) {
@@ -218,8 +239,29 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
   const rawProb = Number(fc?.probability);
   const prob = Number.isFinite(rawProb) && rawProb > 0 ? rawProb : 70;
 
-  let existing = indicatorSetupsHistory.find(s => s.key === key && s.status === "PENDING");
+  const isTriggered = Boolean(fc?.leg1Hit ?? fc?.entryTriggered);
+  const isExpiredPayload = fc?.status === "EXPIRED" || Boolean(fc?.isExpired);
+  const initialStatus: IndicatorSetupStatus = isExpiredPayload
+    ? "EXPIRED"
+    : isTriggered
+    ? "ACTIVE"
+    : "PENDING";
+
+  let existing = indicatorSetupsHistory.find(
+    (s) => s.key === key && (s.status === "PENDING" || s.status === "ACTIVE")
+  );
   if (existing) {
+    if (isExpiredPayload) {
+      existing.status = "EXPIRED";
+      existing.exitReason = "EXPIRED";
+      existing.expirationReason = fc?.expirationReason;
+      existing.exitTimestamp = Date.now();
+      existing.exitTimeMsk = `${timeMsk} МСК`;
+      existing.notes = fc?.reason || fc?.statusReason || "Сетап истёк";
+      persistIndicatorHistory();
+      return existing;
+    }
+
     // If direction changed or setup significantly replaced before entry was triggered:
     // Mark previous setup as NOT_TRIGGERED (сетап сменился до входа)
     const directionChanged = existing.direction !== direction;
@@ -242,6 +284,16 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
       existing.entryTriggered = Boolean(fc?.leg1Hit ?? fc?.entryTriggered ?? existing.entryTriggered);
       existing.tp1Hit = Boolean(fc?.leg2Hit ?? fc?.tp1Hit ?? existing.tp1Hit);
       existing.tp2Hit = Boolean(fc?.leg3Hit ?? fc?.tp2Hit ?? existing.tp2Hit);
+      if (existing.entryTriggered && existing.status === "PENDING") {
+        existing.status = "ACTIVE";
+      }
+      if (fc?.counterTrend !== undefined) {
+        existing.counterTrend = Boolean(fc.counterTrend);
+      }
+      if (fc?.lockRole) {
+        existing.lockRole = fc.lockRole;
+      }
+      enforceJournalOpposingLockArbitration(existing);
       persistIndicatorHistory();
       return existing;
     }
@@ -274,7 +326,7 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
     timeframe,
     setupName,
     direction,
-    status: "PENDING",
+    status: initialStatus,
     entryPrice: entry,
     tp1,
     tp2,
@@ -282,7 +334,7 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
     initialSl: sl,
     activeTrailingSl: activeSl,
     trailingStageStr: trailingStr,
-    entryTriggered: Boolean(fc?.leg1Hit ?? fc?.entryTriggered),
+    entryTriggered: isTriggered,
     tp1Hit: Boolean(fc?.leg2Hit ?? fc?.tp1Hit),
     tp2Hit: Boolean(fc?.leg3Hit ?? fc?.tp2Hit),
     tp3Hit: false,
@@ -297,15 +349,65 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
     leg1Hit: Boolean(fc?.leg1Hit),
     leg2Hit: Boolean(fc?.leg2Hit),
     leg3Hit: Boolean(fc?.leg3Hit),
-    isPlanBActive: Boolean(fc?.isPlanBActive)
+    isPlanBActive: Boolean(fc?.isPlanBActive),
+    counterTrend: Boolean(fc?.counterTrend),
+    lockRole: fc?.lockRole || (fc?.counterTrend ? "ОТКАТ (контртренд, уменьшенный размер)" : "ТРЕНД"),
+    expirationReason: fc?.expirationReason
   };
 
   indicatorSetupsHistory.unshift(newSetup);
+  enforceJournalOpposingLockArbitration(newSetup);
+
   if (indicatorSetupsHistory.length > 500) {
     indicatorSetupsHistory.length = 500;
   }
   persistIndicatorHistory();
   return newSetup;
+}
+
+/**
+ * Ensures no two open (ACTIVE / PENDING) setups for the same ticker have opposite direction
+ * without marking the junior/conflicting setup as `counterTrend: true` and linking them into a single bundle.
+ */
+function enforceJournalOpposingLockArbitration(target: IndicatorSetupItem): void {
+  if (target.status !== "ACTIVE" && target.status !== "PENDING") return;
+
+  const openForTicker = indicatorSetupsHistory.filter(
+    (s) => s.ticker === target.ticker && (s.status === "ACTIVE" || s.status === "PENDING")
+  );
+  if (openForTicker.length <= 1) return;
+
+  // Sort by timeframe descending so senior TF (1D/4H) is first
+  const sorted = [...openForTicker].sort((a, b) => tfToSecServer(b.timeframe) - tfToSecServer(a.timeframe));
+  const senior = sorted[0];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i];
+    if (cur.direction !== senior.direction) {
+      senior.counterTrend = false;
+      senior.lockRole = "ТРЕНД";
+
+      cur.counterTrend = true;
+      cur.lockRole = "ОТКАТ (контртренд, уменьшенный размер)";
+
+      const bKey = senior.bundleKey || cur.bundleKey || `bundle_${target.ticker}_${senior.id}`;
+      senior.bundleKey = bKey;
+      cur.bundleKey = bKey;
+      senior.linkedSetupId = cur.id;
+      cur.linkedSetupId = senior.id;
+
+      // Cap junior TP at senior entry Price if not already capped
+      if (cur.direction === "LONG" && senior.entryPrice > cur.entryPrice) {
+        cur.tp1 = Math.min(cur.tp1, senior.entryPrice);
+        cur.tp2 = Math.min(cur.tp2, senior.entryPrice);
+        cur.tp3 = Math.min(cur.tp3, senior.entryPrice);
+      } else if (cur.direction === "SHORT" && senior.entryPrice < cur.entryPrice) {
+        cur.tp1 = Math.max(cur.tp1, senior.entryPrice);
+        cur.tp2 = Math.max(cur.tp2, senior.entryPrice);
+        cur.tp3 = Math.max(cur.tp3, senior.entryPrice);
+      }
+    }
+  }
 }
 
 /**
@@ -322,7 +424,7 @@ export function evaluateIndicatorSetups(
   const timeMsk = new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date());
 
   for (const item of indicatorSetupsHistory) {
-    if (item.status !== "PENDING") continue;
+    if (item.status !== "PENDING" && item.status !== "ACTIVE") continue;
 
     const quote = priceMap[item.ticker] || priceMap[item.ticker.toUpperCase()];
     if (!quote || !quote.currentPrice) continue;
@@ -550,7 +652,54 @@ export function evaluateIndicatorSetups(
  * Aggregates complete analytics across all tickers, timeframes, and setups
  */
 export function computeIndicatorOverallStats(): IndicatorOverallStats {
-  const totalSetups = indicatorSetupsHistory.length;
+  // Collapse linked "тренд+откат" bundles into single evaluation units so winrate is not diluted
+  const effectiveItems: IndicatorSetupItem[] = [];
+  const processedBundles = new Set<string>();
+
+  for (const item of indicatorSetupsHistory) {
+    if (!item.bundleKey) {
+      effectiveItems.push(item);
+      continue;
+    }
+    if (processedBundles.has(item.bundleKey)) {
+      continue;
+    }
+    processedBundles.add(item.bundleKey);
+
+    const bundleMembers = indicatorSetupsHistory.filter((s) => s.bundleKey === item.bundleKey);
+    if (bundleMembers.length === 1) {
+      effectiveItems.push(bundleMembers[0]);
+      continue;
+    }
+
+    // Prefer senior trend lock as primary metadata carrier, and combine bundle outcome
+    const sorted = [...bundleMembers].sort((a, b) => tfToSecServer(b.timeframe) - tfToSecServer(a.timeframe));
+    const primary = sorted.find((s) => !s.counterTrend) || sorted[0];
+
+    const anyWin = bundleMembers.some((s) => s.status.startsWith("WIN"));
+    const allFinished = bundleMembers.every((s) => s.status !== "PENDING" && s.status !== "ACTIVE");
+    const anyLoss = bundleMembers.some((s) => s.status === "LOSS_SL");
+    const combinedPnlPercent = bundleMembers.reduce((sum, s) => sum + (s.pnlPercent || 0), 0);
+    const combinedPnlR = bundleMembers.reduce((sum, s) => sum + (s.pnlR || (s.status.startsWith("WIN") ? 1.5 : s.status === "LOSS_SL" ? -1.0 : 0)), 0);
+
+    let bundleStatus: IndicatorSetupStatus = primary.status;
+    if (anyWin && (combinedPnlR >= 0 || !anyLoss)) {
+      bundleStatus = "WIN_TP1";
+    } else if (anyLoss && combinedPnlR < 0 && allFinished) {
+      bundleStatus = "LOSS_SL";
+    } else if (!allFinished && !anyWin) {
+      bundleStatus = "PENDING";
+    }
+
+    effectiveItems.push({
+      ...primary,
+      status: bundleStatus,
+      pnlPercent: combinedPnlPercent,
+      pnlR: combinedPnlR
+    });
+  }
+
+  const totalSetups = effectiveItems.length;
   let activePending = 0;
   let totalWins = 0;
   let totalLosses = 0;
@@ -597,7 +746,7 @@ export function computeIndicatorOverallStats(): IndicatorOverallStats {
 
   const bySetupType: IndicatorOverallStats["bySetupType"] = {};
 
-  for (const item of indicatorSetupsHistory) {
+  for (const item of effectiveItems) {
     // 1. Ticker bucket
     if (!byTicker[item.ticker]) {
       byTicker[item.ticker] = {
@@ -649,7 +798,7 @@ export function computeIndicatorOverallStats(): IndicatorOverallStats {
     const stBucket = bySetupType[item.setupName];
     stBucket.total++;
 
-    if (item.status === "PENDING") {
+    if (item.status === "PENDING" || item.status === "ACTIVE") {
       activePending++;
       tBucket.pending++;
       tfBucket.pending++;

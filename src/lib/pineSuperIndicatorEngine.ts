@@ -384,6 +384,26 @@ export function detectMarketRangeMode(
   };
 }
 
+export type SetupLifecycleStatus =
+  | "PENDING"
+  | "ACTIVE"
+  | "EXPIRED"
+  | "WIN_TP1"
+  | "WIN_TP2"
+  | "LOSS_SL"
+  | "MISSED_ENTRY";
+
+export type SetupExpirationReason =
+  | "regimeFlip"
+  | "slBroken"
+  | "structuralReversal"
+  | "missedEntry"
+  | "timeout"
+  | "counterTrendTp"
+  | "tp2Hit"
+  | "trailingHit"
+  | "drift";
+
 export interface ForecastState {
   isBull: boolean;
   probability: number;
@@ -392,8 +412,21 @@ export interface ForecastState {
   startLogical?: number;
   barsSinceStart?: number;
   isLocked?: boolean;
+  status?: SetupLifecycleStatus;
+  isExpired?: boolean;
+  expirationReason?: SetupExpirationReason;
+  reason?: string;
   statusReason?: string;
   isMissedEntry?: boolean;
+  counterTrend?: boolean;
+  lockRole?: string; // "ТРЕНД" | "ОТКАТ (контртренд, уменьшенный размер)"
+  trendAlignmentBadge?: string; // "🌊 ОТКАТ в тренде 1D/4H (SHORT)" | "🏛️ ПО ТРЕНДУ 1D"
+  parentTrendTf?: string;
+  parentTrendDirection?: "LONG" | "SHORT";
+  parentEntryPrice?: number;
+  isUnderThreat?: boolean;
+  maeBadge?: string;
+  maeRecommendation?: string;
   startPrice: number;
   p1Entry: number; // Вход
   p2Tp1: number;   // TP1
@@ -464,6 +497,13 @@ export interface HudData {
   auditCol: string;
   autoHtfName: string;
   hudHtfUp: boolean;
+  trendAlignmentBadge?: string;
+  consensus5Str?: string;
+  isCounterTrend?: boolean;
+  lockRole?: string;
+  isUnderThreat?: boolean;
+  maeBadge?: string;
+  maeRecommendation?: string;
 }
 
 export interface SuperIndicatorOutput {
@@ -645,6 +685,287 @@ export function resetIndicatorForecast(symbol?: string, tf?: string): void {
     saveSetupsToLocalStorage();
     if (typeof window !== "undefined") {
       fetch(`/api/indicator/setups`, { method: "DELETE" }).catch(() => {});
+    }
+  }
+}
+
+export interface Honest5TfConsensusResult {
+  bullCount: number;
+  bearCount: number;
+  neutralCount: number;
+  summaryText: string;
+  dominantDirection: "LONG" | "SHORT" | "NEUTRAL";
+  htfTrendDirection: "LONG" | "SHORT" | "NEUTRAL";
+  tf1dDir: "LONG" | "SHORT" | "NEUTRAL";
+  tf4hDir: "LONG" | "SHORT" | "NEUTRAL";
+  details: string[];
+}
+
+/**
+ * Honest 5-TF Consensus calculator (ported from server.ts computeHonest5TfConsensus).
+ * Accepts optional explicit multiTfMetrics map or inspects active anchored locks for `symbol`
+ * across 1d, 4h, 1h, 30m, 15m.
+ */
+export function computeHonest5TfConsensus(
+  multiTfMetrics?: Record<string, any> | null,
+  symbol?: string
+): Honest5TfConsensusResult {
+  const tfs = ["1d", "4h", "1h", "30m", "15m"];
+  let bullCount = 0;
+  let bearCount = 0;
+  let neutralCount = 0;
+  const details: string[] = [];
+  const dirByTf: Record<string, "LONG" | "SHORT" | "NEUTRAL"> = {
+    "1d": "NEUTRAL",
+    "4h": "NEUTRAL",
+    "1h": "NEUTRAL",
+    "30m": "NEUTRAL",
+    "15m": "NEUTRAL"
+  };
+
+  for (const tf of tfs) {
+    const m = multiTfMetrics?.[tf] || multiTfMetrics?.[tf.toUpperCase()];
+    if (m && typeof m.trend === "string") {
+      const tUpper = m.trend.toUpperCase();
+      if (tUpper.includes("BULL") || tUpper.includes("LONG") || tUpper.includes("БЫЧ")) {
+        bullCount++;
+        dirByTf[tf] = "LONG";
+        details.push(`${tf.toUpperCase()}: БЫЧИЙ`);
+      } else if (tUpper.includes("BEAR") || tUpper.includes("SHORT") || tUpper.includes("МЕДВ")) {
+        bearCount++;
+        dirByTf[tf] = "SHORT";
+        details.push(`${tf.toUpperCase()}: МЕДВЕЖИЙ`);
+      } else {
+        neutralCount++;
+        dirByTf[tf] = "NEUTRAL";
+        details.push(`${tf.toUpperCase()}: НЕЙТРАЛЬНО`);
+      }
+      continue;
+    }
+
+    if (symbol) {
+      const cached =
+        anchoredForecastCache.get(`${symbol}_${tf}`) ||
+        anchoredForecastCache.get(`${symbol}_${tf.toUpperCase()}`);
+      if (cached && cached.forecast && cached.forecast.status !== "EXPIRED" && !cached.forecast.isExpired) {
+        if (cached.forecast.isBull) {
+          bullCount++;
+          dirByTf[tf] = "LONG";
+          details.push(`${tf.toUpperCase()}: БЫЧИЙ`);
+        } else {
+          bearCount++;
+          dirByTf[tf] = "SHORT";
+          details.push(`${tf.toUpperCase()}: МЕДВЕЖИЙ`);
+        }
+        continue;
+      }
+    }
+
+    neutralCount++;
+    dirByTf[tf] = "NEUTRAL";
+    details.push(`${tf.toUpperCase()}: НЕТ ДАННЫХ`);
+  }
+
+  let htfTrendDirection: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  if (dirByTf["1d"] !== "NEUTRAL") {
+    htfTrendDirection = dirByTf["1d"];
+  } else if (dirByTf["4h"] !== "NEUTRAL") {
+    htfTrendDirection = dirByTf["4h"];
+  } else if (bullCount > bearCount) {
+    htfTrendDirection = "LONG";
+  } else if (bearCount > bullCount) {
+    htfTrendDirection = "SHORT";
+  }
+
+  const dominantDirection: "LONG" | "SHORT" | "NEUTRAL" =
+    bullCount > bearCount ? "LONG" : bearCount > bullCount ? "SHORT" : htfTrendDirection;
+
+  let summaryText = "";
+  if (bullCount >= 4) {
+    summaryText = `${bullCount} из 5 ТФ за LONG (${bearCount} за SHORT) — сильный бычий консенсус`;
+  } else if (bearCount >= 4) {
+    summaryText = `${bearCount} из 5 ТФ за SHORT (${bullCount} за LONG) — сильный медвежий консенсус`;
+  } else if (bullCount > bearCount) {
+    summaryText = `${bullCount} из 5 ТФ за LONG против ${bearCount} за SHORT — умеренный перевес покупателей`;
+  } else if (bearCount > bullCount) {
+    summaryText = `${bearCount} из 5 ТФ за SHORT против ${bullCount} за LONG — умеренный перевес продавцов (Разнобой ТФ)`;
+  } else {
+    summaryText = `${bullCount} за LONG / ${bearCount} за SHORT — баланс (флэт / конфликт ТФ)`;
+  }
+
+  return {
+    bullCount,
+    bearCount,
+    neutralCount,
+    summaryText,
+    dominantDirection,
+    htfTrendDirection,
+    tf1dDir: dirByTf["1d"],
+    tf4hDir: dirByTf["4h"],
+    details
+  };
+}
+
+/**
+ * Computes the chart & HUD trend alignment badge using 5-TF consensus and opposing lock arbitration.
+ */
+export function resolveTrendAlignmentBadge(
+  fc: ForecastState,
+  tf: string,
+  consensus: Honest5TfConsensusResult
+): string {
+  const lockDir: "LONG" | "SHORT" = fc.isBull ? "LONG" : "SHORT";
+  const htfDir =
+    fc.parentTrendDirection ||
+    (consensus.htfTrendDirection !== "NEUTRAL" ? consensus.htfTrendDirection : lockDir);
+
+  if (fc.counterTrend || (htfDir !== "NEUTRAL" && htfDir !== lockDir)) {
+    const oppDir = htfDir !== lockDir ? htfDir : (fc.isBull ? "SHORT" : "LONG");
+    return `🌊 ОТКАТ в тренде 1D/4H (${oppDir})`;
+  }
+  return `🏛️ ПО ТРЕНДУ 1D`;
+}
+
+/**
+ * MAE-Guard for losing locks:
+ * If floating loss exceeds 1.25 × risk (|price - entry| > 1.25 * |entry - SL|)
+ * AND price is within 0.3 ATR of SL (|price - SL| <= 0.3 * ATR),
+ * marks setup with "⚠️ ПОД УГРОЗОЙ" and recommends closing manually or tightening stop.
+ */
+export function evaluateMaeGuard(
+  fc: ForecastState,
+  currentPrice: number,
+  atrVal: number
+): { isUnderThreat: boolean; maeBadge?: string; maeRecommendation?: string } {
+  const risk = Math.max(0.0001, Math.abs(fc.p1Entry - fc.invalidLevelSl));
+  const floatingLoss = fc.isBull ? fc.p1Entry - currentPrice : currentPrice - fc.p1Entry;
+  const distToSl = Math.abs(currentPrice - fc.invalidLevelSl);
+  const safeAtr = Math.max(0.0001, atrVal);
+
+  const isUnderThreat =
+    floatingLoss > 1.25 * risk &&
+    distToSl <= 0.3 * safeAtr;
+
+  if (isUnderThreat) {
+    return {
+      isUnderThreat: true,
+      maeBadge: "⚠️ ПОД УГРОЗОЙ",
+      maeRecommendation: "⚠️ ПОД УГРОЗОЙ — закрыть вручную или ужать стоп"
+    };
+  }
+  return { isUnderThreat: false };
+}
+
+/**
+ * Register or update an anchored forecast item in the active locks registry and run opposing-lock arbitration.
+ */
+export function registerActiveLock(symbol: string, tf: string, item: AnchoredForecastItem): ForecastState {
+  const normTf = tf.toLowerCase();
+  const key = `${symbol}_${normTf}`;
+  item.key = key;
+  anchoredForecastCache.set(key, item);
+  arbitrateOpposingLocksForAsset(symbol);
+  return anchoredForecastCache.get(key)?.forecast || item.forecast;
+}
+
+export function getActiveLocksForAsset(symbol: string): Array<{ tf: string; tfSec: number; item: AnchoredForecastItem }> {
+  const prefix = `${symbol}_`;
+  const list: Array<{ tf: string; tfSec: number; item: AnchoredForecastItem }> = [];
+  for (const [k, item] of anchoredForecastCache.entries()) {
+    if (!k.startsWith(prefix)) continue;
+    const tf = k.slice(prefix.length).toLowerCase();
+    const fc = item.forecast;
+    if (!fc || fc.status === "EXPIRED" || fc.isExpired) continue;
+    list.push({ tf, tfSec: tfToSeconds(tf), item });
+  }
+  list.sort((a, b) => b.tfSec - a.tfSec);
+  return list;
+}
+
+/**
+ * Arbitrates opposing locks across timeframes for the same asset:
+ * - Senior TF (1D/4H, higher tfSec) is marked "ТРЕНД" (counterTrend: false).
+ * - Junior TF (1H and below, lower tfSec) with opposite direction !D is marked
+ *   "ОТКАТ (контртренд, уменьшенный размер)" (counterTrend: true) and its TP is capped
+ *   at the senior lock's entry level (p1Entry).
+ * - If BOTH senior and junior locks have "ВХОД ВЗЯТ" (leg1Hit === true) and opposite directions,
+ *   junior lock gets counterTrend: true, forced TP at senior lock's p1Entry, and expires (EXPIRED).
+ */
+export function arbitrateOpposingLocksForAsset(symbol: string): void {
+  const activeLocks = getActiveLocksForAsset(symbol);
+  if (activeLocks.length === 0) return;
+
+  const consensus = computeHonest5TfConsensus(null, symbol);
+  const senior = activeLocks[0];
+  const seniorFc = senior.item.forecast;
+  const seniorDir: "LONG" | "SHORT" = seniorFc.isBull ? "LONG" : "SHORT";
+
+  // Check if there is any opposing lock on another TF
+  const hasOpposing = activeLocks.some((l) => l.item.forecast.isBull !== seniorFc.isBull);
+
+  if (hasOpposing) {
+    seniorFc.counterTrend = false;
+    seniorFc.lockRole = "ТРЕНД";
+    seniorFc.trendAlignmentBadge = "🏛️ ПО ТРЕНДУ 1D";
+    if (!seniorFc.status || seniorFc.status === "PENDING" || seniorFc.status === "ACTIVE") {
+      seniorFc.status = seniorFc.leg1Hit ? "ACTIVE" : "PENDING";
+    }
+  } else {
+    seniorFc.counterTrend = false;
+    seniorFc.lockRole = "ТРЕНД";
+    seniorFc.trendAlignmentBadge = resolveTrendAlignmentBadge(seniorFc, senior.tf, consensus);
+  }
+
+  for (let i = 1; i < activeLocks.length; i++) {
+    const cur = activeLocks[i];
+    const curFc = cur.item.forecast;
+
+    // Find highest-TF lock that opposes curFc (preferring senior 1D/4H)
+    const opposingSenior = activeLocks
+      .slice(0, i)
+      .find((higher) => higher.item.forecast.isBull !== curFc.isBull);
+
+    if (!opposingSenior) {
+      curFc.counterTrend = false;
+      curFc.lockRole = "ТРЕНД";
+      curFc.trendAlignmentBadge = resolveTrendAlignmentBadge(curFc, cur.tf, consensus);
+      continue;
+    }
+
+    const oppFc = opposingSenior.item.forecast;
+    const oppDir: "LONG" | "SHORT" = oppFc.isBull ? "LONG" : "SHORT";
+
+    curFc.counterTrend = true;
+    curFc.lockRole = "ОТКАТ (контртренд, уменьшенный размер)";
+    curFc.parentTrendTf = opposingSenior.tf.toUpperCase();
+    curFc.parentTrendDirection = oppDir;
+    curFc.parentEntryPrice = oppFc.p1Entry;
+    curFc.trendAlignmentBadge = `🌊 ОТКАТ в тренде 1D/4H (${oppDir})`;
+
+    // Cap TP1/TP2/TP3 at the senior lock's limit entry (p1Entry)
+    if (curFc.isBull) {
+      // Junior LONG vs Senior SHORT: cap TP above by senior SHORT's entry
+      curFc.p2Tp1 = roundPriceForAsset(Math.min(curFc.p2Tp1, oppFc.p1Entry), curFc.p1Entry);
+      curFc.p3Tp2 = roundPriceForAsset(Math.min(curFc.p3Tp2, oppFc.p1Entry), curFc.p1Entry);
+      curFc.p5Tp3 = roundPriceForAsset(Math.min(curFc.p5Tp3, oppFc.p1Entry), curFc.p1Entry);
+    } else {
+      // Junior SHORT vs Senior LONG: cap TP below by senior LONG's entry
+      curFc.p2Tp1 = roundPriceForAsset(Math.max(curFc.p2Tp1, oppFc.p1Entry), curFc.p1Entry);
+      curFc.p3Tp2 = roundPriceForAsset(Math.max(curFc.p3Tp2, oppFc.p1Entry), curFc.p1Entry);
+      curFc.p5Tp3 = roundPriceForAsset(Math.max(curFc.p5Tp3, oppFc.p1Entry), curFc.p1Entry);
+    }
+
+    // If BOTH locks have "ВХОД ВЗЯТ" (leg1Hit === true) and directions are opposite:
+    // Junior lock gets forced TP at senior lock's entry level and then expires.
+    if (oppFc.leg1Hit && curFc.leg1Hit) {
+      curFc.p2Tp1 = roundPriceForAsset(oppFc.p1Entry, curFc.p1Entry);
+      curFc.p3Tp2 = roundPriceForAsset(oppFc.p1Entry, curFc.p1Entry);
+      curFc.leg2Hit = true;
+      curFc.status = "EXPIRED";
+      curFc.isExpired = true;
+      curFc.expirationReason = "counterTrendTp";
+      curFc.reason = `Принудительный TP на уровне входа старшего лока (${oppFc.p1Entry})`;
+      curFc.statusReason = `⏳ Истёк: ОТКАТ закрыт по принудительному TP у входа ${opposingSenior.tf.toUpperCase()} (${oppFc.p1Entry})`;
     }
   }
 }
@@ -1356,6 +1677,7 @@ export function evaluateSuperIndicator(
     hudTextDensity?: string;
     tblViewMode?: string;
     externalGexReport?: GexMarketReport | null;
+    multiTfMetrics?: Record<string, any> | null;
   }
 ): SuperIndicatorOutput {
   const n = candles.length;
@@ -2144,7 +2466,9 @@ export function evaluateSuperIndicator(
       altTp2: roundPriceForAsset(bAlt2, bClose),
       altTp3: roundPriceForAsset(bAlt3, bClose),
       isHighRunaway: noPullbackProb >= 65,
-      noPullbackProb
+      noPullbackProb,
+      status: bEntryHitOnStart ? "ACTIVE" : "PENDING",
+      isExpired: false
     };
 
     const item: AnchoredForecastItem = {
@@ -2160,187 +2484,7 @@ export function evaluateSuperIndicator(
     return { item, forecast: fcState };
   };
 
-  // Helper to evaluate a locked setup from its `anchorIdx` up to `targetEndIdx`
-  const evaluateSetupRange = (
-    item: AnchoredForecastItem,
-    anchorIdx: number,
-    targetEndIdx: number
-  ): { expiredAtBar: number | null; updatedForecast: ForecastState } => {
-    const prev = item.forecast;
-    const entryWaitBars = tfSec >= 86400 ? 4 : tfSec >= 3600 ? 6 : 8;
-    const maxSetupBars = tfSec >= 86400 ? 6 : tfSec >= 14400 ? 8 : tfSec >= 3600 ? 10 : 12;
-    const anchorCandle = candles[anchorIdx];
-    const anchorAtr = atrs[anchorIdx] || atrVal;
-
-    // Deterministically replay fills starting from anchorIdx
-    let leg1Hit = Math.abs(prev.p1Entry - prev.startPrice) <= anchorAtr * 0.03;
-    let leg1Idx: number | undefined = leg1Hit ? anchorIdx : undefined;
-    let leg1Time: number | undefined = leg1Hit && anchorCandle ? anchorCandle.time : undefined;
-
-    let leg2Hit = false;
-    let leg2Idx: number | undefined = undefined;
-    let leg2Time: number | undefined = undefined;
-
-    let leg3Hit = false;
-    let leg3Idx: number | undefined = undefined;
-    let leg3Time: number | undefined = undefined;
-
-    let activeTrailingSl = prev.invalidLevelSl;
-    let trailingStageStr = "🛡️ Начальный SL";
-    let trailingStageIdx = 0;
-    let trailingActivatedAtBar: number | undefined = undefined;
-    let expiredAtBar: number | null = null;
-    let isMissedEntry = false;
-
-    const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
-    item.highestPriceSinceStart = anchorCandle ? anchorCandle.high : prev.startPrice;
-    item.lowestPriceSinceStart = anchorCandle ? anchorCandle.low : prev.startPrice;
-
-    for (let bi = anchorIdx + 1; bi <= targetEndIdx; bi++) {
-      const cb = candles[bi];
-      const bAtr = atrs[bi] || atrVal;
-      if (cb.high > item.highestPriceSinceStart) item.highestPriceSinceStart = cb.high;
-      if (cb.low < item.lowestPriceSinceStart) item.lowestPriceSinceStart = cb.low;
-
-      const wasLeg1Hit = leg1Hit;
-      const wasLeg2Hit = leg2Hit;
-
-      // Check if an already-active trailing stop (BE+0.15 or Защита 50%) was hit on this bar
-      const trailingHitAtBi =
-        wasLeg1Hit &&
-        trailingStageIdx > 0 &&
-        trailingActivatedAtBar !== undefined &&
-        bi > trailingActivatedAtBar &&
-        (prev.isBull ? cb.low <= activeTrailingSl : cb.high >= activeTrailingSl);
-
-      if (trailingHitAtBi) {
-        expiredAtBar = bi;
-        break;
-      }
-
-      // Check if price hit TP1 before ever touching limit Entry (Missed Entry / Runaway)
-      if (!wasLeg1Hit) {
-        const touchedEntry = prev.isBull ? cb.low <= prev.p1Entry : cb.high >= prev.p1Entry;
-        const touchedTp1 = prev.isBull ? cb.high >= prev.p2Tp1 : cb.low <= prev.p2Tp1;
-        if (touchedTp1 && !touchedEntry) {
-          isMissedEntry = true;
-          expiredAtBar = bi;
-          break;
-        }
-      }
-
-      if (prev.isBull) {
-        if (!leg1Hit && cb.low <= prev.p1Entry) {
-          leg1Hit = true;
-          leg1Idx = bi;
-          leg1Time = cb.time;
-        }
-        // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly above entry
-        if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1 && (wasLeg1Hit || cb.close >= prev.p2Tp1)) {
-          leg2Hit = true;
-          leg2Idx = bi;
-          leg2Time = cb.time;
-        }
-        // TP2 can only trigger on a bar after leg1Hit was already active
-        if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2 && (wasLeg2Hit || cb.close >= prev.p3Tp2)) {
-          leg3Hit = true;
-          leg3Idx = bi;
-          leg3Time = cb.time;
-        }
-      } else {
-        if (!leg1Hit && cb.high >= prev.p1Entry) {
-          leg1Hit = true;
-          leg1Idx = bi;
-          leg1Time = cb.time;
-        }
-        // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly below entry
-        if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1 && (wasLeg1Hit || cb.close <= prev.p2Tp1)) {
-          leg2Hit = true;
-          leg2Idx = bi;
-          leg2Time = cb.time;
-        }
-        // TP2 can only trigger on a bar after leg1Hit was already active
-        if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2 && (wasLeg2Hit || cb.close <= prev.p3Tp2)) {
-          leg3Hit = true;
-          leg3Idx = bi;
-          leg3Time = cb.time;
-        }
-      }
-
-      // Monotonic ratcheted trailing stop progression once entry is active
-      if (leg1Hit && distToTp1 > 0) {
-        const bestExtreme = prev.isBull ? cb.high - prev.p1Entry : prev.p1Entry - cb.low;
-        if (leg2Hit && trailingStageIdx < 2) {
-          activeTrailingSl = prev.isBull
-            ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
-            : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
-          trailingStageStr = "💰 Защита 50%";
-          trailingStageIdx = 2;
-          trailingActivatedAtBar = bi;
-        } else if (wasLeg1Hit && trailingStageIdx < 1 && bestExtreme >= distToTp1 * 0.72) {
-          activeTrailingSl = prev.isBull ? prev.p1Entry + bAtr * 0.15 : prev.p1Entry - bAtr * 0.15;
-          trailingStageStr = "🔒 BE+0.15";
-          trailingStageIdx = 1;
-          trailingActivatedAtBar = bi;
-        }
-      }
-
-      const barsPassedAtBi = bi - anchorIdx;
-      const slBrokenAtBi = prev.isBull ? cb.low <= prev.invalidLevelSl : cb.high >= prev.invalidLevelSl;
-
-      // Structural trend reversal (CHoCH) against setup direction
-      const barTrendBull = trendStateByBar[bi] ? trendStateByBar[bi] === "bullish" : isBull;
-      const structuralReversalAtBi = barTrendBull !== prev.isBull;
-
-      // Drift without entry: price moved > 1.75 ATR away from limit entry without filling
-      const driftedAwayWithoutEntry =
-        !leg1Hit && Math.abs(cb.close - prev.p1Entry) > bAtr * 1.75;
-
-      const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? bi - leg2Idx : 0;
-
-      if (
-        slBrokenAtBi ||
-        structuralReversalAtBi ||
-        (leg3Hit && typeof leg3Idx === "number" && bi > leg3Idx) ||
-        driftedAwayWithoutEntry ||
-        (!leg1Hit && barsPassedAtBi >= entryWaitBars) ||
-        (leg2Hit && !leg3Hit && barsSinceTp1 >= 10) ||
-        barsPassedAtBi >= maxSetupBars
-      ) {
-        expiredAtBar = bi;
-        break;
-      }
-    }
-
-    const barsPassed = targetEndIdx - anchorIdx;
-    const updatedForecast: ForecastState = {
-      ...prev,
-      startBar: anchorIdx,
-      startLogical: anchorIdx,
-      startTime: candles[anchorIdx]?.time ?? item.anchorCandleTime,
-      startPrice: prev.startPrice,
-      barsSinceStart: barsPassed,
-      isLocked: true,
-      isMissedEntry,
-      statusReason: isMissedEntry
-        ? `🚫 НЕДОХОД (MISSED ENTRY) - Тейк взят до активации лимита`
-        : `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
-      leg1Hit,
-      leg1Idx,
-      leg1Time,
-      leg2Hit,
-      leg2Idx,
-      leg2Time,
-      leg3Hit,
-      leg3Idx,
-      leg3Time,
-      activeTrailingSl: roundPriceForAsset(activeTrailingSl, close),
-      trailingStageStr,
-      trailingStageIdx
-    };
-
-    return { expiredAtBar, updatedForecast };
-  };
+  const extGammaFlip = options?.externalGexReport?.gammaFlip ?? gammaFlip;
 
   if (existingItem && existingItem.mathVersion === CURRENT_FORECAST_MATH_VERSION) {
     // If rendering temporary fallback candles before server response arrives, return cached forecast untouched
@@ -2351,8 +2495,24 @@ export function evaluateSuperIndicator(
       const anchorIdx = priceDiffRatio < 0.15 ? findCandleIndexByTime(candles, existingItem.anchorCandleTime, tfSec) : -1;
 
       if (anchorIdx >= 0) {
-        const { expiredAtBar, updatedForecast } = evaluateSetupRange(existingItem, anchorIdx, n - 1);
-        if (expiredAtBar === null && updatedForecast.isBull === isBull) {
+        const { expiredAtBar, updatedForecast } = evaluateSetupRange(
+          existingItem,
+          anchorIdx,
+          n - 1,
+          candles,
+          atrs,
+          atrVal,
+          tfSec,
+          trendStateByBar,
+          isBull,
+          extGammaFlip
+        );
+        if (updatedForecast.expirationReason === "regimeFlip") {
+          // Keep the EXPIRED regimeFlip setup visible when spot flipped gamma regime against the lock
+          finalForecast = updatedForecast;
+          existingItem.forecast = updatedForecast;
+          syncSetupToServer(cacheKey, existingItem);
+        } else if (expiredAtBar === null && (updatedForecast.isBull === isBull || updatedForecast.counterTrend)) {
           finalForecast = updatedForecast;
           existingItem.forecast = updatedForecast;
           syncSetupToServer(cacheKey, existingItem);
@@ -2372,7 +2532,23 @@ export function evaluateSuperIndicator(
     let currentCandidate = createSetupAtBar(walkBar);
 
     while (walkBar < n - 1) {
-      const { expiredAtBar, updatedForecast } = evaluateSetupRange(currentCandidate.item, walkBar, n - 1);
+      const { expiredAtBar, updatedForecast } = evaluateSetupRange(
+        currentCandidate.item,
+        walkBar,
+        n - 1,
+        candles,
+        atrs,
+        atrVal,
+        tfSec,
+        trendStateByBar,
+        isBull,
+        extGammaFlip
+      );
+      if (updatedForecast.expirationReason === "regimeFlip" && expiredAtBar !== null && expiredAtBar >= n - 2) {
+        currentCandidate.forecast = updatedForecast;
+        currentCandidate.item.forecast = updatedForecast;
+        break;
+      }
       if (expiredAtBar === null && updatedForecast.isBull === isBull) {
         currentCandidate.forecast = updatedForecast;
         currentCandidate.item.forecast = updatedForecast;
@@ -2391,6 +2567,41 @@ export function evaluateSuperIndicator(
   }
 
   const forecast: ForecastState = finalForecast;
+
+  // Run multi-TF opposing lock arbitration & 5-TF consensus badge assignment
+  if (!isFallbackCandles) {
+    const activeItem = anchoredForecastCache.get(cacheKey);
+    if (activeItem) {
+      activeItem.forecast = forecast;
+    } else {
+      anchoredForecastCache.set(cacheKey, {
+        key: cacheKey,
+        forecast,
+        anchorCandleTime: forecast.startTime || lastCandle.time,
+        highestPriceSinceStart: lastCandle.high,
+        lowestPriceSinceStart: lastCandle.low,
+        createdAt: Date.now(),
+        mathVersion: CURRENT_FORECAST_MATH_VERSION
+      });
+    }
+    if (forecast.status !== "EXPIRED" && !forecast.isExpired) {
+      arbitrateOpposingLocksForAsset(symbol);
+    }
+  }
+
+  const consensus5Tf = computeHonest5TfConsensus(options?.multiTfMetrics, symbol);
+  if (!forecast.trendAlignmentBadge) {
+    forecast.trendAlignmentBadge = resolveTrendAlignmentBadge(forecast, tf, consensus5Tf);
+  }
+  if (!forecast.lockRole) {
+    forecast.lockRole = forecast.counterTrend ? "ОТКАТ (контртренд, уменьшенный размер)" : "ТРЕНД";
+  }
+
+  // Apply MAE-Guard for losing locks
+  const maeGuard = evaluateMaeGuard(forecast, close, atrVal);
+  forecast.isUnderThreat = maeGuard.isUnderThreat;
+  forecast.maeBadge = maeGuard.maeBadge;
+  forecast.maeRecommendation = maeGuard.maeRecommendation;
 
   // 9. Signal Generation
   let buySig = false;
@@ -2443,6 +2654,284 @@ export function evaluateSuperIndicator(
   };
 }
 
+export function evaluateSetupRange(
+  item: AnchoredForecastItem,
+  anchorIdx: number,
+  targetEndIdx: number,
+  candles: Candle[],
+  atrs?: number[],
+  atrVal: number = 10,
+  tfSec: number = 900,
+  trendStateByBar?: string[],
+  isBull: boolean = item.forecast.isBull,
+  externalGammaFlip?: number
+): { expiredAtBar: number | null; updatedForecast: ForecastState } {
+  const prev = item.forecast;
+  const entryWaitBars = tfSec >= 86400 ? 4 : tfSec >= 3600 ? 6 : 8;
+  const maxSetupBars = tfSec >= 86400 ? 6 : tfSec >= 14400 ? 8 : tfSec >= 3600 ? 10 : 12;
+  const anchorCandle = candles[anchorIdx];
+  const anchorAtr = (atrs && atrs[anchorIdx]) || atrVal;
+  const lastClose = candles[targetEndIdx]?.close ?? prev.startPrice;
+
+  // Deterministically replay fills starting from anchorIdx
+  let leg1Hit = Boolean(prev.leg1Hit) || Math.abs(prev.p1Entry - prev.startPrice) <= anchorAtr * 0.03;
+  let leg1Idx: number | undefined = leg1Hit ? (prev.leg1Idx ?? anchorIdx) : undefined;
+  let leg1Time: number | undefined = leg1Hit ? (prev.leg1Time ?? anchorCandle?.time) : undefined;
+
+  let leg2Hit = Boolean(prev.leg2Hit);
+  let leg2Idx: number | undefined = prev.leg2Idx;
+  let leg2Time: number | undefined = prev.leg2Time;
+
+  let leg3Hit = Boolean(prev.leg3Hit);
+  let leg3Idx: number | undefined = prev.leg3Idx;
+  let leg3Time: number | undefined = prev.leg3Time;
+
+  let activeTrailingSl = prev.invalidLevelSl;
+  let trailingStageStr = "🛡️ Начальный SL";
+  let trailingStageIdx = 0;
+  let trailingActivatedAtBar: number | undefined = undefined;
+  let expiredAtBar: number | null = null;
+  let isMissedEntry = false;
+  let expirationReason: SetupExpirationReason | undefined = undefined;
+  let customReason: string | undefined = undefined;
+
+  const distToTp1 = Math.abs(prev.p2Tp1 - prev.p1Entry);
+  item.highestPriceSinceStart = anchorCandle ? anchorCandle.high : prev.startPrice;
+  item.lowestPriceSinceStart = anchorCandle ? anchorCandle.low : prev.startPrice;
+
+  let consecutiveRegimeFlipBars = 0;
+  // If anchorCandle itself closed on the opposite side of externalGammaFlip after lock creation (e.g. when anchorIdx === targetEndIdx - 1),
+  // count it if prev.startPrice was originally on the valid side of externalGammaFlip
+  if (
+    typeof externalGammaFlip === "number" &&
+    externalGammaFlip > 0 &&
+    !prev.counterTrend &&
+    anchorCandle &&
+    targetEndIdx - anchorIdx === 1
+  ) {
+    const anchorOpposite = prev.isBull
+      ? anchorCandle.close < externalGammaFlip
+      : anchorCandle.close > externalGammaFlip;
+    if (anchorOpposite) {
+      consecutiveRegimeFlipBars = 1;
+    }
+  }
+
+  for (let bi = anchorIdx + 1; bi <= targetEndIdx; bi++) {
+    const cb = candles[bi];
+    if (!cb) continue;
+    const bAtr = (atrs && atrs[bi]) || atrVal;
+    if (cb.high > item.highestPriceSinceStart) item.highestPriceSinceStart = cb.high;
+    if (cb.low < item.lowestPriceSinceStart) item.lowestPriceSinceStart = cb.low;
+
+    const wasLeg1Hit = leg1Hit;
+    const wasLeg2Hit = leg2Hit;
+
+    // 1. GAMMA-REGIME INVALIDATION (regimeFlip):
+    // If spot closed (bar close) on the opposite side of external gammaFlip AGAINST lock direction
+    // and stayed there for >= 2 bars of its timeframe -> setup expires with EXPIRED (reason: "смена гамма-режима")
+    if (typeof externalGammaFlip === "number" && externalGammaFlip > 0 && !prev.counterTrend) {
+      const isOppositeSideOfFlip = prev.isBull
+        ? cb.close < externalGammaFlip
+        : cb.close > externalGammaFlip;
+      if (isOppositeSideOfFlip) {
+        consecutiveRegimeFlipBars += 1;
+      } else {
+        consecutiveRegimeFlipBars = 0;
+      }
+
+      if (consecutiveRegimeFlipBars >= 2) {
+        expiredAtBar = bi;
+        expirationReason = "regimeFlip";
+        customReason = "смена гамма-режима";
+        break;
+      }
+    }
+
+    // Check if the next bar will complete a 2-bar regimeFlip; if so, do not pre-empt with SL or CHoCH on bar 1
+    const nextBarCompletesRegimeFlip =
+      consecutiveRegimeFlipBars === 1 &&
+      bi + 1 <= targetEndIdx &&
+      typeof externalGammaFlip === "number" &&
+      externalGammaFlip > 0 &&
+      !prev.counterTrend &&
+      (prev.isBull
+        ? candles[bi + 1].close < externalGammaFlip
+        : candles[bi + 1].close > externalGammaFlip);
+
+    // Check if an already-active trailing stop (BE+0.15 or Защита 50%) was hit on this bar
+    const trailingHitAtBi =
+      wasLeg1Hit &&
+      trailingStageIdx > 0 &&
+      trailingActivatedAtBar !== undefined &&
+      bi > trailingActivatedAtBar &&
+      (prev.isBull ? cb.low <= activeTrailingSl : cb.high >= activeTrailingSl);
+
+    if (trailingHitAtBi && !nextBarCompletesRegimeFlip) {
+      expiredAtBar = bi;
+      expirationReason = "trailingHit";
+      break;
+    }
+
+    // Check if price hit TP1 before ever touching limit Entry (Missed Entry / Runaway)
+    if (!wasLeg1Hit && !nextBarCompletesRegimeFlip) {
+      const touchedEntry = prev.isBull ? cb.low <= prev.p1Entry : cb.high >= prev.p1Entry;
+      const touchedTp1 = prev.isBull ? cb.high >= prev.p2Tp1 : cb.low <= prev.p2Tp1;
+      if (touchedTp1 && !touchedEntry) {
+        isMissedEntry = true;
+        expiredAtBar = bi;
+        expirationReason = "missedEntry";
+        break;
+      }
+    }
+
+    if (prev.isBull) {
+      if (!leg1Hit && cb.low <= prev.p1Entry) {
+        leg1Hit = true;
+        leg1Idx = bi;
+        leg1Time = cb.time;
+      }
+      // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly above entry
+      if (leg1Hit && !leg2Hit && cb.high >= prev.p2Tp1 && (wasLeg1Hit || cb.close >= prev.p2Tp1)) {
+        leg2Hit = true;
+        leg2Idx = bi;
+        leg2Time = cb.time;
+      }
+      // TP2 can only trigger on a bar after leg1Hit was already active
+      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.high >= prev.p3Tp2 && (wasLeg2Hit || cb.close >= prev.p3Tp2)) {
+        leg3Hit = true;
+        leg3Idx = bi;
+        leg3Time = cb.time;
+      }
+    } else {
+      if (!leg1Hit && cb.high >= prev.p1Entry) {
+        leg1Hit = true;
+        leg1Idx = bi;
+        leg1Time = cb.time;
+      }
+      // TP1 can trigger on a bar after leg1Idx, or on the same bar only if candle closed strongly below entry
+      if (leg1Hit && !leg2Hit && cb.low <= prev.p2Tp1 && (wasLeg1Hit || cb.close <= prev.p2Tp1)) {
+        leg2Hit = true;
+        leg2Idx = bi;
+        leg2Time = cb.time;
+      }
+      // TP2 can only trigger on a bar after leg1Hit was already active
+      if (wasLeg1Hit && leg2Hit && !leg3Hit && cb.low <= prev.p3Tp2 && (wasLeg2Hit || cb.close <= prev.p3Tp2)) {
+        leg3Hit = true;
+        leg3Idx = bi;
+        leg3Time = cb.time;
+      }
+    }
+
+    // Monotonic ratcheted trailing stop progression once entry is active
+    if (leg1Hit && distToTp1 > 0) {
+      const bestExtreme = prev.isBull ? cb.high - prev.p1Entry : prev.p1Entry - cb.low;
+      if (leg2Hit && trailingStageIdx < 2) {
+        activeTrailingSl = prev.isBull
+          ? prev.p1Entry + (prev.p2Tp1 - prev.p1Entry) * 0.50
+          : prev.p1Entry - (prev.p1Entry - prev.p2Tp1) * 0.50;
+        trailingStageStr = "💰 Защита 50%";
+        trailingStageIdx = 2;
+        trailingActivatedAtBar = bi;
+      } else if (wasLeg1Hit && trailingStageIdx < 1 && bestExtreme >= distToTp1 * 0.72) {
+        activeTrailingSl = prev.isBull ? prev.p1Entry + bAtr * 0.15 : prev.p1Entry - bAtr * 0.15;
+        trailingStageStr = "🔒 BE+0.15";
+        trailingStageIdx = 1;
+        trailingActivatedAtBar = bi;
+      }
+    }
+
+    if (nextBarCompletesRegimeFlip) {
+      continue;
+    }
+
+    const barsPassedAtBi = bi - anchorIdx;
+    const slBrokenAtBi = prev.isBull ? cb.low <= prev.invalidLevelSl : cb.high >= prev.invalidLevelSl;
+
+    // On the final bar, if MAE-Guard is active (floating loss > 1.25 * risk AND within 0.3 ATR of SL),
+    // keep the lock alive with the "⚠️ ПОД УГРОЗОЙ" warning instead of immediately expiring
+    const maeOnFinalBar =
+      bi === targetEndIdx &&
+      evaluateMaeGuard({ ...prev, leg1Hit }, cb.close, bAtr).isUnderThreat;
+
+    // Structural trend reversal (CHoCH) against setup direction
+    const barTrendBull = trendStateByBar && trendStateByBar[bi] ? trendStateByBar[bi] === "bullish" : isBull;
+    const structuralReversalAtBi = barTrendBull !== prev.isBull;
+
+    // Drift without entry: price moved > 1.75 ATR away from limit entry without filling
+    const driftedAwayWithoutEntry =
+      !leg1Hit && Math.abs(cb.close - prev.p1Entry) > bAtr * 1.75;
+
+    const barsSinceTp1 = leg2Hit && typeof leg2Idx === "number" ? bi - leg2Idx : 0;
+
+    if (
+      (slBrokenAtBi && !maeOnFinalBar) ||
+      (structuralReversalAtBi && !maeOnFinalBar) ||
+      (leg3Hit && typeof leg3Idx === "number" && bi > leg3Idx) ||
+      driftedAwayWithoutEntry ||
+      (!leg1Hit && barsPassedAtBi >= entryWaitBars) ||
+      (leg2Hit && !leg3Hit && barsSinceTp1 >= 10) ||
+      barsPassedAtBi >= maxSetupBars
+    ) {
+      expiredAtBar = bi;
+      if (slBrokenAtBi) expirationReason = "slBroken";
+      else if (structuralReversalAtBi) expirationReason = "structuralReversal";
+      else if (leg3Hit) expirationReason = "tp2Hit";
+      else if (driftedAwayWithoutEntry) expirationReason = "drift";
+      else expirationReason = "timeout";
+      break;
+    }
+  }
+
+  const barsPassed = targetEndIdx - anchorIdx;
+  const isRegimeFlipExpired = expirationReason === "regimeFlip";
+  const isExpired = expiredAtBar !== null;
+
+  let status: SetupLifecycleStatus = leg1Hit ? "ACTIVE" : "PENDING";
+  if (isRegimeFlipExpired || isExpired) {
+    status = "EXPIRED";
+  }
+
+  const updatedForecast: ForecastState = {
+    ...prev,
+    startBar: anchorIdx,
+    startLogical: anchorIdx,
+    startTime: candles[anchorIdx]?.time ?? item.anchorCandleTime,
+    startPrice: prev.startPrice,
+    barsSinceStart: barsPassed,
+    isLocked: !isRegimeFlipExpired,
+    status,
+    isExpired,
+    expirationReason,
+    reason: customReason,
+    isMissedEntry,
+    statusReason: isRegimeFlipExpired
+      ? "смена гамма-режима"
+      : isMissedEntry
+      ? `🚫 НЕДОХОД (MISSED ENTRY) - Тейк взят до активации лимита`
+      : `Фиксирован (бар #${anchorIdx}, ${barsPassed} б. назад)`,
+    leg1Hit,
+    leg1Idx,
+    leg1Time,
+    leg2Hit,
+    leg2Idx,
+    leg2Time,
+    leg3Hit,
+    leg3Idx,
+    leg3Time,
+    activeTrailingSl: roundPriceForAsset(activeTrailingSl, lastClose),
+    trailingStageStr,
+    trailingStageIdx
+  };
+
+  const finalMae = evaluateMaeGuard(updatedForecast, lastClose, atrVal);
+  updatedForecast.isUnderThreat = finalMae.isUnderThreat;
+  updatedForecast.maeBadge = finalMae.maeBadge;
+  updatedForecast.maeRecommendation = finalMae.maeRecommendation;
+
+  return { expiredAtBar, updatedForecast };
+}
+
 // ============================================================================
 // 4. HUD DATA GENERATOR (f_render_hud 1:1)
 // ============================================================================
@@ -2473,13 +2962,29 @@ export function generateHudData(
   const isThirdFriday = dow === 5 && now.getUTCDate() >= 15 && now.getUTCDate() <= 21 && [2, 5, 8, 11].includes(now.getUTCMonth());
   const twWarning = isThirdFriday ? " ⚠️TW" : "";
 
+  const consensus5Tf = computeHonest5TfConsensus(null, symbol);
+  const trendAlignmentBadge = fc.trendAlignmentBadge || resolveTrendAlignmentBadge(fc, tf, consensus5Tf);
+  const maeGuard = evaluateMaeGuard(fc, close, atrVal);
+  const isUnderThreat = Boolean(fc.isUnderThreat || maeGuard.isUnderThreat);
+  const maeBadge = fc.maeBadge || maeGuard.maeBadge;
+  const maeRecommendation = fc.maeRecommendation || maeGuard.maeRecommendation;
+
   // 1. Rec Action
   const p1Str = fc.p1Entry.toFixed(1);
   const p2Str = fc.p2Tp1.toFixed(1);
   const p3Str = fc.p3Tp2.toFixed(1);
   let recActionStr = `⏳ Ждём вход @${p1Str} (${fc.isBull ? "LONG" : "SHORT"})`;
   let recCol = "#94a3b8";
-  if (fc.isPlanBActive) {
+  if (fc.status === "EXPIRED" && fc.expirationReason === "regimeFlip") {
+    recActionStr = "⛔ EXPIRED — смена гамма-режима (закрытие за Flip)";
+    recCol = "#ef4444";
+  } else if (fc.status === "EXPIRED" && fc.expirationReason === "counterTrendTp") {
+    recActionStr = `🎯 ОТКАТ ЗАКРЫТ у входа старшего ТФ (@${p2Str})`;
+    recCol = "#10b981";
+  } else if (isUnderThreat) {
+    recActionStr = `${maeBadge} — закрыть вручную или ужать стоп (@${fc.invalidLevelSl.toFixed(1)})`;
+    recCol = "#ef4444";
+  } else if (fc.isPlanBActive) {
     recActionStr = "⚡ ПЛАН Б — слом SL, жди разворот";
     recCol = "#f59e0b";
   } else if (fc.leg3Hit) {
@@ -2491,6 +2996,9 @@ export function generateHudData(
   } else if (fc.leg1Hit) {
     recActionStr = `📍 В позиции → ждём TP1 ${p2Str}`;
     recCol = "#fbbf24";
+  }
+  if (fc.counterTrend && !recActionStr.includes("ОТКАТ")) {
+    recActionStr = `${recActionStr} • ${trendAlignmentBadge}`;
   }
 
   // 2. GEX Regime (100% synchronized with Thermometer in GEX Analytics)
@@ -2569,7 +3077,7 @@ export function generateHudData(
 
   const curScoreBull = fc.isBull ? 8 : 2;
   const curScoreBear = 10 - curScoreBull;
-  const mtfDesc = fc.isBull ? "🟢 Бычий 80%" : "🔴 Медвежий 80%";
+  const mtfDesc = `${trendAlignmentBadge} • ${consensus5Tf.summaryText}`;
 
   // 7. Flows (Delta & CVD)
   const dAbs = Math.abs(deltaCurrent);
@@ -2640,7 +3148,14 @@ export function generateHudData(
     auditStr,
     auditCol,
     autoHtfName: tf === "15m" ? "1Ч" : tf === "5m" ? "15м" : "1Д",
-    hudHtfUp: fc.isBull
+    hudHtfUp: consensus5Tf.htfTrendDirection === "LONG" ? true : consensus5Tf.htfTrendDirection === "SHORT" ? false : fc.isBull,
+    trendAlignmentBadge,
+    consensus5Str: consensus5Tf.summaryText,
+    isCounterTrend: Boolean(fc.counterTrend),
+    lockRole: fc.lockRole || (fc.counterTrend ? "ОТКАТ (контртренд, уменьшенный размер)" : "ТРЕНД"),
+    isUnderThreat,
+    maeBadge,
+    maeRecommendation
   };
 }
 

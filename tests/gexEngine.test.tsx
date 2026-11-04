@@ -39,6 +39,25 @@ import {
   resolveGexMigrationContext,
   buildGexTradePlanSection
 } from "../server/gexTracker";
+import {
+  evaluateSetupRange,
+  registerActiveLock,
+  arbitrateOpposingLocksForAsset,
+  resetIndicatorForecast,
+  computeHonest5TfConsensus,
+  resolveTrendAlignmentBadge,
+  evaluateMaeGuard,
+  generateHudData,
+  AnchoredForecastItem,
+  ForecastState,
+  Candle
+} from "../src/lib/pineSuperIndicatorEngine";
+import {
+  recordOrUpdateIndicatorSetup,
+  getIndicatorSetupsHistory,
+  computeIndicatorOverallStats,
+  deleteIndicatorSetup
+} from "../server/indicatorStatsEngine";
 
 async function runTests() {
   console.log("═══════════════════════════════════════════════════════════════════");
@@ -1294,8 +1313,428 @@ async function runTests() {
     passed++;
   }
 
+  // ---------------------------------------------------------------------------
+  // TEST 24 (а): Инвалидация по смене гамма-режима (regimeFlip):
+  // при локе SHORT на 4H и споте ниже flip, закрытие 2 баров 4H выше flip переводит лок в EXPIRED
+  // ---------------------------------------------------------------------------
+  {
+    const externalFlip = 3970;
+    const tfSec4h = 14400;
+    const baseTime = 1762000000;
+    const candles4h: Candle[] = [
+      // Бар #0 (анкор лока SHORT при споте 3955 < flip 3970)
+      { time: baseTime, open: 3960, high: 3964, low: 3950, close: 3955, volume: 1200 },
+      // Бар #1 (спот всё ещё ниже flip: close 3962 < 3970)
+      { time: baseTime + tfSec4h, open: 3955, high: 3965, low: 3952, close: 3962, volume: 1300 },
+      // Бар #2 (1-й бар закрылся ВЫШЕ flip: close 3974 > 3970)
+      { time: baseTime + tfSec4h * 2, open: 3962, high: 3976, low: 3960, close: 3974, volume: 1500 },
+      // Бар #3 (2-й бар подряд закрылся ВЫШЕ flip: close 3978 > 3970 -> должен сработать regimeFlip)
+      { time: baseTime + tfSec4h * 3, open: 3974, high: 3981, low: 3971, close: 3978, volume: 1600 }
+    ];
+
+    const shortLockItem: AnchoredForecastItem = {
+      key: "XAUUSD_4h",
+      anchorCandleTime: baseTime,
+      highestPriceSinceStart: 3964,
+      lowestPriceSinceStart: 3950,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: false, // SHORT
+        probability: 74,
+        startBar: 0,
+        startTime: baseTime,
+        startPrice: 3955,
+        p1Entry: 3962,
+        p2Tp1: 3938,
+        p3Tp2: 3920,
+        p5Tp3: 3905,
+        invalidLevelSl: 3992, // SL далеко наверху (3992), чтобы проверить истечение именно по regimeFlip ДО SL
+        activeTrailingSl: 3992,
+        trailingStageStr: "🛡️ Начальный SL",
+        trailingStageIdx: 0,
+        leg1Hit: true,
+        leg1Idx: 1,
+        leg2Hit: false,
+        leg3Hit: false,
+        leg4Hit: false,
+        leg5Hit: false,
+        isPlanBActive: false,
+        isWickSweep: false,
+        altTp1: 4010,
+        altTp2: 4025,
+        altTp3: 4040,
+        isHighRunaway: false,
+        noPullbackProb: 25
+      }
+    };
+
+    // На 1-м баре выше flip (индекс 2) лок ещё НЕ истёк
+    const evalAfter1Bar = evaluateSetupRange(
+      shortLockItem,
+      0,
+      2,
+      candles4h,
+      [12, 12, 12, 12],
+      12,
+      tfSec4h,
+      ["bearish", "bearish", "bearish", "bearish"],
+      false,
+      externalFlip
+    );
+    assert.strictEqual(evalAfter1Bar.expiredAtBar, null, "После 1 бара выше flip сетап ещё не должен истекать");
+
+    // На 2-м баре подряд выше flip (индекс 3) лок истекает со статусом EXPIRED и причиной regimeFlip ("смена гамма-режима")
+    const evalAfter2Bars = evaluateSetupRange(
+      shortLockItem,
+      0,
+      3,
+      candles4h,
+      [12, 12, 12, 12],
+      12,
+      tfSec4h,
+      ["bearish", "bearish", "bearish", "bearish"],
+      false,
+      externalFlip
+    );
+    assert.strictEqual(evalAfter2Bars.expiredAtBar, 3, "На 2-м баре закрытия выше flip сетап должен истечь");
+    assert.strictEqual(evalAfter2Bars.updatedForecast.status, "EXPIRED", "Статус сетапа должен стать EXPIRED");
+    assert.strictEqual(evalAfter2Bars.updatedForecast.expirationReason, "regimeFlip", "Причина экспирации должна быть regimeFlip");
+    assert.strictEqual(evalAfter2Bars.updatedForecast.reason, "смена гамма-режима", "reason должен быть 'смена гамма-режима'");
+
+    console.log(
+      `✅ [PASS] Test 24 (а): Инвалидация regimeFlip подтверждена: лок SHORT на 4H при закрытии 2 баров выше gammaFlip (${externalFlip}) перешёл в статус '${evalAfter2Bars.updatedForecast.status}' (reason: '${evalAfter2Bars.updatedForecast.reason}') до достижения SL (${shortLockItem.forecast.invalidLevelSl})`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 25 (б): Арбитраж противоположных локов:
+  // при одновременном локе SHORT на 1D и LONG на 1H — LONG получает метку "ОТКАТ" и его TP ограничен входом SHORT;
+  // если оба "ВХОД ВЗЯТ" — младший лок получает принудительный TP на уровне входа старшего и истекает.
+  // ---------------------------------------------------------------------------
+  {
+    const TEST_SYM = "XAUUSD_ARB_TEST";
+    resetIndicatorForecast(TEST_SYM);
+
+    const lock1dShort: AnchoredForecastItem = {
+      key: `${TEST_SYM}_1d`,
+      anchorCandleTime: 1762000000,
+      highestPriceSinceStart: 4020,
+      lowestPriceSinceStart: 3960,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: false, // SHORT на 1D
+        probability: 78,
+        startBar: 10,
+        startPrice: 3985,
+        p1Entry: 3995, // Вход старшего лока (лимитная зона SHORT 1D)
+        p2Tp1: 3940,
+        p3Tp2: 3910,
+        p5Tp3: 3880,
+        invalidLevelSl: 4025,
+        activeTrailingSl: 4025,
+        trailingStageStr: "🛡️ Начальный SL",
+        trailingStageIdx: 0,
+        leg1Hit: false, // Пока ждёт лимитный вход @ 3995
+        leg2Hit: false,
+        leg3Hit: false,
+        leg4Hit: false,
+        leg5Hit: false,
+        isPlanBActive: false,
+        isWickSweep: false,
+        altTp1: 4050,
+        altTp2: 4080,
+        altTp3: 4100,
+        isHighRunaway: false,
+        noPullbackProb: 20
+      }
+    };
+
+    const lock1hLong: AnchoredForecastItem = {
+      key: `${TEST_SYM}_1h`,
+      anchorCandleTime: 1762050000,
+      highestPriceSinceStart: 3980,
+      lowestPriceSinceStart: 3955,
+      createdAt: Date.now(),
+      mathVersion: 4,
+      forecast: {
+        isBull: true, // LONG на 1H (против 1D SHORT)
+        probability: 70,
+        startBar: 20,
+        startPrice: 3965,
+        p1Entry: 3960,
+        p2Tp1: 4010, // Первоначально выше входа 1D SHORT (3995)
+        p3Tp2: 4035,
+        p5Tp3: 4055,
+        invalidLevelSl: 3945,
+        activeTrailingSl: 3945,
+        trailingStageStr: "🛡️ Начальный SL",
+        trailingStageIdx: 0,
+        leg1Hit: true, // Вход на 1H уже взят
+        leg2Hit: false,
+        leg3Hit: false,
+        leg4Hit: false,
+        leg5Hit: false,
+        isPlanBActive: false,
+        isWickSweep: false,
+        altTp1: 3930,
+        altTp2: 3915,
+        altTp3: 3900,
+        isHighRunaway: false,
+        noPullbackProb: 25
+      }
+    };
+
+    registerActiveLock(TEST_SYM, "1d", lock1dShort);
+    const updated1h = registerActiveLock(TEST_SYM, "1h", lock1hLong);
+
+    assert.strictEqual(lock1dShort.forecast.lockRole, "ТРЕНД", "Старший лок 1D должен получить роль 'ТРЕНД'");
+    assert.strictEqual(lock1dShort.forecast.counterTrend, false, "Старший лок 1D имеет counterTrend=false");
+
+    assert.strictEqual(updated1h.counterTrend, true, "Младший лок 1H должен получить counterTrend=true");
+    assert.ok(
+      updated1h.lockRole && updated1h.lockRole.includes("ОТКАТ"),
+      `Младший лок 1H должен иметь метку ОТКАТ: получено '${updated1h.lockRole}'`
+    );
+    assert.strictEqual(
+      updated1h.p2Tp1,
+      3995,
+      `TP1 младшего лока LONG должен быть ограничен входом старшего SHORT (3995), получено ${updated1h.p2Tp1}`
+    );
+    assert.strictEqual(
+      updated1h.p3Tp2,
+      3995,
+      `TP2 младшего лока LONG должен быть ограничен входом старшего SHORT (3995), получено ${updated1h.p3Tp2}`
+    );
+
+    // Теперь оба лока имеют "ВХОД ВЗЯТ" (leg1Hit = true на 1D SHORT и на 1H LONG)
+    lock1dShort.forecast.leg1Hit = true;
+    arbitrateOpposingLocksForAsset(TEST_SYM);
+
+    assert.strictEqual(lock1hLong.forecast.counterTrend, true, "При обоих ВХОД ВЗЯТ младший лок сохраняет counterTrend=true");
+    assert.strictEqual(lock1hLong.forecast.p2Tp1, 3995, "Принудительный TP младшего лока равен входу старшего лока (3995)");
+    assert.strictEqual(lock1hLong.forecast.status, "EXPIRED", "После срабатывания обоих входов младший лок истекает (EXPIRED)");
+    assert.strictEqual(lock1hLong.forecast.expirationReason, "counterTrendTp", "Причина истечения младшего лока — counterTrendTp");
+
+    resetIndicatorForecast(TEST_SYM);
+    console.log(
+      `✅ [PASS] Test 25 (б): Арбитраж противоположных локов 1D SHORT vs 1H LONG подтверждён: 1D='${lock1dShort.forecast.lockRole}', 1H='${updated1h.lockRole}' (counterTrend=true, TP ограничен входом 1D @ 3995, при обоих 'ВХОД ВЗЯТ' младший лок закрыт со статусом '${lock1hLong.forecast.status}')`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 26 (в): HUD и подпись прогнозной линии выводят бейдж контртренда ("🌊 ОТКАТ в тренде 1D/4H (SHORT)")
+  // и MAE-Guard ("⚠️ ПОД УГРОЗОЙ" при убытке > 1.25 * risk и цене в пределах 0.3 ATR от SL)
+  // ---------------------------------------------------------------------------
+  {
+    const consensus = computeHonest5TfConsensus({
+      "1d": { trend: "BEARISH" },
+      "4h": { trend: "BEARISH" },
+      "1h": { trend: "BULLISH" },
+      "30m": { trend: "BULLISH" },
+      "15m": { trend: "BULLISH" }
+    });
+    assert.strictEqual(consensus.htfTrendDirection, "SHORT", "Старший тренд 1D/4H должен быть SHORT");
+
+    // 1. Лок LONG на 15m против тренда 1D/4H (SHORT), причём плавающий убыток > 1.25 * risk и цена у SL (в пределах 0.3 ATR)
+    // Entry = 3960, SL = 3952 (risk = 8), ATR = 10.
+    // Текущая цена = 3949.5 -> плавающий убыток |3949.5 - 3960| = 10.5 > 1.25 * 8 (10.0),
+    // и расстояние до SL |3949.5 - 3952| = 2.5 <= 0.3 * 10 (3.0).
+    const fcCounterTrend: ForecastState = {
+      isBull: true,
+      probability: 68,
+      startBar: 10,
+      startPrice: 3962,
+      p1Entry: 3960,
+      p2Tp1: 3975,
+      p3Tp2: 3988,
+      p5Tp3: 4000,
+      invalidLevelSl: 3952,
+      activeTrailingSl: 3952,
+      trailingStageStr: "🛡️ Начальный SL",
+      trailingStageIdx: 0,
+      leg1Hit: true,
+      leg2Hit: false,
+      leg3Hit: false,
+      leg4Hit: false,
+      leg5Hit: false,
+      isPlanBActive: false,
+      isWickSweep: false,
+      altTp1: 3938,
+      altTp2: 3925,
+      altTp3: 3910,
+      isHighRunaway: false,
+      noPullbackProb: 20,
+      counterTrend: true,
+      parentTrendDirection: "SHORT"
+    };
+
+    const badge = resolveTrendAlignmentBadge(fcCounterTrend, "15m", consensus);
+    assert.strictEqual(
+      badge,
+      "🌊 ОТКАТ в тренде 1D/4H (SHORT)",
+      `Бейдж контртренда должен быть '🌊 ОТКАТ в тренде 1D/4H (SHORT)', получено '${badge}'`
+    );
+
+    // Проверка бейджа по тренду 1D
+    const fcWithTrend: ForecastState = { ...fcCounterTrend, isBull: false, counterTrend: false, parentTrendDirection: "SHORT" };
+    const trendBadge = resolveTrendAlignmentBadge(fcWithTrend, "15m", consensus);
+    assert.strictEqual(
+      trendBadge,
+      "🏛️ ПО ТРЕНДУ 1D",
+      `Бейдж по тренду должен быть '🏛️ ПО ТРЕНДУ 1D', получено '${trendBadge}'`
+    );
+
+    // Проверка MAE-Guard
+    const mae = evaluateMaeGuard(fcCounterTrend, 3949.5, 10);
+    assert.strictEqual(mae.isUnderThreat, true, "MAE-Guard должен активироваться при убытке > 1.25R и дистанции <= 0.3 ATR от SL");
+    assert.strictEqual(mae.maeBadge, "⚠️ ПОД УГРОЗОЙ", "Бейдж MAE-Guard должен быть '⚠️ ПОД УГРОЗОЙ'");
+
+    fcCounterTrend.trendAlignmentBadge = badge;
+    fcCounterTrend.isUnderThreat = mae.isUnderThreat;
+    fcCounterTrend.maeBadge = mae.maeBadge;
+    fcCounterTrend.maeRecommendation = mae.maeRecommendation;
+
+    const hud = generateHudData(
+      "XAUUSD",
+      "15m",
+      3949.5,
+      10,
+      {
+        spotPrice: 3949.5,
+        callWall: 3990,
+        putWall: 3930,
+        gammaFlip: 3970,
+        maxPain: 3960,
+        sleeperMagnet: 4000,
+        charmDrift: 0,
+        effectiveIv: 18,
+        gexStep: 10,
+        expectedMove68: { low: 3925, high: 3985 },
+        expectedMove95: { low: 3895, high: 4015 },
+        pcrVal: 1.02,
+        rvIvVal: 0.92,
+        strikes: [],
+        callGex: [],
+        putGex: [],
+        netGex: [],
+        totGex: [],
+        audit: { total: 10, cwRate: 80, pwRate: 80, flipRate: 75 }
+      },
+      fcCounterTrend,
+      -500,
+      -1200,
+      false,
+      3
+    );
+
+    assert.strictEqual(hud.trendAlignmentBadge, "🌊 ОТКАТ в тренде 1D/4H (SHORT)", "HUD должен содержать бейдж контртренда");
+    assert.strictEqual(hud.maeBadge, "⚠️ ПОД УГРОЗОЙ", "HUD должен содержать бейдж MAE-Guard");
+    assert.ok(
+      hud.recActionStr.includes("⚠️ ПОД УГРОЗОЙ") && hud.recActionStr.includes("закрыть вручную или ужать стоп"),
+      `Статус-строка HUD должна содержать рекомендацию MAE-Guard, получено: '${hud.recActionStr}'`
+    );
+
+    console.log(
+      `✅ [PASS] Test 26 (в): HUD бейдж контртренда ('${hud.trendAlignmentBadge}') и MAE-Guard ('${hud.recActionStr}') подтверждены`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 27 (г): Чистка журнала и учёт бандла "тренд+откат":
+  // в журнале не остаётся двух противоположных ACTIVE без пометки counterTrend,
+  // а связка "тренд+откат" считается как один бандл в статистике
+  // ---------------------------------------------------------------------------
+  {
+    const TEST_TICKER = "XAUUSD_JOURNAL_TEST";
+
+    // Записываем старший ACTIVE сетап SHORT на 1D
+    const s1 = recordOrUpdateIndicatorSetup(`${TEST_TICKER}_1d`, {
+      forecast: {
+        isBull: false,
+        direction: "SHORT",
+        p1Entry: 4000,
+        p2Tp1: 3950,
+        p3Tp2: 3920,
+        p5Tp3: 3890,
+        invalidLevelSl: 4030,
+        activeTrailingSl: 4030,
+        probability: 80,
+        leg1Hit: true
+      }
+    });
+
+    // Записываем младший ACTIVE сетап LONG на 1H (противоположное направление без переданного counterTrend)
+    const s2 = recordOrUpdateIndicatorSetup(`${TEST_TICKER}_1h`, {
+      forecast: {
+        isBull: true,
+        direction: "LONG",
+        p1Entry: 3965,
+        p2Tp1: 4015,
+        p3Tp2: 4035,
+        p5Tp3: 4050,
+        invalidLevelSl: 3948,
+        activeTrailingSl: 3948,
+        probability: 72,
+        leg1Hit: true
+      }
+    });
+
+    assert.ok(s1 && s2, "Оба сетапа должны быть записаны в журнал");
+
+    const openForTicker = getIndicatorSetupsHistory({ ticker: TEST_TICKER }).filter(
+      (s) => s.status === "ACTIVE" || s.status === "PENDING"
+    );
+    assert.strictEqual(openForTicker.length, 2, "В журнале 2 открытых сетапа по активу");
+
+    const unmarkedLong = openForTicker.filter((s) => s.direction === "LONG" && !s.counterTrend);
+    const unmarkedShort = openForTicker.filter((s) => s.direction === "SHORT" && !s.counterTrend);
+    assert.strictEqual(
+      unmarkedLong.length > 0 && unmarkedShort.length > 0,
+      false,
+      "В журнале НЕ должно быть двух противоположных ACTIVE сетапов без отметки counterTrend!"
+    );
+
+    const juniorInJournal = openForTicker.find((s) => s.timeframe === "1h")!;
+    const seniorInJournal = openForTicker.find((s) => s.timeframe === "1d")!;
+    assert.strictEqual(juniorInJournal.counterTrend, true, "Младший 1H LONG в журнале обязан иметь counterTrend=true");
+    assert.strictEqual(seniorInJournal.counterTrend, false, "Старший 1D SHORT в журнале обязан иметь counterTrend=false");
+    assert.ok(
+      juniorInJournal.bundleKey && juniorInJournal.bundleKey === seniorInJournal.bundleKey,
+      "Связанные сетапы тренд+откат должны иметь общий bundleKey"
+    );
+    assert.strictEqual(
+      juniorInJournal.tp1,
+      4000,
+      `TP младшего сетапа в журнале ограничен входом старшего (4000), получено ${juniorInJournal.tp1}`
+    );
+
+    // Проверяем агрегацию бандла в computeIndicatorOverallStats: связка тренд+откат для TEST_TICKER считается как 1 бандл
+    const stats = computeIndicatorOverallStats();
+    const tickerStats = stats.byTicker[TEST_TICKER];
+    assert.ok(tickerStats, "Статистика по тестовому тикеру должна существовать");
+    assert.strictEqual(
+      tickerStats.total,
+      1,
+      `Связка 'тренд+откат' должна учитываться как 1 бандл в статистике тикера, получено total=${tickerStats.total}`
+    );
+
+    // Очистка тестовых записей из журнала
+    deleteIndicatorSetup(s1.id);
+    deleteIndicatorSetup(s2.id);
+
+    console.log(
+      `✅ [PASS] Test 27 (г): Чистка журнала и бандл-статистика подтверждены: 1D SHORT (counterTrend=${seniorInJournal.counterTrend}) + 1H LONG (counterTrend=${juniorInJournal.counterTrend}, TP=${juniorInJournal.tp1}), бандл учтён как ${tickerStats.total} единица в статистике`
+    );
+    passed++;
+  }
+
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/23 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/27 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 
