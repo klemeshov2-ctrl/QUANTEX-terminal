@@ -545,6 +545,10 @@ export interface SuperIndicatorOutput {
   oteTop: number;
   oteBottom: number;
   fib500: number;
+  fib382?: number;
+  fib618?: number;
+  fib786?: number;
+  fib1618?: number;
   probOte: number;
   buySig: boolean;
   sellSig: boolean;
@@ -943,12 +947,13 @@ export function resolveTrendAlignmentBadge(
   consensus: Honest5TfConsensusResult
 ): string {
   const lockDir: "LONG" | "SHORT" = fc.isBull ? "LONG" : "SHORT";
-  const htfDir =
-    fc.parentTrendDirection ||
-    (consensus.htfTrendDirection !== "NEUTRAL" ? consensus.htfTrendDirection : lockDir);
+  const htfCandidate = fc.parentTrendDirection || consensus.htfTrendDirection;
+  const isCounter = fc.counterTrend || (htfCandidate !== "NEUTRAL" && htfCandidate !== lockDir);
 
-  if (fc.counterTrend || (htfDir !== "NEUTRAL" && htfDir !== lockDir)) {
-    const oppDir = htfDir !== lockDir ? htfDir : (fc.isBull ? "SHORT" : "LONG");
+  if (isCounter) {
+    const oppDir = htfCandidate && htfCandidate !== "NEUTRAL" && htfCandidate !== lockDir
+      ? htfCandidate
+      : (fc.isBull ? "SHORT" : "LONG");
     return `🌊 ОТКАТ в тренде 1D/4H (${oppDir})`;
   }
   return `🏛️ ПО ТРЕНДУ 1D`;
@@ -2394,16 +2399,38 @@ export function evaluateSuperIndicator(
     trendState = trendStateByBar[i];
   }
 
+  // 3. SMC Structure & Non-Repainting ZigZag/Fractal History
+  // Historical pivots confirmed at index <= n - 1 - p.it are strictly locked to prevent historical repainting.
+  // Dynamic recalculation is enabled only for the active live bar (n - 1).
+  const confirmedWavePivots: Array<{ index: number; price: number; type: "HIGH" | "LOW"; time: number }> = [];
+
   for (let i = p.it; i < n; i++) {
+    const isLiveBar = i === n - 1;
     const ph = findPivotHigh(highs, i, p.it, p.it);
     const pl = findPivotLow(lows, i, p.it, p.it);
     if (ph !== null) {
       lastShVal = ph;
       lastShBar = i - p.it;
+      if (!isLiveBar) {
+        confirmedWavePivots.push({
+          index: lastShBar,
+          price: ph,
+          type: "HIGH",
+          time: candles[lastShBar]?.time || 0
+        });
+      }
     }
     if (pl !== null) {
       lastSlVal = pl;
       lastSlBar = i - p.it;
+      if (!isLiveBar) {
+        confirmedWavePivots.push({
+          index: lastSlBar,
+          price: pl,
+          type: "LOW",
+          time: candles[lastSlBar]?.time || 0
+        });
+      }
     }
 
     const cClose = closes[i];
@@ -2546,13 +2573,33 @@ export function evaluateSuperIndicator(
   const cleanBullFvg = filterMitigated(bullFvgBoxes, true);
   const cleanBearFvg = filterMitigated(bearFvgBoxes, false);
 
-  // 6. Fib / OTE Calculations
-  const recentFib = candles.slice(-p.fib);
-  const highestHigh = Math.max(...recentFib.map(c => c.high));
-  const lowestLow = Math.min(...recentFib.map(c => c.low));
-  const swingRange = highestHigh - lowestLow;
-  const fib500 = lowestLow + swingRange * 0.5;
+  // 6. Fib / OTE Calculations: Anchor strictly to structural impulse origin indices
+  let highestHigh: number;
+  let lowestLow: number;
   const isBull = trendState === "bullish";
+
+  if (isBull && typeof lastSlBar === "number" && lastSlBar >= 0) {
+    const endBar = typeof lastShBar === "number" && lastShBar > lastSlBar ? lastShBar : n - 1;
+    const sub = candles.slice(lastSlBar, endBar + 1);
+    lowestLow = lastSlVal !== null ? lastSlVal : Math.min(...sub.map(c => c.low));
+    highestHigh = Math.max(...sub.map(c => c.high));
+  } else if (!isBull && typeof lastShBar === "number" && lastShBar >= 0) {
+    const endBar = typeof lastSlBar === "number" && lastSlBar > lastShBar ? lastSlBar : n - 1;
+    const sub = candles.slice(lastShBar, endBar + 1);
+    highestHigh = lastShVal !== null ? lastShVal : Math.max(...sub.map(c => c.high));
+    lowestLow = Math.min(...sub.map(c => c.low));
+  } else {
+    const recentFib = candles.slice(-p.fib);
+    highestHigh = Math.max(...recentFib.map(c => c.high));
+    lowestLow = Math.min(...recentFib.map(c => c.low));
+  }
+
+  const swingRange = Math.max(highestHigh - lowestLow, 0.0001);
+  const fib382 = isBull ? highestHigh - swingRange * 0.382 : lowestLow + swingRange * 0.382;
+  const fib500 = lowestLow + swingRange * 0.500;
+  const fib618 = isBull ? highestHigh - swingRange * 0.618 : lowestLow + swingRange * 0.618;
+  const fib786 = isBull ? highestHigh - swingRange * 0.786 : lowestLow + swingRange * 0.786;
+  const fib1618 = isBull ? highestHigh + swingRange * 0.618 : lowestLow - swingRange * 0.618;
 
   const oteTop = isBull ? highestHigh - swingRange * 0.618 : lowestLow + swingRange * 0.786;
   const oteBottom = isBull ? highestHigh - swingRange * 0.786 : lowestLow + swingRange * 0.618;
@@ -3355,6 +3402,10 @@ export function evaluateSuperIndicator(
     oteTop,
     oteBottom,
     fib500,
+    fib382,
+    fib618,
+    fib786,
+    fib1618,
     probOte,
     buySig,
     sellSig,
@@ -3745,7 +3796,7 @@ export function evaluateSetupRange(
       : leg1Hit
       ? "ACTIVE"
       : "PENDING";
-  if (isBreakoutSetup && status !== "EXPIRED") {
+  if (isBreakoutSetup) {
     status = leg1Hit ? "ACTIVE" : "PENDING";
   }
   if (isRegimeFlipExpired || isExpired) {
@@ -4343,13 +4394,21 @@ export function calculateGexProbabilityEngine(
  * Вычисляет живые уровни сетапа (ВХОД / TP1 / TP2 / TP3 / SL) на указанном баре (по умолчанию — текущем последнем баре)
  * для fallback-восстановления лесенки в AutonomousTradingStation при невалидном кэшированном сетапе.
  */
+export type SetupLevelsResult = NestedLadderResult & {
+  altTp1: number;
+  altTp2: number;
+  altTp3: number;
+  isBull: boolean;
+  atrVal: number;
+};
+
 export function createSetupLevelsForBar(
   candles: Candle[],
   symbol: string = "XAUUSD",
   tf: string = "15m",
   barIdx?: number,
   externalGexReport?: Partial<GexReportCalculated> | null
-): SetupLevelsResult & { isBull: boolean; atrVal: number } {
+): SetupLevelsResult {
   const safeCandles = Array.isArray(candles) && candles.length > 0
     ? candles
     : [{ time: Math.floor(Date.now() / 1000), open: 4050, high: 4062, low: 4042, close: 4055, volume: 1000 }];
@@ -4431,5 +4490,7 @@ export function createSetupLevelsForBar(
     atrVal
   };
 }
+
+export { evaluateSuperIndicator as runPineSuperIndicatorEngine };
 
 

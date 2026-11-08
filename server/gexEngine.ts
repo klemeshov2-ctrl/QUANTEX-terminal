@@ -1,5 +1,16 @@
 // 🏛️ QUANTEX Real-Time GEX (Gamma Exposure) & Options Analytics Engine
 // Institutional Options & Futures Analytics Engine
+import Decimal from "decimal.js";
+
+Decimal.config({ precision: 30, rounding: Decimal.ROUND_HALF_UP });
+
+export function roundToDecimals(val: number, decimals: number): number {
+  if (!isFinite(val) || isNaN(val)) return 0;
+  if (decimals <= 0) {
+    return new Decimal(val).round().toNumber();
+  }
+  return new Decimal(val).toDecimalPlaces(decimals, Decimal.ROUND_HALF_UP).toNumber();
+}
 
 export interface GexStrikeData {
   strike: number;
@@ -18,7 +29,7 @@ export interface GexStrikeData {
 export type ExpiryHorizon = "DAY" | "WEEK" | "MONTH" | "ALL";
 
 export interface GexMarketReport {
-  asset: "BTC" | "ETH" | "SOL" | "XAUUSD" | "XRP" | "MOEX_GOLD" | "MOEX_MINI" | "GLDRUBF" | "MOEX_SI" | "MOEX_RI" | "MOEX_BR" | "MOEX_NG";
+  asset: "BTC" | "ETH" | "SOL" | "XAUUSD" | "XRP" | "MOEX_GOLD" | "MOEX_MINI" | "GLDRUBF" | "MOEX_SI" | "MOEX_RI" | "MOEX_BR" | "MOEX_NG" | (string & {});
   horizon?: ExpiryHorizon;
   spotPrice: number;
   timestamp: string;
@@ -41,13 +52,15 @@ export interface GexMarketReport {
   netGexTotal: number;        // Total net GEX ($/pt or $M)
   normalizedNetGex?: number;  // Dimensionless Net GEX [-1.0 ... +1.0] for cross-asset comparison
   gexIntensity?: number;      // Gross GEX as % of total market open interest value
-  netGexRegime: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA";
-  regimeDescription: string;  // Mean-reverting vs Volatile Trend Acceleration
+  netGexRegime?: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA";
+  regime?: string;
+  regimeDescription?: string;  // Mean-reverting vs Volatile Trend Acceleration
   gammaFlip: number;          // Zero Gamma Level
   callWall: number;           // Resistance ceiling (highest Call OI strike above spot)
   putWall: number;            // Support floor (highest Put OI strike below spot)
   maxPain: number;            // Expiration magnet (minimum total buyer payout, OI only)
   maxPainRange?: { low: number; high: number; mid: number } | null; // Pinning zone range when zero/min-payout zone is wider than 1 grid step
+  freshValues?: { callWall: number; putWall: number; gammaFlip: number; maxPain: number };
   migrationLog?: {
     timestamp: string;
     asset: string;
@@ -55,24 +68,24 @@ export interface GexMarketReport {
     level: "CW" | "PW" | "FLIP" | "PAIN" | "ALL";
     oldValue: number | null;
     newValue: number;
-    reason: "breach" | "cooldown+OI" | "new session" | "reset";
+    reason: "breach" | "cooldown+OI" | "new session" | "reset" | "source_switch";
     details: string;
   }[];
   sleeperMagnet?: number;     // Sleeper magnet strike
-  expectedMove68: { low: number; high: number; rangePct: number }; // 1σ
-  expectedMove95: { low: number; high: number; rangePct: number }; // 2σ
-  dealerGreeks: {
+  expectedMove68?: { low: number; high: number; rangePct: number }; // 1σ
+  expectedMove95?: { low: number; high: number; rangePct: number }; // 2σ
+  dealerGreeks?: {
     charm: number;            // Delta decay over time
     vanna: number;            // Delta sensitivity to IV
     aggregateDelta: number;   // Net dealer inventory delta
   };
-  pcrOi: number;              // Put/Call Ratio (Open Interest)
-  pcrVol: number;             // Put/Call Ratio (Volume)
-  impliedVolAvg: number;      // Average IV (%)
-  realizedVol30d: number;     // Realized Volatility 30d (%)
-  volSpreadIvRv: number;      // IV - RV spread
+  pcrOi?: number;              // Put/Call Ratio (Open Interest)
+  pcrVol?: number;             // Put/Call Ratio (Volume)
+  impliedVolAvg?: number;      // Average IV (%)
+  realizedVol30d?: number;     // Realized Volatility 30d (%)
+  volSpreadIvRv?: number;      // IV - RV spread
   strikes: GexStrikeData[];   // Detailed strike profile for histograms
-  oiAnomalies: {
+  oiAnomalies?: {
     strike: number;
     type: "CALL" | "PUT";
     volume: number;
@@ -362,7 +375,7 @@ export function computeMaxPainWithRange(
 
   for (const cand of candidatePool) {
     if (cand.strike <= 0 || isNaN(cand.strike)) continue;
-    let totalPayout = 0;
+    let totalPayoutDec = new Decimal(0);
 
     for (const s of gridStrikes) {
       if (s.strike <= 0 || isNaN(s.strike)) continue;
@@ -371,12 +384,17 @@ export function computeMaxPainWithRange(
       const pOi = Math.max(0, s.putOi || 0);
 
       if (cand.strike > s.strike) {
-        totalPayout += (cand.strike - s.strike) * cOi;
+        totalPayoutDec = totalPayoutDec.plus(
+          new Decimal(cand.strike).minus(s.strike).times(cOi)
+        );
       } else if (cand.strike < s.strike) {
-        totalPayout += (s.strike - cand.strike) * pOi;
+        totalPayoutDec = totalPayoutDec.plus(
+          new Decimal(s.strike).minus(cand.strike).times(pOi)
+        );
       }
     }
 
+    const totalPayout = totalPayoutDec.toNumber();
     payouts.push({ strike: cand.strike, payout: totalPayout });
     if (totalPayout < minTotalPayout) {
       minTotalPayout = totalPayout;
@@ -466,11 +484,21 @@ export function computeZeroGammaFlip(
     if (Math.abs(s1.netGex) + Math.abs(s2.netGex) <= 1e-9) continue;
 
     if ((s1.netGex <= 0 && s2.netGex >= 0) || (s1.netGex >= 0 && s2.netGex <= 0)) {
-      const denom = s2.netGex - s1.netGex;
+      const denomDec = new Decimal(s2.netGex).minus(s1.netGex);
       const root =
-        Math.abs(denom) > 1e-6
-          ? roundToDecimals(s1.strike + ((0 - s1.netGex) / denom) * (s2.strike - s1.strike), roundDecimals)
-          : roundToDecimals((s1.strike + s2.strike) / 2, roundDecimals);
+        !denomDec.isZero() && denomDec.abs().toNumber() > 1e-6
+          ? roundToDecimals(
+              new Decimal(s1.strike)
+                .plus(
+                  new Decimal(0)
+                    .minus(s1.netGex)
+                    .dividedBy(denomDec)
+                    .times(new Decimal(s2.strike).minus(s1.strike))
+                )
+                .toNumber(),
+              roundDecimals
+            )
+          : roundToDecimals(new Decimal(s1.strike).plus(s2.strike).dividedBy(2).toNumber(), roundDecimals);
       crossings.push(root);
     }
   }
@@ -781,11 +809,6 @@ export const CRYPTO_ASSET_CONFIG: Record<
   XRP: { defaultSpot: 2.45, step: 0.05, baseIv: 68.0, realizedVol: 58.0, roundDecimals: 3, contractMultiplier: 1000 }
 };
 
-function roundToDecimals(val: number, decimals: number): number {
-  const factor = Math.pow(10, decimals);
-  return Math.round(val * factor) / factor;
-}
-
 /**
  * Spot-Anchored Mathematical Fallback for Crypto Assets (BTC, ETH, SOL, XRP).
  * Triggered automatically if Deribit API times out (>3.2s), is unreachable, or has insufficient option strikes.
@@ -911,8 +934,8 @@ function calculateSyntheticCryptoGex(
     netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
     regimeDescription:
       totalNetGex >= 0
-        ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Маркетмейкеры гасят волатильность между $${putWall} и $${callWall}.`
-        : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Риск импульсного пробоя уровней.`,
+        ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Long Gamma маркетмейкеров гасит волатильность между $${putWall} и $${callWall} (контртрендовое хеджирование: продажа роста, выкуп падения).`
+        : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Инверсия хеджирования: в Short Gamma маркетмейкеры продают падение и выкупают рост, ускоряя импульс.`,
     gammaFlip,
     callWall,
     putWall,
@@ -1224,8 +1247,8 @@ export function calculateCryptoGex(
       netGexRegime: totalNetGex >= 0 ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA",
       regimeDescription:
         totalNetGex >= 0
-          ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Маркетмейкеры гасят волатильность между $${putWall} и $${callWall}.`
-          : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Риск резкого выхода из диапазона.`,
+          ? `Положительная Гамма ${asset} (${horizonLabels[horizon]}): Long Gamma маркетмейкеров гасит волатильность между $${putWall} и $${callWall} (контртрендовое хеджирование: продажа роста, выкуп падения).`
+          : `Отрицательная Гамма ${asset} (${horizonLabels[horizon]}): Режим трендового ускорения. Инверсия хеджирования: в Short Gamma маркетмейкеры продают падение и выкупают рост, ускоряя импульс.`,
       gammaFlip,
       callWall,
       putWall,

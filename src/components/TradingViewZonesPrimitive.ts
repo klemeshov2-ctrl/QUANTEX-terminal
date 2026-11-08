@@ -260,14 +260,15 @@ function drawBadge(
     }
     ctx.fill();
 
-    // Border: On mobile version, omit borders from badges (Take Profit, Stop Loss, Entry, Flip, etc.)
-    // so labels render as clean, borderless solid pills as requested. Allow only if explicitly enabled in user settings.
+    // Border: All chart badges (Take Profit, Stop Loss, Entry, Flip, Walls, etc.) render as clean,
+    // borderless solid pills on both desktop and mobile by default, matching modern minimalist terminal aesthetics.
+    // Allow borders only if explicitly enabled in user settings ("quantex_chart_badge_borders" === "true").
     let allowBorders = false;
     try {
       allowBorders = typeof window !== "undefined" && localStorage.getItem("quantex_chart_badge_borders") === "true";
     } catch {}
 
-    const canDrawBorder = !isMobile ? (opts?.showBorder !== undefined ? opts.showBorder : true) : allowBorders;
+    const canDrawBorder = allowBorders;
     if (canDrawBorder) {
       ctx.strokeStyle = borderColor;
       ctx.lineWidth = isMobile ? 0.8 : 1;
@@ -467,6 +468,80 @@ export function solveBadgeAntiCollision<
 }
 
 /**
+ * Dynamic clustering for zones when zoomed out to eliminate visual noise and clutter
+ */
+function clusterZones(zones: ZoneBox[], series: any, barSpacing: number): ZoneBox[] {
+  if (!zones || zones.length < 2 || barSpacing >= 10) return zones;
+
+  const sorted = [...zones].sort((a, b) => b.topPrice - a.topPrice);
+  const clustered: ZoneBox[] = [];
+  let currentGroup: ZoneBox[] = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = currentGroup[currentGroup.length - 1];
+    const curr = sorted[i];
+
+    const yPrev = series.priceToCoordinate(prev.bottomPrice);
+    const yCurr = series.priceToCoordinate(curr.topPrice);
+    const pxGap = yPrev !== null && yCurr !== null ? Math.abs(Number(yCurr) - Number(yPrev)) : 100;
+    const isOverlapping = curr.topPrice >= prev.bottomPrice && curr.bottomPrice <= prev.topPrice;
+
+    if (isOverlapping || pxGap < 8) {
+      currentGroup.push(curr);
+    } else {
+      if (currentGroup.length === 1) {
+        clustered.push(currentGroup[0]);
+      } else {
+        const top = Math.max(...currentGroup.map(z => z.topPrice));
+        const bot = Math.min(...currentGroup.map(z => z.bottomPrice));
+        const sTime = Math.min(...currentGroup.map(z => z.startTime));
+        const eTime = Math.max(...currentGroup.map(z => z.endTime));
+        clustered.push({
+          id: `cluster_${currentGroup.map(z => z.id).join("_")}`,
+          type: currentGroup[0].type,
+          startTime: sTime,
+          endTime: eTime,
+          startLogical: currentGroup[0].startLogical,
+          endLogical: currentGroup[0].endLogical,
+          topPrice: top,
+          bottomPrice: bot,
+          label: `Кластер [${currentGroup.length}] ${bot.toFixed(1)}–${top.toFixed(1)}`,
+          fillColor: currentGroup[0].fillColor,
+          borderColor: currentGroup[0].borderColor,
+          borderStyle: "dashed"
+        });
+      }
+      currentGroup = [curr];
+    }
+  }
+
+  if (currentGroup.length === 1) {
+    clustered.push(currentGroup[0]);
+  } else if (currentGroup.length > 1) {
+    const top = Math.max(...currentGroup.map(z => z.topPrice));
+    const bot = Math.min(...currentGroup.map(z => z.bottomPrice));
+    const sTime = Math.min(...currentGroup.map(z => z.startTime));
+    const eTime = Math.max(...currentGroup.map(z => z.endTime));
+    clustered.push({
+      id: `cluster_${currentGroup.map(z => z.id).join("_")}`,
+      type: currentGroup[0].type,
+      startTime: sTime,
+      endTime: eTime,
+      startLogical: currentGroup[0].startLogical,
+      endLogical: currentGroup[0].endLogical,
+      topPrice: top,
+      bottomPrice: bot,
+      label: `Кластер [${currentGroup.length}] ${bot.toFixed(1)}–${top.toFixed(1)}`,
+      fillColor: currentGroup[0].fillColor,
+      borderColor: currentGroup[0].borderColor,
+      borderStyle: "dashed"
+    });
+  }
+
+  return clustered;
+}
+
+/**
  * 1. Background Renderer: Renders OB, FVG, OTE zones & 0.50 EQ line BEHIND candles (zOrder: "bottom")
  */
 class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
@@ -511,9 +586,10 @@ class TradingViewBackgroundZonesRenderer implements IPrimitivePaneRenderer {
           if (cx !== null) candleEndX = (cx as number) + barSpacing * 0.65;
         }
 
-        // 1. Draw Zones (OB, FVG, OTE)
+        // 1. Draw Zones (OB, FVG, OTE) with dynamic zoom-out clustering
         if (data.zones && data.zones.length > 0) {
-          for (const zone of data.zones) {
+          const zonesToDraw = clusterZones(data.zones, series, barSpacing);
+          for (const zone of zonesToDraw) {
             let x1: number | null = null;
             let x2: number | null = null;
 

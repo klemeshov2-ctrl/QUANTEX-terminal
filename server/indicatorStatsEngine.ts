@@ -43,6 +43,7 @@ export interface IndicatorSetupItem {
   pnlR?: number;
   probability: number;
   createdAt: string;
+  anchorCandleTime?: number;
   createdTimestamp: number;
   timeMsk: string;
   dateMsk: string;

@@ -578,19 +578,21 @@ export default function InteractiveChart({
     return () => observer.disconnect();
   }, []);
 
-  // Main canvas drawing pipeline
+  // Main canvas drawing pipeline with requestAnimationFrame throttling
   useEffect(() => {
+    let animId: number | null = null;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Clear and scale for high DPI screens
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = dimensions.width * dpr;
-    canvas.height = dimensions.height * dpr;
-    ctx.scale(dpr, dpr);
+    animId = requestAnimationFrame(() => {
+      // Clear and scale for high DPI screens
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = dimensions.width * dpr;
+      canvas.height = dimensions.height * dpr;
+      ctx.scale(dpr, dpr);
 
     const width = dimensions.width;
     const height = dimensions.height;
@@ -2502,6 +2504,13 @@ export default function InteractiveChart({
         }
       }
     }
+    });
+
+    return () => {
+      if (animId !== null) {
+        cancelAnimationFrame(animId);
+      }
+    };
   }, [candlesticks, dimensions, hoverIndex, zoomFactor, scrollOffset, settings, computedState]);
 
   // Handle mouse down to initiate panning (drag)

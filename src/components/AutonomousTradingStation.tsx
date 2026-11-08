@@ -2536,7 +2536,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const activeReportForPreview = gexReport || dayGexReport;
   const gexPreviewDiff = useMemo(() => {
     if (!activeReportForPreview || !activeReportForPreview.freshValues) return null;
-    return formatGexFreshDiffPreview(activeReportForPreview, activeReportForPreview.freshValues);
+    return formatGexFreshDiffPreview(activeReportForPreview);
   }, [activeReportForPreview]);
 
   // 3. Fetch Economic Calendar from local server (with Moscow date & time synchronization)
@@ -4803,7 +4803,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
           const liveFallback = createSetupLevelsForBar(
             cleanCandles,
             activeAsset,
-            timeframe,
+            activeTf,
             lastIdx,
             (gexReport || dayGexReport || indicatorOutput?.gex) as any
           );
@@ -6875,7 +6875,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   ⚠️ {(gexReport?.lowConfidenceReason || dayGexReport?.lowConfidenceReason) || "Мало данных OI — уровни приблизительные"}
                 </span>
                 <button
-                  onClick={handleResetStabilizedGexCache}
+                  onClick={() => handleResetStabilizedGexCache()}
                   disabled={isResettingGexCache}
                   className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold shrink-0"
                 >

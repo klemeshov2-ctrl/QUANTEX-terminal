@@ -3,6 +3,7 @@
 // кулдауном (DAY 30м, WEEK 60м, MONTH 120м), авто-миграцией при смене источника
 // и блокировкой пересчета при открытых сделках
 
+import Decimal from "decimal.js";
 import {
   GexMarketReport,
   ExpiryHorizon,
@@ -10,7 +11,8 @@ import {
   clearGexEngineCache,
   findCallAndPutWalls,
   computeMaxPainWithRange,
-  computeZeroGammaFlip
+  computeZeroGammaFlip,
+  roundToDecimals
 } from "./gexEngine";
 import {
   getLevelRole,
@@ -152,6 +154,8 @@ export function getStabilizerMigrationLog(asset?: string, horizon?: ExpiryHorizo
 
 // In-memory cache of stabilized GEX states by `${asset}_${horizon}`
 const stabilizedCache = new Map<string, StabilizedGexRecord>();
+// Incremental strike cache map: key -> Map<strike, GexStrikeData> for fast, low-overhead updates
+const incrementalStrikeCache = new Map<string, Map<number, any>>();
 
 /**
  * Определяет часовой пояс основной биржи актива для точного расчета смены торговой сессии (EOD Roll):
@@ -344,6 +348,39 @@ export async function getStabilizedGexReport(
 
   // Получаем свежий отчет от базового движка (или переданный override)
   const freshReport = overrideFreshReport || (await getGexReportForAsset(asset, horizon));
+
+  // 0. Packet timestamp & out-of-order arrival validation
+  if (cached && freshReport) {
+    const freshTimestamp = freshReport.dataTimestamp || freshReport.timestamp;
+    const cachedTimestamp = cached.report.dataTimestamp || cached.report.timestamp;
+    if (freshTimestamp && cachedTimestamp) {
+      const freshMs = new Date(freshTimestamp).getTime();
+      const cachedMs = new Date(cachedTimestamp).getTime();
+      if (isFinite(freshMs) && isFinite(cachedMs) && freshMs < cachedMs - 60000) {
+        console.warn(
+          `[GEX State Manager] Dropped stale/out-of-order packet for ${assetUpper} ${horizonUpperKey}: packet=${freshTimestamp} < cached=${cachedTimestamp}`
+        );
+        return enrichReportWithStandardLabels(cached.report, spotPrice);
+      }
+    }
+  }
+
+  // Incremental strike cache integration: merge changed strikes and maintain complete profile
+  if (freshReport.strikes && freshReport.strikes.length > 0) {
+    let bookMap = incrementalStrikeCache.get(key);
+    if (!bookMap) {
+      bookMap = new Map();
+      incrementalStrikeCache.set(key, bookMap);
+    }
+    for (const s of freshReport.strikes) {
+      if (s && isFinite(s.strike) && s.strike > 0) {
+        bookMap.set(s.strike, { ...s });
+      }
+    }
+    if (freshReport.strikes.length < bookMap.size) {
+      freshReport.strikes = Array.from(bookMap.values()).sort((a, b) => a.strike - b.strike);
+    }
+  }
 
   // Если это первый запуск для данного актива и горизонта (или после ручного сброса) — инициализируем стабилизированную запись
   if (!cached) {
@@ -547,7 +584,7 @@ export async function getStabilizedGexReport(
   // 1a. Стабилизация Call Wall (Потолок):
   if (newCw !== currentCw) {
     const prevCwOi = cached.callWallOi;
-    const isNewCwStronger = newCwOi >= prevCwOi * (1 + horizonHysteresis);
+    const isNewCwStronger = new Decimal(newCwOi).gte(new Decimal(prevCwOi).times(new Decimal(1).plus(horizonHysteresis)));
     const shouldMigrateCw =
       isCwSourceSwitch ||
       isCwBreached ||
@@ -619,7 +656,7 @@ export async function getStabilizedGexReport(
   // 1b. Стабилизация Put Wall (Пол):
   if (newPw !== currentPw) {
     const prevPwOi = cached.putWallOi;
-    const isNewPwStronger = newPwOi >= prevPwOi * (1 + horizonHysteresis);
+    const isNewPwStronger = new Decimal(newPwOi).gte(new Decimal(prevPwOi).times(new Decimal(1).plus(horizonHysteresis)));
     const shouldMigratePw =
       isPwSourceSwitch ||
       isPwBreached ||
@@ -911,6 +948,7 @@ export function resetStabilizedGexCache(
           freshValues: fresh
         });
         stabilizedCache.delete(k);
+        incrementalStrikeCache.delete(k);
         clearedAny = true;
       }
     }
@@ -960,6 +998,7 @@ export function resetStabilizedGexCache(
       });
     }
     stabilizedCache.clear();
+    incrementalStrikeCache.clear();
   }
 
   return {

@@ -9238,66 +9238,58 @@ app.get("/api/download-manual-pdf", async (req, res) => {
 
 app.post("/api/analyze-chart", async (req, res) => {
   try {
-    const { asset, timeframe, indicators, candlesticks, query } = req.body;
+    const { asset, timeframe, indicators, candlesticks, query, messages } = req.body;
 
     const serverAi = (unifiedStationSettings as any)?.ai || {};
     const effectiveGeminiKey = req.body.geminiApiKey || serverAi.geminiApiKey || process.env.GEMINI_API_KEY;
     const client = getGeminiClient(effectiveGeminiKey);
 
+    const lastCandle = candlesticks && candlesticks.length > 0 ? candlesticks[candlesticks.length - 1] : null;
+    const prevCandle = candlesticks && candlesticks.length > 5 ? candlesticks[candlesticks.length - 5] : lastCandle;
+    const isTrendBull = lastCandle && prevCandle ? lastCandle.close >= prevCandle.close : true;
+    const isPosGamma = indicators?.gex?.regime?.includes("+GAMMA") || indicators?.gex?.regime?.includes("POSITIVE");
+
     if (!client) {
-      // Return simulated commentary if API key is missing, so the app remains fully functional
+      // Freeform colleague-style simulation commentary if API key is not configured
+      const gexText = isPosGamma
+        ? `В опционном стакане сейчас Long Gamma: дилеры гасят волатильность между ${indicators?.gex?.putWall || "поддержкой"} и ${indicators?.gex?.callWall || "сопротивлением"} (продают рост и выкупают проливы, сжимая спред).`
+        : `Внимание, актив перешёл в Short Gamma: маркетмейкеры инвертировали хеджирование и вынуждены продавать на падении и покупать на выносах вверх, что разгоняет резкий импульс и волатильность.`;
+
+      const responseText = query && query !== "default"
+        ? `По запросу **"${query}"**:\n\nСмотри, по ${asset} (${timeframe}) сейчас интересная картина: дельта CVD (${Math.round(indicators?.cvd || 0)}) показывает ${indicators?.cvd > 0 ? "уверенный спотовый набор" : "давление лимитных продавцов"}. ${gexText}\n\nПо структуре Smart Money: ${indicators?.marketStructure || "стабильная структура"}. ${indicators?.obStatus || ""}. Рекомендую ориентироваться на тест пулов ликвидности и удерживать защитный стоп за пределами Flip-зоны (${indicators?.gex?.zeroFlip || "Zero-Gamma"}).`
+        : `Привет! Давай разберем текущую ситуацию по ${asset} на ${timeframe}.\n\nС точки зрения рыночной микроструктуры: ${isTrendBull ? "структурный тренд восходящий" : "наблюдается нисходящее давление"}. Кумулятивная дельта (CVD) на уровне ${Math.round(indicators?.cvd || 0)} (${indicators?.cvdTrend || "нейтрально"}).\n\n${gexText}\n\nКлючевой ориентир дилеров — Zero-Gamma Flip на ${indicators?.gex?.zeroFlip ? indicators.gex.zeroFlip.toFixed(2) : "актуальном рубеже"}. Если цена держится ${isPosGamma ? "выше" : "ниже"} этого уровня, приоритет за ${isTrendBull ? "лонговыми сетапами от Order Block" : "шортовыми откатами к пулам ликвидности"}.\n\nСпрашивай любые детали по сетапам, скрытым плотностям или макро — разберем!`;
+
       return res.json({
-        analysis: `### 🌐 [СИМУЛЯЦИЯ АНАЛИЗА] QUANTEX AI
-      
-**Инструмент:** ${asset} | **Таймфрейм:** ${timeframe}
-
-Для полноценного анализа с использованием искусственного интеллекта настройте **GEMINI_API_KEY** в панели secrets в AI Studio или в «⚙️ Настройки станции». 
-
-**Текущая техническая картина:**
-1. **Рыночный нарратив (SMC):** Наблюдается структура *${candlesticks[candlesticks.length - 1]?.close > candlesticks[candlesticks.length - 5]?.close ? "Bullish (Восходящая)" : "Bearish (Нисходящая)"}*. Последний зафиксированный триггер структуры: **BOS (Break of Structure)**.
-2. **Дельта объемов (voldelta):** Кумулятивная дельта (CVD) составляет **${Math.round(indicators.cvd)}**. Это свидетельствует о ${indicators.cvd > 0 ? "доминировании покупателей на спотовом/фьючерсном рынке" : "повышенном давлении продавцов"} в текущем цикле.
-3. **Прогноз ИИ (Lorentzian ML):** Алгоритм машинного обучения выдает сигнал **${indicators.mlSignal > 0 ? "BUY (Покупка)" : indicators.mlSignal < 0 ? "SELL (Продажа)" : "NEUTRAL (Ожидание)"}** с высоким уровнем схождения в многомерном признаковом пространстве.
-4. **Рекомендация:** Накапливайте объем в зонах Order Block (OB) при подтверждении разворотных паттернов дельты. Избегайте входа в сделки посередине торгового диапазона.`,
-        isSimulated: true
+        analysis: responseText,
+        isSimulated: true,
+        provider: "QUANTEX Desk Engine"
       });
     }
 
-    // Construct a comprehensive prompt for Gemini with global macroeconomic context
-    const lastCandle = candlesticks[candlesticks.length - 1];
-    const prompt = `Ты — ведущий институциональный макро-аналитик и эксперт по Smart Money Concepts (SMC), потоку ордеров (CVD) и опционному позиционированию дилеров GEX.
-Проведи глубокий технический и макроэкономический анализ для актива ${asset} на таймфрейме ${timeframe}:
+    // Construct rich colleague prompt without rigid required section templates
+    let conversationHistory = "";
+    if (Array.isArray(messages) && messages.length > 0) {
+      conversationHistory = "\nИстория предыдущего диалога с коллегой:\n" +
+        messages.slice(-6).map((m: any) => `${m.role === "user" ? "Трейдер" : "Квант-Коллега"}: ${m.text || m.content}`).join("\n");
+    }
 
-ТЫ МЫСЛИШЬ ГЛОБАЛЬНО:
-- Включай общемировой макроэкономический контекст: индекс доллара DXY, ожидания шагов по ставке ФРС США, динамику доходностей трежерис US10Y, спрос центробанков и мировые сырьевые тенденции.
-- Синтезируй глобальный фон с точными показателями терминала QUANTEX:
+    const feedbackLoopContext = getAiFeedbackLoopContext(asset);
 
-1. **Cumulative Volume Delta (voldelta/CVD):** Текущее значение CVD: ${Math.round(indicators.cvd)}. Динамика дельты: ${indicators.cvdTrend}. Оцени наличие дивергенций между ценой и реальным потоком ликвидности.
-2. **Нарратив рынка (Market Narrative / SMC):**
-   - Структура тренда: ${indicators.marketStructure} (BOS, CHoCH)
-   - Последние зоны дисбаланса (Fair Value Gaps - FVG): ${indicators.fvgStatus}
-   - Сильные зоны спроса и предложения (Order Blocks - OB): ${indicators.obStatus}
-3. **Опционный профиль GEX (Gamma Exposure CME):**
-   - Режим гаммы: ${indicators.gex?.regime || "+GAMMA (Сжатие волатильности)"}
-   - Call Wall (Потолок дилеров): ${indicators.gex?.callWall ? indicators.gex.callWall.toFixed(2) : "Определяется"}
-   - Put Wall (Пол дилеров): ${indicators.gex?.putWall ? indicators.gex.putWall.toFixed(2) : "Определяется"}
-   - Zero-Gamma Flip (Уровень смены режима): ${indicators.gex?.zeroFlip ? indicators.gex.zeroFlip.toFixed(2) : "Определяется"}
-   - Max Pain Strike: ${indicators.gex?.maxPain ? indicators.gex.maxPain.toFixed(2) : "Определяется"}
-4. **Предиктивный алгоритм машинного обучения (Lorentzian Classifier):** Текущий сигнал: ${indicators.mlSignal > 0 ? "BUY (Покупка)" : indicators.mlSignal < 0 ? "SELL (Продажа)" : "NEUTRAL (Нейтрально)"} (Уровень уверенности: ${Math.round(indicators.mlConfidence * 100)}%).
+    const prompt = `Контекст рынка (${asset}, таймфрейм ${timeframe}):
+- Спот: ${lastCandle?.close?.toFixed(2) || "н/д"} (Open: ${lastCandle?.open?.toFixed(2)}, High: ${lastCandle?.high?.toFixed(2)}, Low: ${lastCandle?.low?.toFixed(2)})
+- Кумулятивная дельта (CVD): ${Math.round(indicators?.cvd || 0)} (${indicators?.cvdTrend || "нейтрально"})
+- SMC структура: ${indicators?.marketStructure || "стабильно"}, FVG: ${indicators?.fvgStatus || "нет"}, OB: ${indicators?.obStatus || "нет"}
+- GEX опционы: Режим ${indicators?.gex?.regime || "+GAMMA"}, Call Wall: ${indicators?.gex?.callWall?.toFixed(2) || "н/д"}, Put Wall: ${indicators?.gex?.putWall?.toFixed(2) || "н/д"}, Zero Flip: ${indicators?.gex?.zeroFlip?.toFixed(2) || "н/д"}, Max Pain: ${indicators?.gex?.maxPain?.toFixed(2) || "н/д"}
+- Lorentzian ML сигнал: ${indicators?.mlSignal > 0 ? "BUY" : indicators?.mlSignal < 0 ? "SELL" : "NEUTRAL"} (уверенность ${Math.round((indicators?.mlConfidence || 0.5) * 100)}%)
+${feedbackLoopContext}
 
-${query && query !== "default" ? `❓ СПЕЦИАЛЬНЫЙ ВОПРОС ТРЕЙДЕРА: "${query}"` : ""}
+Последние свечи:
+${candlesticks && candlesticks.length > 0 ? candlesticks.slice(-6).map((c: any, idx: number) => `Бар ${idx + 1}: O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)} V:${Math.round(c.volume)}`).join("\n") : "нет"}
+${conversationHistory}
 
-Данные последних 5 свечей:
-${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: O:${c.open.toFixed(2)}, H:${c.high.toFixed(2)}, L:${c.low.toFixed(2)}, C:${c.close.toFixed(2)}, V:${Math.round(c.volume)}`).join("\n")}
+Текущий вопрос/запрос трейдера: "${query && query !== "default" ? query : "Дай живой профессиональный обзор текущей картины: что говорит сопоставление GEX, дельты и структуры?"}"
 
-Подготовь подробный, структурированный и профессиональный анализ на русском языке. 
-Разделы должны включать:
-- **Глобальная макро-картина и рыночный нарратив (Market Narrative):** Анализ макро-драйверов, структуры, зон ликвидности и Order Blocks.
-- **Опционные барьеры GEX и дилеры:** Интерпретация Call Wall, Put Wall, Zero-Gamma Flip и текущего режима волатильности.
-- **Анализ Потока Ордеров (voldelta / CVD):** Интерпретация кумулятивной дельты, скрытые покупатели/продавцы, дивергенции.
-- **Оценка ИИ (Lorentzian ML):** Пояснение сигнала машинного обучения в многомерном пространстве параметров.
-- **Торговый план (Рекомендация):** Конкретные точки входа, цели (Take Profit 1 и 2) с опорой на GEX стены, уровни ограничения убытков (Stop Loss) и альтернативный сценарий.
-
-Пиши стильно, профессионально, авторитетно и четко структурированно.`;
+Ответь в свободной форме как опытный старший коллега-квант на институциональном деске. Делись наблюдениями, сопоставляй факторы, оценивай риски и цели прямо и содержательно, без шаблонных заголовков и клише.`;
 
     // Multi-model fallback cascade to guarantee high availability without 503 or 429 quota failures
     const preferredChartModel = normalizeGeminiModel(req.body.model || serverAi.geminiModel || "gemini-3.1-flash-lite");
@@ -9317,8 +9309,8 @@ ${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: 
           model: modelCandidate,
           contents: prompt,
           config: {
-            systemInstruction: "Ты элитный институциональный квант-аналитик и макро-стратег. Твоя цель — дать глубокий, глобальный и практически применимый технический и макро-анализ на основе концепций Smart Money, опционных уровней GEX и дельты объёмов.",
-            temperature: 0.35,
+            systemInstruction: "Ты опытный старший коллега-трейдер и ведущий квант-аналитик на институциональном торговом деске. Твой стиль — живой, прямой, глубокий профессиональный диалог в свободной форме (как в онлайн-чате с коллегой). Без клише, без формальных шаблонных списков и без предписанных рамок. Ты свободно сопоставляешь GEX-уровни (стены, Zero-Gamma Flip, инверсию хеджирования маркетмейкеров в Short Gamma), волновую структуру SMC, кумулятивную дельту (CVD) и макроэкономический фон.",
+            temperature: 0.5,
           },
         });
         if (resp && resp.text) {
@@ -9333,7 +9325,6 @@ ${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: 
           addServerLog("WARN", `Ключ Gemini API недействителен в /api/analyze-chart. Укажите действительный ключ в настройках.`);
           break;
         }
-        addServerLog("INFO", `Модель ${modelCandidate} в /api/analyze-chart недоступна (${errMsg.slice(0, 70)}...). Переключаемся на резерв...`);
       }
     }
 
@@ -9345,25 +9336,18 @@ ${candlesticks.slice(-5).map((c: any, idx: number) => `- Свеча ${idx + 1}: 
         zeroFlip: (lastCandle?.close || 2750) * 0.995,
         maxPain: lastCandle?.close || 2750
       };
+      const gexText = isPosGamma
+        ? `В опционах держится режим Long Gamma: дилеры стабилизируют цену между ${typeof gexInfo.putWall === "number" ? gexInfo.putWall.toFixed(2) : gexInfo.putWall} и ${typeof gexInfo.callWall === "number" ? gexInfo.callWall.toFixed(2) : gexInfo.callWall} (продают рост и выкупают проливы).`
+        : `Внимание, актив в Short Gamma: хеджирование дилеров инвертировано в про-трендовую сторону, усиливая импульс при резких движениях.`;
+
+      const responseText = query && query !== "default"
+        ? `По запросу **"${query}"**:\n\nСмотри, по ${asset} (${timeframe}) сопоставление факторов дает следующую картину:\n- ${gexText}\n- Дельта CVD (${Math.round(indicators?.cvd || 0)}): ${indicators?.cvdTrend || "давление сбалансировано"}.\n- Структура: ${indicators?.marketStructure || "стабильно"}, ключевой рубеж смены настроений — Zero-Gamma Flip на ${typeof gexInfo.zeroFlip === "number" ? gexInfo.zeroFlip.toFixed(2) : gexInfo.zeroFlip}.`
+        : `Привет! Вот как видится картина по ${asset} (${timeframe}):\n\n${gexText}\n\nПо потоку ордеров дельта CVD составляет ${Math.round(indicators?.cvd || 0)} (${indicators?.cvdTrend || "нейтрально"}). Lorentzian ML выдает сигнал ${indicators?.mlSignal > 0 ? "BUY" : indicators?.mlSignal < 0 ? "SELL" : "NEUTRAL"} с уверенностью ${Math.round((indicators?.mlConfidence || 0.5) * 100)}%.\n\nОсновной фокус держим на границах коридора: поддержка на ${typeof gexInfo.putWall === "number" ? gexInfo.putWall.toFixed(2) : gexInfo.putWall}, потолок на ${typeof gexInfo.callWall === "number" ? gexInfo.callWall.toFixed(2) : gexInfo.callWall}. Спрашивай любые детали — разберем конкретные сетапы.`;
+
       return res.json({
-        analysis: `### 🌐 [АВТОНОМНЫЙ КВАНТ-АНАЛИЗ] QUANTEX AI
-      
-**Инструмент:** ${asset} | **Таймфрейм:** ${timeframe}
-
-*Примечание: Сервер нейросети Gemini временно перегружен, активирован встроенный квант-модуль QUANTEX.*
-
-**Текущая техническая картина:**
-1. **Рыночный нарратив (SMC):** Наблюдается структура *${candlesticks[candlesticks.length - 1]?.close > candlesticks[candlesticks.length - 5]?.close ? "Bullish (Восходящая)" : "Bearish (Нисходящая)"}*. Последний зафиксированный триггер структуры: **BOS (Break of Structure)**.
-2. **Опционный профиль GEX (Gamma Exposure CME):**
-   - **Режим рынка:** \`${gexInfo.regime}\` — дилеры гасят импульсы, стабилизируя волатильность между стенами.
-   - **GEX Call Wall (Потолок):** **${typeof gexInfo.callWall === "number" ? gexInfo.callWall.toFixed(2) : gexInfo.callWall}** (сильное институциональное сопротивление, зона фиксации лонгов).
-   - **GEX Put Wall (Пол):** **${typeof gexInfo.putWall === "number" ? gexInfo.putWall.toFixed(2) : gexInfo.putWall}** (базовый уровень институциональной поддержки).
-   - **Zero-Gamma Flip:** **${typeof gexInfo.zeroFlip === "number" ? gexInfo.zeroFlip.toFixed(2) : gexInfo.zeroFlip}** (граница смены режима; удержание выше защищает от резкого срыва).
-   - **Max Pain Pin:** **${typeof gexInfo.maxPain === "number" ? gexInfo.maxPain.toFixed(2) : gexInfo.maxPain}** (целевой гравитационный уровень экспирации).
-3. **Дельта объемов (voldelta):** Кумулятивная дельта (CVD) составляет **${Math.round(indicators.cvd)}**. Это свидетельствует о ${indicators.cvd > 0 ? "доминировании покупателей на спотовом/фьючерсном рынке" : "повышенном давлении продавцов"} в текущем цикле.
-4. **Прогноз ИИ (Lorentzian ML):** Алгоритм машинного обучения выдает сигнал **${indicators.mlSignal > 0 ? "BUY (Покупка)" : indicators.mlSignal < 0 ? "SELL (Продажа)" : "NEUTRAL (Ожидание)"}** (Уверенность: ${Math.round(indicators.mlConfidence * 100)}%).
-5. **Рекомендация:** Накапливайте объем в зонах Order Block (OB) и у границ GEX Put Wall при подтверждении разворотных паттернов дельты. Тейк-профит фиксируйте перед тестом GEX Call Wall.`,
-        isSimulated: true
+        analysis: responseText,
+        isSimulated: true,
+        provider: "QUANTEX Desk Engine"
       });
     }
 
