@@ -160,8 +160,8 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
   const fetchDashboardData = async () => {
     try {
       const [statsRes, fcRes] = await Promise.all([
-        fetch("/api/ai-learning/stats"),
-        fetch("/api/ai-learning/forecasts?limit=150")
+        fetch(`/api/ai-learning/stats?t=${Date.now()}`, { cache: "no-store" }),
+        fetch(`/api/ai-learning/forecasts?limit=150&t=${Date.now()}`, { cache: "no-store" })
       ]);
 
       if (statsRes.ok) {
@@ -187,9 +187,10 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
   const handleManualEvaluate = async () => {
     setIsEvaluating(true);
     try {
-      const res = await fetch("/api/ai-learning/forecasts/evaluate", {
+      const res = await fetch(`/api/ai-learning/forecasts/evaluate?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({})
       });
       if (res.ok) {
@@ -207,9 +208,10 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
   const handleUpdateStatus = async (id: string, newStatus: "WIN" | "LOSS" | "EXPIRED") => {
     try {
-      const res = await fetch("/api/ai-learning/forecasts/update-status", {
+      const res = await fetch(`/api/ai-learning/forecasts/update-status?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           id,
           status: newStatus,
@@ -228,7 +230,10 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
   const handleDeleteForecast = async (id: string) => {
     try {
-      const res = await fetch(`/api/ai-learning/forecasts/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/ai-learning/forecasts/${id}?t=${Date.now()}`, {
+        method: "DELETE",
+        cache: "no-store"
+      });
       if (res.ok) {
         setForecasts(prev => prev.filter(f => f.id !== id));
         fetchDashboardData();
@@ -243,9 +248,10 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
     if (!newRuleText.trim()) return;
 
     try {
-      const res = await fetch("/api/ai-learning/rules/add", {
+      const res = await fetch(`/api/ai-learning/rules/add?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           rule: newRuleText,
           category: newRuleCategory,
@@ -266,7 +272,10 @@ export const AiLearningDashboard: React.FC<AiLearningDashboardProps> = ({
 
   const handleDeleteRule = async (id: string) => {
     try {
-      const res = await fetch(`/api/ai-learning/rules/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/ai-learning/rules/${id}?t=${Date.now()}`, {
+        method: "DELETE",
+        cache: "no-store"
+      });
       if (res.ok) {
         fetchDashboardData();
         setActionNotice("Правило удалено из памяти самообучения");

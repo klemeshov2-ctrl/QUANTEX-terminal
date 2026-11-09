@@ -103,9 +103,9 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
       try {
         setMultiExpiryData((prev) => ({ ...prev, isLoading: true }));
         const [resDay, resWeek, resMonth] = await Promise.all([
-          fetch(`/api/gex/report?asset=${activeAsset}&horizon=DAY`),
-          fetch(`/api/gex/report?asset=${activeAsset}&horizon=WEEK`),
-          fetch(`/api/gex/report?asset=${activeAsset}&horizon=MONTH`)
+          fetch(`/api/gex/report?asset=${activeAsset}&horizon=DAY&t=${Date.now()}`, { cache: "no-store" }),
+          fetch(`/api/gex/report?asset=${activeAsset}&horizon=WEEK&t=${Date.now()}`, { cache: "no-store" }),
+          fetch(`/api/gex/report?asset=${activeAsset}&horizon=MONTH&t=${Date.now()}`, { cache: "no-store" })
         ]);
 
         const [dataDay, dataWeek, dataMonth] = await Promise.all([
@@ -148,7 +148,7 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     const loadWeekCandles = async () => {
       try {
         setIsLoadingWeekCandles(true);
-        const res = await fetch(`/api/market/candles?symbol=${activeAsset}&interval=1h&limit=168`);
+        const res = await fetch(`/api/market/candles?symbol=${activeAsset}&interval=1h&limit=168&t=${Date.now()}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data.candles && Array.isArray(data.candles)) {
@@ -168,55 +168,9 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   }, [activeAsset]);
 
   // ============================================================================
-  // 📜 MODULE 2 PERSISTENT GEX LEVEL MIGRATION LOG (SERVER FILE + LOCALSTORAGE)
+  // 📜 MODULE 2 GEX LEVEL MIGRATION LOG (DIRECT SERVER MEMORY STATE)
   // ============================================================================
-  const [migrationLogs, setMigrationLogs] = useState<GexMigrationLogEntry[]>(() => {
-    try {
-      const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {}
-    const isGold = activeAsset.includes("GOLD") || activeAsset.includes("XAU");
-    const strikeStep = isGold ? 10 : activeAsset.includes("BTC") ? 500 : 20;
-    const cw = gexReport.callWall || 4080;
-    const pw = gexReport.putWall || 4000;
-    return [
-      {
-        id: `seed_cw_${Date.now()}`,
-        levelType: "call_wall",
-        levelName: "Потолок (Call Wall)",
-        prevPrice: cw - strikeStep,
-        newPrice: cw,
-        shiftDelta: strikeStep,
-        activeFromTime: Date.now() - 5.5 * 3600 * 1000,
-        activeToTime: Date.now() - 1.2 * 3600 * 1000,
-        durationText: "4 ч 18 мин",
-        touches: 4,
-        bounces: 3,
-        breakouts: 1,
-        hitRatePct: 75,
-        timeMsk: new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date(Date.now() - 1.2 * 3600 * 1000)) + " МСК"
-      },
-      {
-        id: `seed_pw_${Date.now()}`,
-        levelType: "put_wall",
-        levelName: "Поддержка (Put Wall)",
-        prevPrice: pw - strikeStep,
-        newPrice: pw,
-        shiftDelta: strikeStep,
-        activeFromTime: Date.now() - 11.0 * 3600 * 1000,
-        activeToTime: Date.now() - 4.5 * 3600 * 1000,
-        durationText: "6 ч 30 мин",
-        touches: 5,
-        bounces: 4,
-        breakouts: 1,
-        hitRatePct: 80,
-        timeMsk: new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" }).format(new Date(Date.now() - 4.5 * 3600 * 1000)) + " МСК"
-      }
-    ];
-  });
+  const [migrationLogs, setMigrationLogs] = useState<GexMigrationLogEntry[]>([]);
 
   const [showMigrationHistoryModal, setShowMigrationHistoryModal] = useState<boolean>(false);
 
@@ -241,36 +195,18 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     flipStartTime: Date.now() - 4.0 * 3600 * 1000
   });
 
-  // 1. Fetch persistent migration logs from server on mount / asset change
+  // 1. Fetch migration logs directly from server on mount / asset change
   useEffect(() => {
     let isMounted = true;
     const loadServerLogs = async () => {
       try {
-        const res = await fetch(`/api/gex/migration-log?asset=${encodeURIComponent(activeAsset)}`);
+        const res = await fetch(`/api/gex/migration-log?asset=${encodeURIComponent(activeAsset)}&t=${Date.now()}`, {
+          cache: "no-store"
+        });
         if (res.ok) {
           const data = await res.json();
           if (isMounted && data.success && Array.isArray(data.logs)) {
-            if (data.logs.length > 0) {
-              setMigrationLogs(data.logs);
-              try {
-                localStorage.setItem(`quantex_gex_migration_log_${activeAsset}`, JSON.stringify(data.logs));
-              } catch {}
-            } else {
-              // Server has no logs for this asset yet: seed existing local entries to server
-              try {
-                const saved = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
-                if (saved) {
-                  const parsed = JSON.parse(saved);
-                  if (Array.isArray(parsed) && parsed.length > 0) {
-                    fetch("/api/gex/migration-log", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ asset: activeAsset, entries: parsed })
-                    }).catch(() => {});
-                  }
-                }
-              } catch {}
-            }
+            setMigrationLogs(data.logs);
           }
         }
       } catch (err) {
@@ -396,18 +332,13 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
     }
 
     if (newEntries.length > 0) {
-      setMigrationLogs((prev) => {
-        const next = [...newEntries, ...prev].slice(0, 50);
-        try {
-          localStorage.setItem(`quantex_gex_migration_log_${activeAsset}`, JSON.stringify(next));
-        } catch {}
-        return next;
-      });
+      setMigrationLogs((prev) => [...newEntries, ...prev].slice(0, 50));
 
       // Send to server persistent storage (data/gex-migration-log.json)
-      fetch("/api/gex/migration-log", {
+      fetch(`/api/gex/migration-log?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           asset: activeAsset,
           entries: newEntries
@@ -1324,9 +1255,10 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
   const sendGexTelegramNotification = async (eventLabel: string) => {
     try {
       setTgAlertState((prev) => ({ ...prev, sending: true, statusText: "Отправка алерта в Telegram..." }));
-      const res = await fetch("/api/gex/telegram-alert", {
+      const res = await fetch(`/api/gex/telegram-alert?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           asset: activeAsset,
           eventType: eventLabel,
@@ -1871,9 +1803,6 @@ export const GexAdvancedModules: React.FC<GexAdvancedModulesProps> = ({
                   <button
                     onClick={() => {
                       setMigrationLogs([]);
-                      try {
-                        localStorage.removeItem(`quantex_gex_migration_log_${activeAsset}`);
-                      } catch {}
                     }}
                     className="text-[10px] text-rose-400 hover:text-rose-300 transition underline cursor-pointer"
                   >

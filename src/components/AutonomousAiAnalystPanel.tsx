@@ -630,7 +630,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
   useEffect(() => {
     const syncUnifiedSettings = async () => {
       try {
-        const res = await fetch("/api/settings/unified");
+        const res = await fetch(`/api/settings/unified?t=${Date.now()}`, { cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           const serverAi = data?.settings?.ai || data?.ai;
@@ -854,9 +854,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         model = providerSettings.geminiModel || "gemini-3.8-flash";
       }
 
-      const res = await fetch("/api/ai-provider/test", {
+      const res = await fetch(`/api/ai-provider/test?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           provider: prov,
           apiKey,
@@ -899,7 +900,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       if (onRefreshNews) {
         await onRefreshNews();
       } else {
-        const res = await fetch("/api/market/news/refresh", { method: "POST" });
+        const res = await fetch(`/api/market/news/refresh?t=${Date.now()}`, { method: "POST", cache: "no-store" });
         if (res.ok) {
           const data = await res.json();
           if (data.news && Array.isArray(data.news)) {
@@ -926,7 +927,15 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
       if (savedData) {
         const parsed = JSON.parse(savedData);
-        setTickerState(parsed);
+        setTickerState({
+          dailyPlan: null,
+          dailyPlanTimestamp: null,
+          dailyPlanProvider: undefined,
+          dailyPlanSummary: undefined,
+          messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+          customNotes: parsed.customNotes || "",
+          dispatchedAlertIds: Array.isArray(parsed.dispatchedAlertIds) ? parsed.dispatchedAlertIds : []
+        });
       } else {
         // Initialize default welcome message for this user & ticker
         const welcomeMsg: AiChatMessage = {
@@ -947,7 +956,6 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           dispatchedAlertIds: []
         };
         setTickerState(initial);
-        localStorage.setItem(userStorageKey, JSON.stringify(initial));
       }
     } catch (e) {
       console.warn("Notice loading ticker AI state:", e);
@@ -968,7 +976,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     } catch {}
 
     // Synchronize with server-side repository
-    fetch(`/api/ai-analyst/history?username=${encodeURIComponent(activeUsername)}`)
+    fetch(`/api/ai-analyst/history?username=${encodeURIComponent(activeUsername)}&t=${Date.now()}`, { cache: "no-store" })
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data && data.success && Array.isArray(data.messages) && data.messages.length > 0) {
@@ -998,7 +1006,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       const updated = typeof updatedOrFn === "function" ? updatedOrFn(prev) : updatedOrFn;
       tickerStateRef.current = updated;
       try {
-        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updated));
+        // Strip dailyPlan and dailyPlanTimestamp so they are NEVER saved in localStorage
+        const { dailyPlan, dailyPlanTimestamp, dailyPlanSummary, dailyPlanProvider, ...toPersist } = updated;
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(toPersist));
       } catch (e) {
         console.warn("Notice saving ticker state:", e);
       }
@@ -1023,9 +1033,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       });
 
       // Background persist to server
-      fetch("/api/ai-analyst/history", {
+      fetch(`/api/ai-analyst/history?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           username: activeUsername,
           message: enrichedMsg,
@@ -1057,7 +1068,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       };
       tickerStateRef.current = nextState;
       try {
-        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(nextState));
+        const { dailyPlan, dailyPlanTimestamp, dailyPlanSummary, dailyPlanProvider, ...toPersist } = nextState;
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(toPersist));
       } catch (e) {
         console.warn("Notice saving ticker state:", e);
       }
@@ -1074,9 +1086,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     });
 
     // Background persist to server
-    fetch("/api/ai-analyst/history", {
+    fetch(`/api/ai-analyst/history?t=${Date.now()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       body: JSON.stringify({
         username: activeUsername,
         message: enrichedMsg,
@@ -1113,7 +1126,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         };
         tickerStateRef.current = updatedTicker;
         setTickerState(updatedTicker);
-        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
+        const { dailyPlan, dailyPlanTimestamp, dailyPlanSummary, dailyPlanProvider, ...toPersist } = updatedTicker;
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(toPersist));
 
         // Filter out this asset's messages from allUserMessages
         setAllUserMessages(prev => {
@@ -1126,9 +1140,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         });
 
         // Notify server
-        await fetch("/api/ai-analyst/clear-history", {
+        await fetch(`/api/ai-analyst/clear-history?t=${Date.now()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify({
             username: activeUsername,
             ticker: activeAsset,
@@ -1156,17 +1171,20 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         };
         tickerStateRef.current = updatedTicker;
         setTickerState(updatedTicker);
-        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(updatedTicker));
+        const { dailyPlan, dailyPlanTimestamp, dailyPlanSummary, dailyPlanProvider, ...toPersist } = updatedTicker;
+        localStorage.setItem(`st_ai_analyst_${activeUsername}_${activeAsset}`, JSON.stringify(toPersist));
 
         setAllUserMessages([welcomeMsg]);
         localStorage.setItem(`st_ai_analyst_${activeUsername}_master_history`, JSON.stringify([welcomeMsg]));
 
         // Notify server
-        await fetch("/api/ai-analyst/clear-history", {
+        await fetch(`/api/ai-analyst/clear-history?t=${Date.now()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify({
             username: activeUsername,
+            ticker: activeAsset,
             clearAll: true
           })
         });
@@ -1529,14 +1547,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       const cwAudit = auditSingleGexLevel(candles, cwVal, "RESISTANCE", 86400, activeAsset);
       const rangeDetection = detectMarketRangeMode(candles, pwVal, cwVal, pwAudit, cwAudit);
 
-      let localMigrationHistory: any[] = [];
-      try {
-        const savedMig = localStorage.getItem(`quantex_gex_migration_log_${activeAsset}`);
-        if (savedMig) {
-          const parsed = JSON.parse(savedMig);
-          if (Array.isArray(parsed)) localMigrationHistory = parsed.slice(0, 5);
-        }
-      } catch {}
+      const localMigrationHistory: any[] = Array.isArray(gexReport?.migrationLog)
+        ? gexReport.migrationLog.slice(0, 5)
+        : [];
 
       const marketRegimeContext = {
         isRangeMode: rangeDetection.isRangeMode,
@@ -1619,9 +1632,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         username: activeUsername
       };
 
-      const res = await fetch("/api/ai-analyst/generate-plan", {
+      const res = await fetch(`/api/ai-analyst/generate-plan?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify(payload)
       });
 
@@ -1866,9 +1880,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       return updated;
     });
 
-    fetch("/api/settings/unified", {
+    fetch(`/api/settings/unified?t=${Date.now()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       body: JSON.stringify({
         ai: {
           activeProvider: newProv
@@ -2359,9 +2374,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                       try {
                         localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
                       } catch {}
-                      fetch("/api/settings/unified", {
+                      fetch(`/api/settings/unified?t=${Date.now()}`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
+                        cache: "no-store",
                         body: JSON.stringify({ ai: { deepSeekApiKey: val, activeProvider: "deepseek" } })
                       }).catch(() => {});
                     }}
@@ -2408,9 +2424,10 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                       try {
                         localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
                       } catch {}
-                      fetch("/api/settings/unified", {
+                      fetch(`/api/settings/unified?t=${Date.now()}`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
+                        cache: "no-store",
                         body: JSON.stringify({ ai: { geminiApiKey: val, activeProvider: "gemini" } })
                       }).catch(() => {});
                     }}
@@ -2467,12 +2484,12 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                       try {
                         localStorage.setItem("st_ai_provider_settings", JSON.stringify(next));
                       } catch {}
-                      fetch("/api/settings/unified", {
+                      fetch(`/api/settings/unified?t=${Date.now()}`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
+                        cache: "no-store",
                         body: JSON.stringify({
                           ai: {
-                            activeProvider: next.provider,
                             ...(providerSettings.provider === "deepseek" ? { deepSeekWebSearch: val } : { enableWebSearch: val })
                           }
                         })

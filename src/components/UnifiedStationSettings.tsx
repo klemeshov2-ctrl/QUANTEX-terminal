@@ -387,8 +387,9 @@ export const UnifiedStationSettings: React.FC<UnifiedStationSettingsProps> = ({
   const fetchSettings = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch("/api/settings/unified", {
-        headers: getAuthHeaders()
+      const res = await fetch(`/api/settings/unified?t=${Date.now()}`, {
+        headers: getAuthHeaders(),
+        cache: "no-store"
       });
       if (res.ok) {
         const data = await res.json();

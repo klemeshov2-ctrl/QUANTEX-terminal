@@ -225,7 +225,7 @@ export default function ServerDeploymentHub() {
     setIsLoading(true);
     const start = performance.now();
     try {
-      const res = await fetch("/api/server/status");
+      const res = await fetch(`/api/server/status?t=${Date.now()}`, { cache: "no-store" });
       const contentType = res.headers.get("content-type") || "";
       if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();
@@ -242,7 +242,7 @@ export default function ServerDeploymentHub() {
   // Fetch logs
   const fetchLogs = async () => {
     try {
-      const res = await fetch("/api/server/logs?limit=150");
+      const res = await fetch(`/api/server/logs?limit=150&t=${Date.now()}`, { cache: "no-store" });
       const contentType = res.headers.get("content-type") || "";
       if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();
@@ -258,7 +258,7 @@ export default function ServerDeploymentHub() {
   // Fetch signals
   const fetchSignals = async () => {
     try {
-      const res = await fetch("/api/webhook/signals");
+      const res = await fetch(`/api/webhook/signals?t=${Date.now()}`, { cache: "no-store" });
       const contentType = res.headers.get("content-type") || "";
       if (res.ok && contentType.includes("application/json")) {
         const data = await res.json();

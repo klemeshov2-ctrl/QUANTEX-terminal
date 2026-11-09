@@ -579,9 +579,15 @@ export interface AnchoredForecastItem {
 }
 
 const CURRENT_FORECAST_MATH_VERSION = 4;
-const LOCAL_STORAGE_SETUPS_KEY = "quantex_anchored_forecasts_v4";
+// Zero client-side persistent caching: memory-only cache populated exclusively from server
 const anchoredForecastCache = new Map<string, AnchoredForecastItem>();
 const lastSyncedSignatureMap = new Map<string, string>();
+
+if (typeof window !== "undefined") {
+  try {
+    window.localStorage.removeItem("quantex_anchored_forecasts_v4");
+  } catch {}
+}
 
 /**
  * Строгая валидация сетапа при гидратации (hydrateSetupsFromServer / localStorage):
@@ -643,57 +649,12 @@ export function setAnchoredForecastCacheItem(key: string, item: AnchoredForecast
 function deleteCorruptedSetupFromStorage(key: string): void {
   anchoredForecastCache.delete(key);
   lastSyncedSignatureMap.delete(key);
-  saveSetupsToLocalStorage();
   if (typeof window !== "undefined" && typeof fetch === "function") {
-    fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+    fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}&t=${Date.now()}`, {
+      method: "DELETE",
+      cache: "no-store"
+    }).catch(() => {});
   }
-}
-
-// 1. Immediate synchronous hydration from localStorage so page reload (F5) has all setups before first render
-function hydrateSetupsFromLocalStorage(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = window.localStorage.getItem(LOCAL_STORAGE_SETUPS_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      let hadCorrupted = false;
-      for (const [k, val] of Object.entries(parsed)) {
-        const item = val as AnchoredForecastItem;
-        if (
-          item &&
-          item.forecast &&
-          typeof item.anchorCandleTime === "number" &&
-          item.mathVersion === CURRENT_FORECAST_MATH_VERSION &&
-          isValidAnchoredSetup(item)
-        ) {
-          anchoredForecastCache.set(k, item);
-        } else {
-          anchoredForecastCache.delete(k);
-          lastSyncedSignatureMap.delete(k);
-          hadCorrupted = true;
-        }
-      }
-      if (hadCorrupted) {
-        saveSetupsToLocalStorage();
-      }
-    }
-  } catch {}
-}
-
-hydrateSetupsFromLocalStorage();
-
-function saveSetupsToLocalStorage(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const obj: Record<string, AnchoredForecastItem> = {};
-    for (const [k, v] of anchoredForecastCache.entries()) {
-      if (isValidAnchoredSetup(v)) {
-        obj[k] = v;
-      }
-    }
-    window.localStorage.setItem(LOCAL_STORAGE_SETUPS_KEY, JSON.stringify(obj));
-  } catch {}
 }
 
 function syncSetupToServer(key: string, item: AnchoredForecastItem): void {
@@ -707,22 +668,22 @@ function syncSetupToServer(key: string, item: AnchoredForecastItem): void {
   if (lastSyncedSignatureMap.get(key) === sig) return;
   lastSyncedSignatureMap.set(key, sig);
 
-  saveSetupsToLocalStorage();
-  fetch("/api/indicator/setups", {
+  fetch(`/api/indicator/setups?t=${Date.now()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    cache: "no-store",
     body: JSON.stringify({ key, item })
   }).catch(() => {});
 }
 
-// 2. Asynchronous hydration from Server disk storage (for cross-session / cross-device continuity)
+// 2. Asynchronous hydration directly from Server (memory-only state, zero localStorage)
 export async function hydrateSetupsFromServer(injectedSetups?: Record<string, any>): Promise<boolean> {
   try {
     let setupsMap: Record<string, any> | null = null;
     if (injectedSetups && typeof injectedSetups === "object") {
       setupsMap = injectedSetups;
     } else if (typeof window !== "undefined" && typeof fetch === "function") {
-      const res = await fetch("/api/indicator/setups");
+      const res = await fetch(`/api/indicator/setups?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) return false;
       const data = await res.json();
       if (data && data.setups && typeof data.setups === "object") {
@@ -734,7 +695,6 @@ export async function hydrateSetupsFromServer(injectedSetups?: Record<string, an
 
     if (setupsMap && typeof setupsMap === "object") {
       let updated = false;
-      let purged = false;
       for (const [k, val] of Object.entries(setupsMap)) {
         const serverItem = val as AnchoredForecastItem;
         if (
@@ -747,40 +707,23 @@ export async function hydrateSetupsFromServer(injectedSetups?: Record<string, an
           // Битые записи удаляем из хранилища, а не усыновляем
           delete setupsMap[k];
           deleteCorruptedSetupFromStorage(k);
-          purged = true;
           continue;
         }
-        const localItem = anchoredForecastCache.get(k);
-        if (localItem && !isValidAnchoredSetup(localItem)) {
-          anchoredForecastCache.delete(k);
-        }
-        const validLocal = anchoredForecastCache.get(k);
-        // Adopt server setup if local doesn't exist or server setup has a newer anchor/progress
-        if (
-          !validLocal ||
-          serverItem.anchorCandleTime > validLocal.anchorCandleTime ||
-          (serverItem.anchorCandleTime === validLocal.anchorCandleTime &&
-            (Number(Boolean(serverItem.forecast.leg3Hit)) > Number(Boolean(validLocal.forecast.leg3Hit)) ||
-              Number(Boolean(serverItem.forecast.leg2Hit)) > Number(Boolean(validLocal.forecast.leg2Hit)) ||
-              Number(Boolean(serverItem.forecast.leg1Hit)) > Number(Boolean(validLocal.forecast.leg1Hit))))
-        ) {
-          anchoredForecastCache.set(k, {
-            ...serverItem,
-            mathVersion: CURRENT_FORECAST_MATH_VERSION
-          });
-          updated = true;
-        }
+        // State is directly overwritten by server response
+        anchoredForecastCache.set(k, {
+          ...serverItem,
+          mathVersion: CURRENT_FORECAST_MATH_VERSION
+        });
+        updated = true;
       }
-      // Also purge any corrupted entries sitting in anchoredForecastCache
+
+      // Purge any corrupted entries sitting in anchoredForecastCache
       for (const [cacheKey, cacheVal] of Array.from(anchoredForecastCache.entries())) {
         if (!isValidAnchoredSetup(cacheVal)) {
           deleteCorruptedSetupFromStorage(cacheKey);
-          purged = true;
         }
       }
-      if (updated || purged) {
-        saveSetupsToLocalStorage();
-      }
+
       return updated;
     }
   } catch {}
@@ -796,9 +739,8 @@ export function resetIndicatorForecast(symbol?: string, tf?: string): void {
     const key = `${symbol}_${tf}`;
     anchoredForecastCache.delete(key);
     lastSyncedSignatureMap.delete(key);
-    saveSetupsToLocalStorage();
     if (typeof window !== "undefined") {
-      fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+      fetch(`/api/indicator/setups?key=${encodeURIComponent(key)}&t=${Date.now()}`, { method: "DELETE", cache: "no-store" }).catch(() => {});
     }
   } else if (symbol) {
     for (const key of Array.from(anchoredForecastCache.keys())) {
@@ -807,16 +749,14 @@ export function resetIndicatorForecast(symbol?: string, tf?: string): void {
         lastSyncedSignatureMap.delete(key);
       }
     }
-    saveSetupsToLocalStorage();
     if (typeof window !== "undefined") {
-      fetch(`/api/indicator/setups?symbol=${encodeURIComponent(symbol)}`, { method: "DELETE" }).catch(() => {});
+      fetch(`/api/indicator/setups?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`, { method: "DELETE", cache: "no-store" }).catch(() => {});
     }
   } else {
     anchoredForecastCache.clear();
     lastSyncedSignatureMap.clear();
-    saveSetupsToLocalStorage();
     if (typeof window !== "undefined") {
-      fetch(`/api/indicator/setups`, { method: "DELETE" }).catch(() => {});
+      fetch(`/api/indicator/setups?t=${Date.now()}`, { method: "DELETE", cache: "no-store" }).catch(() => {});
     }
   }
 }

@@ -143,9 +143,10 @@ export default function AiAnalyst({
         messages: updatedMessages.map(m => ({ role: m.role, text: m.text }))
       };
 
-      const response = await fetch("/api/analyze-chart", {
+      const response = await fetch(`/api/analyze-chart?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify(payload),
       });
 

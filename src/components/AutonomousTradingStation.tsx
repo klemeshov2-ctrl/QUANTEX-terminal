@@ -1115,21 +1115,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   }, []);
 
   // Live Market & GEX Data
-  // Fast hydration: retrieve cached real server candles from sessionStorage to eliminate split-second fallback flash
-  const [candles, setCandles] = useState<any[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const stored = sessionStorage.getItem("quantex_real_candles_XAUUSD_15m");
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
-            return parsed;
-          }
-        }
-      } catch {}
-    }
-    return [];
-  });
+  // Live Market & GEX Data - Zero client-side storage caching
+  const [candles, setCandles] = useState<any[]>([]);
   const [candlesKey, setCandlesKey] = useState<string>("XAUUSD_15m");
   const activeAssetRef = useRef<AssetSymbol>(activeAsset);
   const activeTfRef = useRef<Timeframe>(activeTf);
@@ -1138,72 +1125,40 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     activeTfRef.current = activeTf;
   }, [activeAsset, activeTf]);
   const fetchSeqRef = useRef<number>(0);
-  const clientCandlesCacheRef = useRef<Map<string, any[]>>(new Map());
 
-  // Populate in-memory cache from sessionStorage if available
+  // Clear any residual candle cache on mount to guarantee fresh live data from server
   useEffect(() => {
     if (typeof window !== "undefined") {
       try {
-        const initialStored = sessionStorage.getItem("quantex_real_candles_XAUUSD_15m");
-        if (initialStored) {
-          const parsed = JSON.parse(initialStored);
-          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
-            clientCandlesCacheRef.current.set("XAUUSD_15m", parsed);
+        sessionStorage.clear();
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith("quantex_real_candles_") || k.startsWith("quantex_gex_") || k === "quantex_anchored_forecasts_v4")) {
+            localStorage.removeItem(k);
           }
         }
       } catch {}
     }
   }, []);
 
-  // Instant hydration and cache lookup for timeframe switching
+  // Timeframe switching directly requests fresh server data
   const handleSelectTimeframe = (tf: Timeframe) => {
     if (tf === activeTf) return;
     activeTfRef.current = tf;
     const key = `${activeAsset}_${tf}`;
-    let cached = clientCandlesCacheRef.current.get(key);
-    if (!cached && typeof window !== "undefined") {
-      try {
-        const stored = sessionStorage.getItem("quantex_real_candles_" + key);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
-            cached = parsed;
-            clientCandlesCacheRef.current.set(key, cached);
-          }
-        }
-      } catch {}
-    }
-    if (cached && cached.length > 0) {
-      setCandles(cached);
-      setCandlesKey(key);
-    }
+    setCandles([]);
+    setCandlesKey(key);
     setActiveTf(tf);
+    fetchCandles(activeAsset, tf);
   };
 
-  // Instant hydration and cache lookup for asset switching
+  // Asset switching directly requests fresh server data
   const handleSelectAsset = (asset: AssetSymbol) => {
     if (asset === activeAsset) return;
     activeAssetRef.current = asset;
     const key = `${asset}_${activeTf}`;
-    let cached = clientCandlesCacheRef.current.get(key);
-    if (!cached && typeof window !== "undefined") {
-      try {
-        const stored = sessionStorage.getItem("quantex_real_candles_" + key);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0 && !parsed[0]?._isFallback) {
-            cached = parsed;
-            clientCandlesCacheRef.current.set(key, cached);
-          }
-        }
-      } catch {}
-    }
-    if (cached && cached.length > 0) {
-      setCandles(cached);
-      setCandlesKey(key);
-    } else {
-      setCandlesKey(key);
-    }
+    setCandles([]);
+    setCandlesKey(key);
     setActiveAsset(asset);
     try {
       localStorage.setItem("quantex_active_asset", asset);
@@ -1907,7 +1862,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     } catch {}
 
     // Hydrate latest persistent profile from server
-    fetch(`/api/settings/user-preferences?username=${encodeURIComponent(u)}`)
+    fetch(`/api/settings/user-preferences?username=${encodeURIComponent(u)}&t=${Date.now()}`, { cache: "no-store" })
       .then(res => res.json())
       .then(data => {
         if (isCancelled) return;
@@ -2026,9 +1981,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     if (isHydratedFromServerRef.current) {
       if (saveDebounceTimerRef.current) clearTimeout(saveDebounceTimerRef.current);
       saveDebounceTimerRef.current = setTimeout(() => {
-        fetch("/api/settings/user-preferences", {
+        fetch(`/api/settings/user-preferences?t=${Date.now()}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify({
             username: u,
             preferences: currentPrefs
@@ -2301,7 +2257,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const token = localStorage.getItem("quantex_auth_token");
         if (token) headers["Authorization"] = `Bearer ${token}`;
       }
-      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=200`, { headers });
+      const res = await fetch(`/api/market/candles?symbol=${symbol}&interval=${interval}&limit=200&t=${Date.now()}`, {
+        headers,
+        cache: "no-store"
+      });
       if (res.ok) {
         const data = await res.json();
         // Discard stale out-of-order responses if user switched asset or timeframe
@@ -2335,39 +2294,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
             }
           }
           const key = `${symbol}_${interval}`;
-          const prevCached = clientCandlesCacheRef.current.get(key);
-          let finalBars = cleanBars;
-          if (!prevCached) {
-            // First real server response for this symbol+timeframe (replacing initial fallback candles)
-            lastFittedKeyRef.current = "";
-          } else if (
-            prevCached.length > 0 &&
-            cleanBars.length > 0 &&
-            prevCached[prevCached.length - 1].time >= cleanBars[0].time
-          ) {
-            // Preserve intra-bar high/low wick extremes on the live forming candle so wicks never shrink or flicker between polls
-            const prevLast = prevCached[prevCached.length - 1];
-            const newLast = cleanBars[cleanBars.length - 1];
-            if (prevLast && newLast && prevLast.time === newLast.time) {
-              cleanBars[cleanBars.length - 1] = {
-                ...newLast,
-                high: Math.max(newLast.high, prevLast.high),
-                low: Math.min(newLast.low, prevLast.low)
-              };
-            }
-            // Merge older session bars so cleanCandles[0].time stays anchored and never shifts on new candle rollovers
-            const olderPrefix = prevCached.filter((b: any) => b.time < cleanBars[0].time);
-            if (olderPrefix.length > 0 && olderPrefix.length + cleanBars.length <= 600) {
-              finalBars = [...olderPrefix, ...cleanBars];
-            }
-          }
-          clientCandlesCacheRef.current.set(key, finalBars);
-          if (typeof window !== "undefined") {
-            try {
-              sessionStorage.setItem("quantex_real_candles_" + key, JSON.stringify(finalBars.slice(-300)));
-            } catch {}
-          }
-          setCandles(finalBars);
+          // Direct overwrite from server: zero caching in client storage, no merging with stale history
+          setCandles(cleanBars);
           setCandlesKey(key);
           setLastUpdatedMsk(new Date().toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК");
         }
@@ -2416,7 +2344,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 1b. Fetch Real MOEX Quarterly Contracts (Auto-rollover GDZ6/GNZ6)
   const fetchMoexContracts = async () => {
     try {
-      const res = await fetch("/api/market/moex/contracts");
+      const res = await fetch(`/api/market/moex/contracts?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const d = await res.json();
         if (d.success) {
@@ -2438,7 +2366,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const token = localStorage.getItem("quantex_auth_token");
         if (token) headers["Authorization"] = `Bearer ${token}`;
       }
-      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=${targetH}`, { headers });
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=${targetH}&t=${Date.now()}`, {
+        headers,
+        cache: "no-store"
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.report) {
@@ -2463,7 +2394,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const token = localStorage.getItem("quantex_auth_token");
         if (token) headers["Authorization"] = `Bearer ${token}`;
       }
-      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=DAY`, { headers });
+      const res = await fetch(`/api/gex/report?asset=${symbol}&horizon=DAY&t=${Date.now()}`, {
+        headers,
+        cache: "no-store"
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.report) {
@@ -2494,9 +2428,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         const token = localStorage.getItem("quantex_auth_token");
         if (token) headers["Authorization"] = `Bearer ${token}`;
       }
-      const res = await fetch("/api/gex/reset-cache", {
+      const res = await fetch(`/api/gex/reset-cache?t=${Date.now()}`, {
         method: "POST",
         headers,
+        cache: "no-store",
         body: JSON.stringify({ asset: activeAsset, force })
       });
       if (res.ok) {
@@ -2542,7 +2477,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 3. Fetch Economic Calendar from local server (with Moscow date & time synchronization)
   const fetchCalendar = async () => {
     try {
-      const res = await fetch("/api/market/economic-calendar");
+      const res = await fetch(`/api/market/economic-calendar?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         if (data.events && Array.isArray(data.events)) {
@@ -2564,7 +2499,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 3.1 Fetch Market News from local server
   const fetchMarketNews = async () => {
     try {
-      const res = await fetch("/api/market/news");
+      const res = await fetch(`/api/market/news?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         if (data.news && Array.isArray(data.news)) {
@@ -2588,8 +2523,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     setIsNewsLoading(true);
     try {
       const [res, calRes] = await Promise.all([
-        fetch("/api/market/news/refresh", { method: "POST" }),
-        fetch("/api/market/economic-calendar")
+        fetch(`/api/market/news/refresh?t=${Date.now()}`, { method: "POST", cache: "no-store" }),
+        fetch(`/api/market/economic-calendar?t=${Date.now()}`, { cache: "no-store" })
       ]);
       if (res.ok) {
         const data = await res.json();
@@ -2627,7 +2562,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   // 4. Fetch Trade Journal
   const fetchJournal = async () => {
     try {
-      const res = await fetch("/api/journal/trades");
+      const res = await fetch(`/api/journal/trades?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         if (data.trades) {
@@ -2643,7 +2578,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const fetchIndicatorCode = async () => {
     try {
       setIsLoadingCode(true);
-      const res = await fetch("/api/indicator/st-premium-code");
+      const res = await fetch(`/api/indicator/st-premium-code?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         if (data.code && data.code.trim().length > 0) {
@@ -2662,9 +2597,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const handleSaveIndicatorCode = async () => {
     try {
       setIsScriptSaved(true);
-      const res = await fetch("/api/indicator/st-premium-code", {
+      const res = await fetch(`/api/indicator/st-premium-code?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({ code: indicatorCode })
       });
       const d = await res.json();
@@ -5326,9 +5262,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     setIsAiThinking(true);
 
     try {
-      const res = await fetch("/api/gold/run-dual-analysis", {
+      const res = await fetch(`/api/gold/run-dual-analysis?t=${Date.now()}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store"
       });
       const data = await res.json();
       const answer = data.report?.planMarkdown || 
@@ -5365,9 +5302,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     e.preventDefault();
     if (!newTradeEntry || !newTradePnl) return;
     try {
-      const res = await fetch("/api/journal/trades", {
+      const res = await fetch(`/api/journal/trades?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({
           asset: newTradeAsset,
           type: newTradeType,

@@ -4378,6 +4378,15 @@ const recentSignals: WebhookSignal[] = [];
 
 app.use(helmetMiddleware);
 app.use(corsMiddleware);
+
+// Global no-cache middleware to strictly disable caching for all responses
+app.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use("/api", generalApiLimiter);

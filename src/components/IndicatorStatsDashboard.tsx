@@ -188,8 +188,8 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
   const fetchIndicatorData = async () => {
     try {
       const [statsRes, histRes] = await Promise.all([
-        fetch("/api/indicator/stats"),
-        fetch("/api/indicator/history?limit=200")
+        fetch(`/api/indicator/stats?t=${Date.now()}`, { cache: "no-store" }),
+        fetch(`/api/indicator/history?limit=200&t=${Date.now()}`, { cache: "no-store" })
       ]);
 
       if (statsRes.ok) {
@@ -216,9 +216,10 @@ export const IndicatorStatsDashboard: React.FC<IndicatorStatsDashboardProps> = (
     setIsEvaluating(true);
     setActionNotice("Сверка с рынком: проверка активации входа, TP1/TP2 и трейлинг-стопов...");
     try {
-      const res = await fetch("/api/indicator/evaluate-now", {
+      const res = await fetch(`/api/indicator/evaluate-now?t=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({})
       });
       if (res.ok) {
