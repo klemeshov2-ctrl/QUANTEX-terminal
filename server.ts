@@ -50,6 +50,13 @@ import {
   isValidIndicatorSetupPayload,
   handleIndicatorSetupsPost
 } from "./server/indicatorStatsEngine";
+import { getSessionSchedule, formatScheduleForPrompt, SessionSchedule } from "./src/lib/marketSessions";
+import { buildPropContext, PropDeskContext } from "./server/propContextEngine";
+import {
+  buildSeniorPropTraderSystemInstruction,
+  buildSeniorPropTraderColleagueInstruction,
+  formatPropContextForPrompt
+} from "./server/seniorPropTraderPrompt";
 
 dotenv.config();
 
@@ -6259,6 +6266,56 @@ app.get("/api/market/candles", async (req, res) => {
   });
 });
 
+// 2.1. Prop Desk Context Engine Endpoint
+app.get("/api/market/prop-context", async (req, res) => {
+  try {
+    const symbol = ((req.query.symbol as string) || "XAUUSD").toUpperCase();
+    const interval = (req.query.interval as string) || "15m";
+    const cacheBuster = Date.now();
+
+    let candles: any[] = [];
+    try {
+      const internalRes = await fetch(
+        `http://127.0.0.1:${PORT}/api/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=250&t=${cacheBuster}`,
+        {
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache",
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+          }
+        }
+      );
+      if (internalRes.ok) {
+        const data = await internalRes.json();
+        if (Array.isArray(data.candles)) {
+          candles = data.candles;
+        }
+      }
+    } catch (e: any) {
+      console.warn("[PropContext] Notice querying internal candles:", e.message);
+    }
+
+    if (!candles || candles.length < 50) {
+      return res.status(503).json({
+        success: false,
+        error: "Недостаточно данных для prop-контекста"
+      });
+    }
+
+    const intervalSeconds = interval === "1m" ? 60 : interval === "5m" ? 300 : interval === "15m" ? 900 : interval === "30m" ? 1800 : interval === "1h" ? 3600 : interval === "4h" ? 14400 : 86400;
+    const propContext = buildPropContext(candles, intervalSeconds, new Date(), symbol, interval);
+
+    return res.json({
+      success: true,
+      propContext,
+      schedule: propContext.schedule
+    });
+  } catch (err: any) {
+    console.error("Error in /api/market/prop-context:", err);
+    return res.status(500).json({ success: false, error: err.message || "Internal error" });
+  }
+});
+
 // 3. Macroeconomic Calendar (USD, EUR, XAU)
 app.get("/api/economic/calendar", (req, res) => {
   const now = new Date();
@@ -8352,6 +8409,7 @@ app.post("/api/gold/clear-reports", (req, res) => {
 // --- UNIFIED MARKET ECONOMIC CALENDAR & MULTI-ASSET NEWS ENDPOINTS ---
 function buildDailyPriceImpactingEvents() {
   const now = new Date();
+  const schedule = getSessionSchedule(now);
   const dateStr = now.toLocaleDateString("ru-RU", {
     timeZone: "Europe/Moscow",
     day: "2-digit",
@@ -8486,8 +8544,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-us-inflation-cpi-pce",
-      timeMsk: "15:30",
-      minutesMsk: 15 * 60 + 30,
+      timeMsk: schedule.macro0830Msk,
+      minutesMsk: schedule.macro0830Mins,
       currency: "USD",
       category: "INFLATION",
       categoryLabel: "📈 Статистика динамики инфляции США",
@@ -8500,7 +8558,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "2.9% г/г (0.3% м/м)",
       actualIfPassed: "2.8% г/г (Замедление)",
       affectedAssets: ["OANDA:XAUUSD", "PAXGUSDT", "MOEX:GD", "BTCUSDT"],
-      impact: "Главный макро-триггер цены золота и доллара: определяет ожидания по ставке ФРС и направление казначейских доходностей US10Y (волатильность 25–50$ по XAUUSD).",
+      impact: `Главный макро-триггер цены золота и доллара (${schedule.macro0830Msk} МСК): определяет ожидания по ставке ФРС и направление казначейских доходностей US10Y (волатильность 25–50$ по XAUUSD).`,
       bullishScenario: "Инфляция ≤ 2.8% (ниже/в рамках прогноза) -> падение DXY -> мощный выкуп золота OANDA:XAUUSD от зоны OTE к Call Wall.",
       bearishScenario: "Инфляция ≥ 3.0% (выше прогноза) -> скачок доходностей US10Y -> укрепление доллара и тест нижней стены Put Wall.",
       source: "Бюро статистики труда США (BLS)",
@@ -8508,8 +8566,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-us-labor-gdp-dynamics",
-      timeMsk: "15:30",
-      minutesMsk: 15 * 60 + 30,
+      timeMsk: schedule.macro0830Msk,
+      minutesMsk: schedule.macro0830Mins,
       currency: "USD",
       category: "DYNAMICS",
       categoryLabel: "📊 Статистика динамики ВВП и рынка труда",
@@ -8522,7 +8580,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "215K заявок | ВВП 2.8%",
       actualIfPassed: "222K | ВВП 2.6%",
       affectedAssets: ["OANDA:XAUUSD", "DXY", "MOEX:GD"],
-      impact: "Опережающий индикатор охлаждения экономики США: рост безработицы или замедление динамики ВВП вынуждает ФРС быстрее снижать ставку.",
+      impact: `Опережающий индикатор охлаждения экономики США (${schedule.macro0830Msk} МСК): рост безработицы или замедление динамики ВВП вынуждает ФРС быстрее снижать ставку.`,
       bullishScenario: "Заявки > 220K или ВВП < 2.6% -> ослабление индекса DXY -> приток институционального капитала в защитное золото XAUUSD.",
       bearishScenario: "Заявки < 210K и сильный ВВП -> рост вероятности удержания высокой ставки ФРС -> локальное давление на металлы.",
       source: "BEA / Минтруд США (DOL)",
@@ -8530,8 +8588,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-crypto-us-spot-etf-flows",
-      timeMsk: "16:30",
-      minutesMsk: 16 * 60 + 30,
+      timeMsk: schedule.usOpenMsk,
+      minutesMsk: schedule.usOpenMins,
       currency: "USD",
       category: "LIQUIDITY",
       categoryLabel: "₿ Институциональные потоки Spot ETF (NY Open)",
@@ -8544,7 +8602,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "+$285M Net Inflow",
       actualIfPassed: "+$340M (Институциональный выкуп)",
       affectedAssets: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "PAXGUSDT"],
-      impact: "Открытие американского рынка в 16:30 МСК формирует пиковую ликвидность суток по BTCUSDT, ETHUSDT и коррелирующему золоту XAUUSD.",
+      impact: `Открытие американского рынка в ${schedule.usOpenMsk} МСК формирует пиковую ликвидность суток по BTCUSDT, ETHUSDT и коррелирующему золоту XAUUSD.`,
       bullishScenario: "Положительный нетто-приток в IBIT/FBTC с первых 30 минут торгов -> импульсный пробой дневного максимума по BTC и ETH.",
       bearishScenario: "Чистый отток из спотовых ETF на открытии NY -> коррекция крипторынка в зону ликвидности FVG / Put Wall.",
       source: "CME Group / Spot ETF Flows",
@@ -8552,8 +8610,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-us-ism-pmi-dynamics",
-      timeMsk: "17:00",
-      minutesMsk: 17 * 60,
+      timeMsk: schedule.ism1000Msk,
+      minutesMsk: schedule.ism1000Mins,
       currency: "USD",
       category: "DYNAMICS",
       categoryLabel: "📊 Статистика деловой активности США",
@@ -8566,7 +8624,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "51.6 п.",
       actualIfPassed: "51.9 п.",
       affectedAssets: ["OANDA:XAUUSD", "DXY", "BTCUSDT"],
-      impact: "Формирует основной импульс американской сессии (NY Killzone): значения ниже 50 пунктов сигнализируют о сжатии деловой активности.",
+      impact: `Формирует основной импульс американской сессии (NY Killzone, ${schedule.ism1000Msk} МСК): значения ниже 50 пунктов сигнализируют о сжатии деловой активности.`,
       bullishScenario: "Индекс PMI ниже прогноза (< 52.0) -> снижение доходностей трежерис -> импульсный лонг по XAUUSD и BTC.",
       bearishScenario: "Резкий рост PMI и компонента цен (> 53.5) -> усиление доллара DXY и откат золота к уровню равновесия 0.50 EQ.",
       source: "Институт ISM США (ISM World)",
@@ -8574,16 +8632,16 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-geopolitics-trade-relations",
-      timeMsk: "17:30",
-      minutesMsk: 17 * 60 + 30,
+      timeMsk: schedule.eia1030Msk,
+      minutesMsk: schedule.eia1030Mins,
       currency: "USD",
       category: "GEOPOLITICS",
-      categoryLabel: "🌍 Международные отношения & Санкции",
+      categoryLabel: "🌍 Международные отношения & Энергозапасы",
       section: "GEOPOLITICS",
       sections: ["GEOPOLITICS", "MOEX", "GOLD"],
       importance: "HIGH",
-      title: "Отношения США, ЕС и Китая: брифинги по торговым пошлинам, технологическим санкциям и валютным расчетам БРИКС",
-      dynamicsNote: "Статистика динамики международной торговли, экспортно-импортных тарифов и фрагментации финансовых рынков",
+      title: "Отношения США, ЕС и Китая: отчет EIA по запасам нефти и валютным расчетам БРИКС",
+      dynamicsNote: "Статистика динамики международной торговли, запасов энергоносителей и фрагментации финансовых рынков",
       forecast: "Сохранение пошлин",
       previous: "Нейтральный фон",
       actualIfPassed: "Новые тарифные ограничения",
@@ -8596,8 +8654,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-fed-fomc-discussion",
-      timeMsk: "18:30",
-      minutesMsk: 18 * 60 + 30,
+      timeMsk: schedule.fomc1400Msk,
+      minutesMsk: schedule.fomc1400Mins,
       currency: "USD",
       category: "FED",
       categoryLabel: "🏛️ Обсуждение ФРС США (FOMC)",
@@ -8610,7 +8668,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "4.75%",
       actualIfPassed: "Нейтрально-мягкая риторика",
       affectedAssets: ["OANDA:XAUUSD", "DXY", "BTCUSDT", "ETHUSDT"],
-      impact: "Прямое влияние на стоимость фондирования в долларах: любые намеки ФРС на паузу в QT или снижение ставки вызывают переток капитала в золото.",
+      impact: `Прямое влияние на стоимость фондирования в долларах (${schedule.fomc1400Msk} МСК): любые намеки ФРС на паузу в QT или снижение ставки вызывают переток капитала в золото.`,
       bullishScenario: "«Голубиные» заявления членов ФРС об охлаждении инфляции -> пробой верхних уровней сопротивления XAUUSD.",
       bearishScenario: "«Ястребиные» заявления о сохранении жесткой ДКП -> рост индекса доллара DXY и фиксация лонгов у Call Wall.",
       source: "Федеральная резервная система США (Fed)",
@@ -8640,8 +8698,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-us10y-treasury-auction",
-      timeMsk: "20:00",
-      minutesMsk: 20 * 60,
+      timeMsk: schedule.auction1300Msk,
+      minutesMsk: schedule.auction1300Mins,
       currency: "USD",
       category: "LIQUIDITY",
       categoryLabel: "🏦 Казначейство США и Доходности",
@@ -8654,7 +8712,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "4.26% (Спрос 2.51x)",
       actualIfPassed: "4.20% (Спрос 2.61x)",
       affectedAssets: ["OANDA:XAUUSD", "DXY"],
-      impact: "Золото (XAUUSD) движется в обратной зависимости от доходности US10Y: сильный спрос на облигации снижает их доходность и толкает золото вверх.",
+      impact: `Золото (XAUUSD) движется в обратной зависимости от доходности US10Y (${schedule.auction1300Msk} МСК): сильный спрос на облигации снижает их доходность и толкает золото вверх.`,
       bullishScenario: "Доходность размещения ниже 4.22% при высоком Bid-to-Cover -> рост XAUUSD на закрытии европейской и американской сессий.",
       bearishScenario: "Слабый спрос на аукционе и скачок доходности выше 4.28% -> давление на котировки золота.",
       source: "Казначейство США (TreasuryDirect)",
@@ -8662,8 +8720,8 @@ function buildDailyPriceImpactingEvents() {
     },
     {
       id: "ev-fomc-minutes-rate-outlook",
-      timeMsk: "21:00",
-      minutesMsk: 21 * 60,
+      timeMsk: schedule.fomcPress1430Msk,
+      minutesMsk: schedule.fomcPress1430Mins,
       currency: "USD",
       category: "FED",
       categoryLabel: "🏛️ Монетарная политика ФРС / FOMC",
@@ -8676,7 +8734,7 @@ function buildDailyPriceImpactingEvents() {
       previous: "Без изменений",
       actualIfPassed: "Подтвержден курс на смягчение",
       affectedAssets: ["OANDA:XAUUSD", "MOEX:GD", "BTCUSDT", "DXY"],
-      impact: "Задает среднесрочный институциональный тренд на 1H / 4H / 1D и перестраивает распределение опционной гаммы CME GEX.",
+      impact: `Задает среднесрочный институциональный тренд на 1H / 4H / 1D (${schedule.fomcPress1430Msk} МСК) и перестраивает распределение опционной гаммы CME GEX.`,
       bullishScenario: "Подтверждение цикла снижения ставки ФРС -> глобальный бычий импульс по золоту (XAUUSD) и криптоактивам.",
       bearishScenario: "Ужесточение прогнозов по ставке (Higher for Longer) -> защита опционного потолка Call Wall дилерами.",
       source: "Комитет FOMC ФРС США",
@@ -8741,13 +8799,16 @@ app.get("/api/market/economic-calendar", (req, res) => {
     minute: "2-digit",
     second: "2-digit"
   }).format(now);
+  const schedule = getSessionSchedule(now);
   res.json({
     events,
     date: dateMsk,
     timeMsk: `${timeMsk} МСК`,
     receivedAt: `${dateMsk} • ${timeMsk} МСК`,
     syncedAtIso: now.toISOString(),
-    syncStatus: "ACTIVE"
+    syncStatus: "ACTIVE",
+    schedule,
+    labelRu: schedule.labelRu
   });
 });
 
@@ -9282,15 +9343,27 @@ app.post("/api/analyze-chart", async (req, res) => {
         messages.slice(-6).map((m: any) => `${m.role === "user" ? "Трейдер" : "Квант-Коллега"}: ${m.text || m.content}`).join("\n");
     }
 
+    const currentSchedule = getSessionSchedule(new Date());
+    let currentPropCtx = req.body.propContext || null;
+    if (!currentPropCtx && Array.isArray(candlesticks) && candlesticks.length >= 50) {
+      try {
+        currentPropCtx = buildPropContext(candlesticks, 900, new Date(), asset, timeframe);
+      } catch (err: any) {
+        console.warn("[AnalyzeChart] Notice computing prop context:", err.message);
+      }
+    }
+    const propCtxSummary = formatPropContextForPrompt(currentPropCtx);
     const feedbackLoopContext = getAiFeedbackLoopContext(asset);
 
     const prompt = `Контекст рынка (${asset}, таймфрейм ${timeframe}):
+- Режим сессий: ${currentSchedule.labelRu} (US Open: ${currentSchedule.usOpenMsk} МСК, макро: ${currentSchedule.macro0830Msk} МСК)
 - Спот: ${lastCandle?.close?.toFixed(2) || "н/д"} (Open: ${lastCandle?.open?.toFixed(2)}, High: ${lastCandle?.high?.toFixed(2)}, Low: ${lastCandle?.low?.toFixed(2)})
 - Кумулятивная дельта (CVD): ${Math.round(indicators?.cvd || 0)} (${indicators?.cvdTrend || "нейтрально"})
 - SMC структура: ${indicators?.marketStructure || "стабильно"}, FVG: ${indicators?.fvgStatus || "нет"}, OB: ${indicators?.obStatus || "нет"}
 - GEX опционы: Режим ${indicators?.gex?.regime || "+GAMMA"}, Call Wall: ${indicators?.gex?.callWall?.toFixed(2) || "н/д"}, Put Wall: ${indicators?.gex?.putWall?.toFixed(2) || "н/д"}, Zero Flip: ${indicators?.gex?.zeroFlip?.toFixed(2) || "н/д"}, Max Pain: ${indicators?.gex?.maxPain?.toFixed(2) || "н/д"}
 - Lorentzian ML сигнал: ${indicators?.mlSignal > 0 ? "BUY" : indicators?.mlSignal < 0 ? "SELL" : "NEUTRAL"} (уверенность ${Math.round((indicators?.mlConfidence || 0.5) * 100)}%)
 ${feedbackLoopContext}
+${propCtxSummary}
 
 Последние свечи:
 ${candlesticks && candlesticks.length > 0 ? candlesticks.slice(-6).map((c: any, idx: number) => `Бар ${idx + 1}: O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)} V:${Math.round(c.volume)}`).join("\n") : "нет"}
@@ -9298,7 +9371,7 @@ ${conversationHistory}
 
 Текущий вопрос/запрос трейдера: "${query && query !== "default" ? query : "Дай живой профессиональный обзор текущей картины: что говорит сопоставление GEX, дельты и структуры?"}"
 
-Ответь в свободной форме как опытный старший коллега-квант на институциональном деске. Делись наблюдениями, сопоставляй факторы, оценивай риски и цели прямо и содержательно, без шаблонных заголовков и клише.`;
+Ответь в свободной форме как Senior Prop Trader и опытный старший коллега-квант на институциональном деске. Делись наблюдениями, сопоставляй факторы, оценивай риски и цели прямо и содержательно, без шаблонных заголовков и клише.`;
 
     // Multi-model fallback cascade to guarantee high availability without 503 or 429 quota failures
     const preferredChartModel = normalizeGeminiModel(req.body.model || serverAi.geminiModel || "gemini-3.1-flash-lite");
@@ -9312,13 +9385,15 @@ ${conversationHistory}
     let responseText = "";
     let finalModelUsed = "";
 
+    const colleagueSystemInstruction = buildSeniorPropTraderColleagueInstruction(currentSchedule, currentPropCtx, asset, timeframe);
+
     for (const modelCandidate of candidateModels) {
       try {
         const resp = await client.models.generateContent({
           model: modelCandidate,
           contents: prompt,
           config: {
-            systemInstruction: "Ты опытный старший коллега-трейдер и ведущий квант-аналитик на институциональном торговом деске. Твой стиль — живой, прямой, глубокий профессиональный диалог в свободной форме (как в онлайн-чате с коллегой). Без клише, без формальных шаблонных списков и без предписанных рамок. Ты свободно сопоставляешь GEX-уровни (стены, Zero-Gamma Flip, инверсию хеджирования маркетмейкеров в Short Gamma), волновую структуру SMC, кумулятивную дельту (CVD) и макроэкономический фон.",
+            systemInstruction: colleagueSystemInstruction,
             temperature: 0.5,
           },
         });
@@ -9695,13 +9770,16 @@ app.post("/api/analyze-screenshot", async (req, res) => {
 
     const isAuditEnabled = auditMode || mode === "audit";
 
-    const systemInstruction = `Ты — ведущий квант-аналитик, разработчик алгоритмических систем серии QUANTEX и независимый риск-менеджер институционального уровня.
+    const currentSchedule = getSessionSchedule(new Date());
+
+    const systemInstruction = `Ты — ведущий квант-аналитик, Senior Prop Trader и независимый риск-менеджер институционального уровня деска QUANTEX.
 Пользователь загружает реальные скриншоты графиков из TradingView с наложенным индикатором QUANTEX.
 Твоя задача — провести не просто поверхностное чтение скриншота, а **КРИТИЧЕСКИЙ АУДИТ И ВЕРИФИКАЦИЮ ПРОГНОЗА ИНДИКАТОРА ПО ВСЕМ ДОСТУПНЫМ РЫНОЧНЫМ И МАКРОЭКОНОМИЧЕСКИМ ДАННЫМ**.
 
 ВАЖНОЕ ПРАВИЛО: Индикатор не является Граалем и МОЖЕТ ОШИБАТЬСЯ в своих прогнозных линиях! Не слепо соглашайся с индикатором. Твоя главная ценность — обнаружить потенциальные ошибки индикатора, ловушки маркетмейкера, конфликты таймфреймов и защитить депозит трейдера!
 
 СЕГОДНЯШНЯЯ ДАТА И ВРЕМЯ: ${dateFormatted}, текущее время ~${currentTimeMsk} МСК.
+СЕЗОННЫЙ РЕЖИМ СЕССИЙ: ${currentSchedule.labelRu}.
 
 ${additionalData && additionalData.trim().length > 0 ? `ДОПОЛНИТЕЛЬНЫЕ ДАННЫЕ ОТ ТРЕЙДЕРА (ВНЕШНИЙ КОНТЕКСТ):
 "${additionalData.trim()}"
@@ -9732,7 +9810,7 @@ ${additionalData && additionalData.trim().length > 0 ? `ДОПОЛНИТЕЛЬН
    - **ФАКТОР 3: Опционный профиль GEX (Gamma Exposure CME):** Не ведет ли прогнозная линия индикатора прямо в лоб институциональной Call Wall (где дилеры будут агрессивно продавать фьючерсы против лонга) или не рассчитывает ли лонг ниже Zero-Gamma Flip в зоне -GAMMA (где дилеры ускоряют распродажи и риск пробоя вниз максимален)?
    - **ФАКТОР 4: Ловушки ликвидности Smart Money (Liquidity Inducement):** Не направлена ли прогнозная линия прямо в зону скопления стопов (равные минимумы/максимумы), где крупный капитал выбьет ритейл перед настоящим разворотом?
    - **ФАКТОР 5: Исчерпание ADR / ATR и дивергенции:** Если дневной ADR исчерпан на 80-100%, прогноз на продолжение импульса без глубокого отката заведомо ошибочен.
-   - **ФАКТОР 6: Макростатистика США и тайминг новостей:** Если приближаются 15:30 МСК, 17:00 МСК или заседание ФРС 21:00 МСК, прогнозные линии индикатора могут быть легко сломаны институциональным сквизом.
+   - **ФАКТОР 6: Макростатистика США и тайминг новостей:** Если приближаются ${currentSchedule.macro0830Msk} МСК (макро), ${currentSchedule.usOpenMsk} МСК (US Open) или заседание ФРС ${currentSchedule.fomc1400Msk} МСК, прогнозные линии индикатора могут быть легко сломаны институциональным сквизом.
 
 4. СТРУКТУРА ОТВЕТА:
    Отвечай на русском языке, структурированно в Markdown:
@@ -9750,7 +9828,7 @@ ${additionalData && additionalData.trim().length > 0 ? `ДОПОЛНИТЕЛЬН
    * 📌 **Резюме и текущий статус графика**
    * 📊 **Расшифровка HUD таблицы и прогнозных линий**
    * 🔍 **SMC структуры и зоны ликвидности**
-   ${includeMacro ? '* 📅 **Макроэкономический фон и статистика США на сегодня** (Ключевые события, опасные часы 15:30/17:00/21:00 МСК)' : ''}
+   ${includeMacro ? `* 📅 **Макроэкономический фон и статистика США на сегодня** (Ключевые события, опасные часы ${currentSchedule.macro0830Msk}/${currentSchedule.usOpenMsk}/${currentSchedule.fomc1400Msk} МСК)` : ''}
    * 🎯 **Финальное руководство для трейдера** (Действие, безопасный вход, стоп, цели).
    ${mode === 'short' ? '- ВНИМАНИЕ: Пользователь запросил КРАТКИЙ формат. Пиши максимально емко, тезисно, сразу вердикт по ошибке индикатора, влияние новостей и действие.' : ''}`;
 
@@ -9892,6 +9970,7 @@ interface MarketScheduleInfo {
 }
 
 function getAssetMarketSchedule(ticker: string, date: Date = new Date()): MarketScheduleInfo {
+  const schedule = getSessionSchedule(date);
   const dayNameRu = new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", weekday: "long" }).format(date);
   const hourMsk = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", hour: "numeric", hour12: false }).format(date));
   const minMsk = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", minute: "numeric" }).format(date));
@@ -9917,7 +9996,7 @@ function getAssetMarketSchedule(ticker: string, date: Date = new Date()): Market
         isGold: false,
         isMoex: false,
         statusTextRu: `Торги активны 24/7 (Выходной день • ${dayNameRu})`,
-        nextOpenTextRu: "Институциональные шлюзы CME и спотовые ETF США откроются в понедельник в 16:30 МСК",
+        nextOpenTextRu: `Институциональные шлюзы CME и спотовые ETF США откроются в понедельник в ${schedule.usOpenMsk} МСК`,
         sessionDescriptionRu: "Крипторынок торгуется 24/7 без закрытия бирж. Однако традиционные институциональные шлюзы (фьючерсы CME и ETF США) закрыты на выходные. В стаканах преобладают розничные объемы и пониженная ликвидность с риском сбора стопов и формирования гэпа к открытию CME в понедельник.",
         operatingRegimeRu: "Выходной крипто-режим (24/7, тонкий стакан, закрытые CME/ETF)"
       };
@@ -9977,7 +10056,7 @@ function getAssetMarketSchedule(ticker: string, date: Date = new Date()): Market
         isGold: true,
         isMoex: false,
         statusTextRu: `Рынок золота закрыт на выходные (Суббота)`,
-        nextOpenTextRu: "В ночь на понедельник в 01:00 МСК (CME Globex & Тихоокеанско-азиатская сессия)",
+        nextOpenTextRu: `В ночь на понедельник в ${schedule.cmeSunOpenMsk} МСК (CME Globex & Тихоокеанско-азиатская сессия)`,
         sessionDescriptionRu: "Все мировые спотовые и фьючерсные биржи металлов (COMEX, LBMA, МосБиржа) закрыты на субботу. Макроэкономические ведомства США (BLS, Fed) закрыты. Торги не проводятся.",
         operatingRegimeRu: "Рынок металлов закрыт на выходные (Суббота)"
       };
@@ -9991,8 +10070,8 @@ function getAssetMarketSchedule(ticker: string, date: Date = new Date()): Market
         isGold: true,
         isMoex: false,
         statusTextRu: `Рынок золота закрыт на выходные (Воскресенье)`,
-        nextOpenTextRu: "Сегодня ночью в 01:00 МСК (CME Globex & Тихоокеанско-азиатская сессия)",
-        sessionDescriptionRu: "Воскресная пауза перед открытием тихоокеанско-азиатской сессии (Сидней / Токио) и платформы CME Globex в ночь на понедельник в 01:00 МСК.",
+        nextOpenTextRu: `Сегодня ночью в ${schedule.cmeSunOpenMsk} МСК (CME Globex & Тихоокеанско-азиатская сессия)`,
+        sessionDescriptionRu: `Воскресная пауза перед открытием тихоокеанско-азиатской сессии (Сидней / Токио) и платформы CME Globex в ночь на понедельник в ${schedule.cmeSunOpenMsk} МСК.`,
         operatingRegimeRu: "Рынок металлов закрыт на выходные (Воскресенье)"
       };
     }
@@ -10027,6 +10106,7 @@ function getAssetMarketSchedule(ticker: string, date: Date = new Date()): Market
 }
 
 function getWeekendCalendarEvents(ticker: string, dayOfWeekRu: string) {
+  const schedule = getSessionSchedule(new Date());
   const tUpper = ticker.toUpperCase();
   const isGold = tUpper.includes("GOLD") || tUpper.includes("XAU") || tUpper.includes("GLD");
   const isMoex = tUpper.includes("MOEX") || tUpper.includes("GLDRUB");
@@ -10056,7 +10136,7 @@ function getWeekendCalendarEvents(ticker: string, dayOfWeekRu: string) {
         source: "Международные агентства"
       },
       {
-        timeMsk: isGold ? "В ночь на пн 01:00" : "Пн 08:50",
+        timeMsk: isGold ? `В ночь на пн ${schedule.cmeSunOpenMsk}` : "Пн 08:50",
         title: isGold ? "Открытие торгов металлами на платформе CME Globex и старт азиатской сессии (Сидней / Токио)" : "Возобновление торгов на срочном рынке МосБиржи (MOEX FORTS)",
         impact: "CRITICAL",
         details: isGold ? "Первые мировые котировки недели, отыгрыш событий выходных и первичная балансировка спреда." : "Утренний старт фьючерсных контрактов FORTS.",
@@ -11678,165 +11758,81 @@ ${antiChopTrendClause}
 ЗАПРЕТ НА ВЫДУМЫВАНИЕ ФАКТОВ:
 Отвечай только на тот вопрос, который задан. Если тебя спрашивают про события дня, выдай список событий с временем МСК. Не нужно рассказывать, как работает программа, если тебя об этом не просили.`;
 
-    // Construct institutional global macro & quantitative analyst system instruction
-    const systemInstruction = isChatQuery
-      ? `РОЛЬ: Ты — встроенный аналитик и риск-менеджер терминала QUANTEX по активу ${ticker}.
-РЕЖИМ: «ОТВЕТ В ЧАТЕ НА ВОПРОС ТРЕЙДЕРА».
-Трейдер задал конкретный вопрос в чат: "${userQuery}".
+    const currentSchedule = getSessionSchedule(new Date());
+    let effectivePropContext = req.body.propContext || null;
+    if (!effectivePropContext && Array.isArray(req.body.candlesticks) && req.body.candlesticks.length >= 50) {
+      try {
+        effectivePropContext = buildPropContext(req.body.candlesticks, 900, new Date(), ticker, req.body.timeframe || "15m");
+      } catch (err: any) {
+        console.warn("[AiAnalyst] Notice computing prop context:", err.message);
+      }
+    }
 
-${webSearchStatusClause}
+    // Construct institutional Senior Prop Trader system instruction with seasonal schedule and prop context
+    const systemInstruction = buildSeniorPropTraderSystemInstruction({
+      ticker,
+      schedule: currentSchedule,
+      propContext: effectivePropContext,
+      isChatQuery,
+      isShortMode,
+      userQuery,
+      imminentInfo,
+      gexDynamicRuleClause,
+      antiChopTrendClause,
+      rawRsi14,
+      rawMacdHist,
+      rawDelta,
+      rawDiv,
+      dailyAtr,
+      indDirection,
+      indEntry,
+      indSl,
+      indTp1,
+      indStopAtrRatio,
+      isBull,
+      entryPriceFormatted,
+      entryRationale,
+      slFormatted,
+      slRationale,
+      tp1Formatted,
+      tp1Rationale,
+      tp2Formatted,
+      tp2Rationale,
+      nearestNewsStr,
+      promptShortGexLine,
+      promptDetailedGexWalls,
+      currentFlip,
+      currentMaxPain,
+      isPositiveGamma,
+      migrationDiagnosis,
+      d1Trend,
+      d1KeyLevel,
+      d1LevelDesc,
+      h4Trend,
+      h4KeyLevel,
+      h4LevelDesc,
+      h1Trend,
+      h1KeyLevel,
+      h1LevelDesc,
+      m30Trend,
+      m30KeyLevel,
+      m30LevelDesc,
+      m15Trend,
+      m15KeyLevel,
+      m15LevelDesc,
+      consensus5Str,
+      indicatorForecast,
+      currentDayPw,
+      currentDayCw,
+      isEntryTriggered,
+      scheduleRuleInstruction,
+      expiryRuleInstruction,
+      feedbackLoopContext,
+      webSearchStatusClause,
+      interfaceProhibitionClause,
+      isCallWallRunningAway,
+    });
 
-${interfaceProhibitionClause}
-
-ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX, РЕЖИМА ГАММЫ И АНТИ-ПИЛЫ:
-${gexDynamicRuleClause}
-
-2. ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
-   - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
-   - Старый Call Wall становится поддержкой (Pullback), а целью для LONG становится новый месячный уровень.
-
-3. РЕЖИМ POSITIVE / NEGATIVE GAMMA:
-   - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно торговать на отбой.
-   - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется. Учитывай это при ответе.
-
-4. АНТИ-ПИЛА И РЕЖИМ РЫНКА (ANTI-CHOP & TREND CONTEXT):
-   - ${antiChopTrendClause}
-   - Если рынок в Режиме Боковика: "Режим: Боковик. Уровни держат цену. Рекомендуется торговля от границ (отбой)."
-   - Если миграция / Gamma Squeeze: "Режим: Сильный тренд (Gamma Squeeze). Уровни сдвигаются за ценой. Торговля против тренда (отбой) запрещена, ищи вход по тренду."
-
-ЖЕСТКИЕ ПРАВИЛА ОТВЕТА В РЕЖИМЕ ЧАТА (ОТВЕТЫ НА ВОПРОСЫ):
-1. Отвечай КРАТКО (2–4 емких предложения) и ТОЛЬКО НА СУТЬ ЗАДАННОГО ВОПРОСА!
-2. Если трейдер спрашивает про СОБЫТИЯ ДНЯ или НОВОСТИ — выдай список событий из переданного календаря с точным временем МСК. Не выдумывай отсутствующие события! Если новостей нет — напиши: «Свежих новостей за последние часы не поступало».
-3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать полный отчет из 4 блоков!
-4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять календарь новостей или список событий, если об этом прямо не спросили!
-5. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО дублировать опционные уровни GEX (Call/Put Wall/Max Pain), если вопрос не про GEX!
-6. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон торгового плана (Вход, Стоп, Тейки), если трейдер прямо не попросил уровни сделки!
-7. ПРИМЕР: Если трейдер спрашивает «Почему дивергенция?»:
-   Ответь прямо и емко (2–3 предложения): укажи значения осциллятора RSI (${rawRsi14}), гистограммы MACD (${rawMacdHist}) и затухание дельты, объяснив причину расхождения пиков индикатора с движением цены. Без повторения календаря новостей и уровней GEX!
-8. Пиши простым языком практикующего трейдера без академической воды и без инструкций к программе.`
-      : `РОЛЬ: Ты — старший риск-менеджер торговой платформы QUANTEX по активу ${ticker}. Твой язык четкий, профессиональный и без воды.
-ТВОЯ ЗАДАЧА: Проверить торговый план, предложенный индикатором QUANTEX, сопоставив его с реальными рыночными данными (консенсус 5 ТФ, опционные уровни GEX и их динамика сдвига, дневной ATR ~${dailyAtr} п., сырые значения индикаторов RSI/MACD, режим боковика/тренда и новости).
-
-${webSearchStatusClause}
-
-${interfaceProhibitionClause}
-
-ПРАВИЛА АУДИТА ОПЦИОННЫХ УРОВНЕЙ GEX, МИГРАЦИИ И РЕЖИМА ГАММЫ:
-${gexDynamicRuleClause}
-
-2. ЖЕСТКИЙ ЗАПРЕТ НА ШОРТ ОТ УБЕГАЮЩИХ УРОВНЕЙ:
-   - Если цена закрепилась выше дневного Call Wall, и месячный Call Wall при этом сдвигается вверх — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО искать шорт от старого уровня!
-   - Старый Call Wall становится поддержкой (Pullback / зеркальный уровень), а целью для LONG становится новый месячный уровень.
-   - Симметрично для падения: если цена пробила дневной Put Wall, и уровни поддержки сдвигаются вниз — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО покупать на отскок от старого уровня (ловля ножей). Старый Put Wall становится сопротивлением, а цель смещается к новому нижнему уровню.
-
-3. ПРАВИЛО РЕЖИМА POSITIVE / NEGATIVE GAMMA:
-   - Если цена выше Gamma Flip (Positive Gamma) — уровни держат цену, от них можно и нужно торговать на отбой/откат от границ к центру диапазона.
-   - Если цена ниже Gamma Flip (Negative Gamma) — уровни пробиваются, тренд ускоряется дилерами. Торговля на отбой контртренд ЗАПРЕЩЕНА — торговать только ПО ТРЕНДУ (пробои) или дожидаться подтвержденного затухания.
-
-4. ПРАВИЛО АНТИ-ПИЛЫ И РЕЖИМА РЫНКА (ANTI-CHOP & TREND CONTEXT):
-   - ${antiChopTrendClause}
-   - Если Режим: Боковик — уровни держат цену, строго рекомендуй торговлю от границ (отбой).
-   - Если Режим: Сильный тренд (Gamma Squeeze) — уровни сдвигаются за ценой, торговля против тренда (отбой) категорически запрещена, ищи вход строго по тренду.
-
-ПРАВИЛА АУДИТА И ВЕРДИКТА:
-- Индикатор QUANTEX предлагает только предварительный проект сделки. Ты НЕ ДОЛЖЕН слепо копировать его сигналы!
-- Если план индикатора адекватен (стоп-лосс находится в пределах 1.5 ATR от входа, направление совпадает с консенсусом 5 ТФ, тейки логичны и новости не противоречат):
-  Напиши: «Мой вердикт: Согласен с индикатором» и выведи согласованный план.
-- Если индикатор предлагает неадекватный план (стоп > 1.5–2 ATR, вход против консенсуса ТФ, покупка перед медвежьими новостями или шорт прямо в убегающий Call Wall, либо на фоне явной дивергенции RSI/MACD):
-  Напиши: «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» и подробно объясни, почему ты не согласен с индикатором.
-- В случае несогласия ОБЯЗАТЕЛЬНО предложи СВОЙ план, взяв безопасный стоп из локальных уровней (15М/1H или EMA 200 на 4H) и рассчитав тейки с адекватным Risk/Reward (от 1:2 до 1:3).
-
-ЖЕСТКОЕ МАТЕМАТИЧЕСКОЕ ПРАВИЛО ДЛЯ ТЕЙКОВ:
-- Для SHORT: Вход > TP1 > TP2. В позиции SHORT цена тейка TP1 строго ниже точки входа, а TP2 ОБЯЗАН быть строго НИЖЕ TP1 (Вход > TP1 > TP2)!
-- Для LONG: Вход < TP1 < TP2. В позиции LONG цена тейка TP1 строго выше точки входа, а TP2 ОБЯЗАН быть строго ВЫШЕ TP1 (Вход < TP1 < TP2)!
-Если ты предлагаешь тейки, они должны строго соответствовать этой логике. Категорически запрещено путать их местами!
-
-ПРАВИЛО ПРЕДУПРЕЖДЕНИЙ О НОВОСТЯХ:
-${imminentInfo.isImminent ? `- 🚨 ВНИМАНИЕ: До новости «${imminentInfo.title}» осталось ${imminentInfo.minutesRemaining} мин (${imminentInfo.timeMsk} МСК)! В начале ответа обязательно укажи предупреждение: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- СЕЙЧАС ДО ВАЖНЫХ НОВОСТЕЙ БОЛЕЕ 30 МИНУТ (ИЛИ ОНИ ОТСУТСТВУЮТ).
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать слово "ВНИМАНИЕ" или "🚨 Скоро новости"!
-Выводи новости в Блоке 1 СТРОГО в обычном формате календаря: "[Время МСК] — [Событие] — [Влияние]" БЕЗ красного слова "ВНИМАНИЕ".`}
-
-ЖЕСТКОЕ ПРАВИЛО СТИЛЯ:
-Пиши простым языком практикующего трейдера и риск-менеджера. ЗАПРЕЩЕНО использовать слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE.
-Замени их на простые термины: откат, пробой, покупка по лимиту, стоп-лосс, тейк-профит.
-Текст должен быть кратким. Никаких длинных предложений.
-
-Текущий режим в интерфейсе: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (Short)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (Detailed)"}.
-
-${isShortMode ? `РЕЖИМ "КОРОТКИЙ ОТВЕТ" (Short) — СТРОГО 4 СТРОКИ:
-1. ${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.` : nearestNewsStr !== "Фон чистый" ? `Календарь событий: ${nearestNewsStr}.` : "Фон чистый (важных новостей в ближайшие 30 минут нет)."}
-${promptShortGexLine}
-${isCallWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень Call Wall убегает вверх. Шорт от старого уровня запрещен, работаем по тренду (LONG)!" : isPutWallRunningAway ? "⚠️ ВНИМАНИЕ: Уровень поддержки убегает вниз. Ловля ножей запрещена, работаем по тренду (SHORT)!" : ""}
-3. Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1}). Мой вердикт: ${Number(indStopAtrRatio) <= 1.5 && (indDirection === (isBull ? "LONG" : "SHORT")) && !isCallWallRunningAway ? "Согласен с индикатором" : "ВНИМАНИЕ: ДИВЕРГЕНЦИЯ"}. Торговый план: ${isBull ? "LONG" : "SHORT"} | Вход: ${entryPriceFormatted} (${entryRationale}) | SL: ${slFormatted} (${slRationale}) | TP1: ${tp1Formatted} (${tp1Rationale}) | TP2: ${tp2Formatted} (${tp2Rationale}).
-4. Вердикт: 1 короткое резюме риск-менеджера (например: "Ждем ${entryRationale} ${entryPriceFormatted} для безопасного входа со стопом ${slFormatted}" или "В позиции, держим до TP1 ${tp1Formatted} со стопом в БУ").` : `РЕЖИМ "РАЗВЁРНУТЫЙ ОТВЕТ" (Detailed) должен состоять СТРОГО из 4 блоков:
-
-${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа.\n\n` : ""}1. 📰 Фундаментальный фон и новости:
-   - В этом блоке — ТОЛЬКО СУХИЕ ФАКТЫ без рассуждений и лишних комментариев!
-   - Используй Live Web Search, чтобы найти главные новости за сегодня (ФРС, CPI, статистика).
-   - Строгий формат каждой строки: [Время МСК] — [Событие] — [Влияние на актив].
-   ${imminentInfo.isImminent ? `- Первая строка ответа уже выведена: "🚨 ВНИМАНИЕ: Скоро новости ${imminentInfo.title} в ${imminentInfo.timeMsk} МСК. Воздержитесь от входа".` : `- Внимание: до важных новостей более 30 минут! Запрещено выводить предупреждение "ВНИМАНИЕ". Если важных новостей нет — укажи: "[Время МСК] — Фон чистый — Ближайшие важные публикации отсутствуют".`}
-
-2. 📊 Опционные уровни (GEX) и динамика миграции:
-${promptDetailedGexWalls}
-   - Zero-Flip (Рубеж смены режима): ${currentFlip} | Max Pain: ${currentMaxPain}
-   - Гамма-режим: ${isPositiveGamma ? "Positive Gamma (+GEX, цена ВЫШЕ Flip — уровни ДЕРЖАТ цену, торгуем на отбой от границ)" : "Negative Gamma (-GEX, цена НИЖЕ Flip — уровни ПРОБИВАЮТСЯ, тренд ускоряется, торговля на отбой ЗАПРЕЩЕНА)"}
-   - Динамика уровней и миграция открытого интереса:
-     ${migrationDiagnosis}
-
-3. 📈 Технический анализ и Консенсус таймфреймов:
-   Дай оценку каждому ТФ:
-   - 1D: ${d1Trend} | ${d1KeyLevel} (${d1LevelDesc})
-   - 4H: ${h4Trend} | ${h4KeyLevel} (${h4LevelDesc})
-   - 1H: ${h1Trend} | ${h1KeyLevel} (${h1LevelDesc})
-   - 30M: ${m30Trend} | ${m30KeyLevel} (${m30LevelDesc})
-   - 15M: ${m15Trend} | ${m15KeyLevel} (${m15LevelDesc})
-   👉 Итоговый консенсус: ${consensus5Str}.
-   - Анализ сырых индикаторов и дивергенций:
-     Обязательно сошлись на переданные сырые значения индикаторов (RSI 14, гистограмма MACD, стохастик, дельта). Самостоятельно оцени динамику импульса и наличие бычьей или медвежьей дивергенции с ценой (например: «Гистограмма MACD затухает перед сопротивлением — медвежья дивергенция...» или «RSI формирует повышающееся дно, подтверждая отскок от поддержки»).
-
-4. 📋 Торговый план (Аудит риск-менеджера):
-   ОБЯЗАТЕЛЬНО используй формат:
-   - Сигнал индикатора: ${indDirection} (Вход: ${indEntry}, Стоп: ${indSl}, TP1: ${indTp1})
-   - Мой вердикт: [«Согласен с индикатором» ИЛИ «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ (Не согласен с индикатором) — краткая причина»]
-   - Торговый план:
-     * Основной сценарий: ${isBull ? "LONG" : "SHORT"}
-     * Вход: ${entryPriceFormatted} (${entryRationale})
-     * Стоп-лосс (SL): ${slFormatted} (${slRationale})
-     * Тейк 1: ${tp1Formatted} (${tp1Rationale})
-     * Тейк 2: ${tp2Formatted} (${tp2Rationale})
-     * ⚠️ Корректировка на новости: Как событие из п.1 влияет на сделку (кратко).
-     * План Б: При пробое уровня ${slFormatted} в обратную сторону, ищем вход с целями ${indicatorForecast?.altTp1 ?? (isBull ? currentDayPw : currentDayCw)}
-
-ЖЕСТКИЕ ПРАВИЛА ВЫБОРА УРОВНЕЙ И ТЕЙКОВ (АНАЛИЗ ВОЛАТИЛЬНОСТИ ATR И ДИСПЕРСИИ):
-1. ЗАПРЕЩЕНО СЛЕПО ПРИВЯЗЫВАТЬ ТЕЙКИ К ОДНИМ И ТЕМ ЖЕ ТАЙМФРЕЙМАМ (например, всегда писать TP1 = 30M, а TP2 = 1D)! Для интрадей-торговли цели должны быть реалистичны в рамках одного дня.
-2. МАТЕМАТИКА ТЕЙКОВ: Для SHORT: Вход > TP1 > TP2. Для LONG: Вход < TP1 < TP2!
-3. ТЫ ОБЯЗАН ОЦЕНИВАТЬ ДНЕВНОЙ СРЕДНИЙ ХОД (ATR: ~${dailyAtr} п.) И РАССТОЯНИЕ ДО УРОВНЕЙ:
-   - Вход: от ближайшей зоны отката (15M/30M/1H).
-   - Стоп-лосс: за локальный экстремум (хай/лоу 15M) или уровень индикатора / 200 EMA на 4H (строго в пределах 0.8–1.5 ATR).
-   - TP1 (Ближайшая цель): ближайшая локальная поддержка/сопротивление на 15M, 30M или 1H (~0.4–0.7 ATR от входа).
-   - TP2 (Основная цель дня): следующий значимый уровень (1H, 4H или 1D), строго дальше TP1 (для SHORT: TP2 < TP1; для LONG: TP2 > TP1), НО ТОЛЬКО ЕСЛИ он реалистично достижим внутри одного торгового дня:
-     * Если до дневного уровня 1D (Put/Call Wall) больше 2–3 ATR или цена уже стоит на нем — ВЫБИРАЙ ПРОМЕЖУТОЧНУЮ ЦЕЛЬ НА 1H ИЛИ 4H (например, цель дня в пределах 1.2–1.5 ATR)!
-     * Если уровень 1D находится в пределах нормального дневного хода (0.6–1.8 ATR) — указывай его с пометкой "(достижимо в рамках дня)".
-4. В Блоке 4 ОБЯЗАТЕЛЬНО пиши обоснование каждого уровня в скобках строго по образцу:
-   - Вход: ${entryPriceFormatted} (${entryRationale})
-   - Стоп-лосс: ${slFormatted} (${slRationale})
-   - Тейк 1: ${tp1Formatted} (${tp1Rationale})
-   - Тейк 2: ${tp2Formatted} (${tp2Rationale})`}
-
-⚠️ ПРАВИЛО СТАТУСОВ СДЕЛКИ И АКТИВНОЙ ПОЗИЦИИ:
-- Статус сделки: ${isEntryTriggered ? `АКТИВНАЯ ПОЗИЦИЯ (фактический вход по индикатору состоялся по цене ${indEntry})` : `ОЖИДАНИЕ ВХОДА (вход еще не активирован)`}.
-${isEntryTriggered ? `
-- ВНИМАНИЕ: Сделка УЖЕ ОТКРЫТА по цене ${indEntry}!
-  * Если ты согласен с позицией, веди её: укажи вход строго ${indEntry} (Позиция активна), актуальный стоп ${indSl}, цели TP1 (${tp1Formatted}) и TP2 (${tp2Formatted}). Статус: «В позиции: вход взят по ${indEntry}. Ожидаем TP1 ${tp1Formatted}».
-  * Если ты НЕ согласен со сделкой (дивергенция, конфликт со старшими ТФ или риск выноса) и хочешь предложить другой уровень входа, ты ОБЯЗАН прямо написать:
-    «⚠️ Рекомендую закрыть позицию по индикатору (вход ${indEntry}) и перезайти по цене ${entryPriceFormatted}...»
-  * КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «В позиции», указывая при этом другую цену входа, как будто мы в нее вошли!` : `
-- Если сделка еще не открыта: ждем лимитный вход по цене ${entryPriceFormatted}. Статус: «⏳ Ждём вход @${entryPriceFormatted}».`}
-Категорически запрещено писать «TP1 взят», пока цена фактически не коснулась уровня TP1!
-
-${scheduleRuleInstruction}
-${expiryRuleInstruction}
-${feedbackLoopContext}`;
 
     const newsListFormatted = (Array.isArray(latestNews) && latestNews.length > 0)
       ? `\nСвежие поступающие новости и публикации ленты:\n${latestNews.slice(0, 8).map((n: any) => `- [${n.time || ""}] ${n.title || ""} [${n.impact || "Новость"}] ${n.details ? `— ${n.details}` : ""}`).join("\n")}`

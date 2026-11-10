@@ -1,6 +1,7 @@
 // 🏛️ QUANTEX Real-Time GEX (Gamma Exposure) & Options Analytics Engine
 // Institutional Options & Futures Analytics Engine
 import Decimal from "decimal.js";
+import { getSessionSchedule } from "../src/lib/marketSessions";
 
 Decimal.config({ precision: 30, rounding: Decimal.ROUND_HALF_UP });
 
@@ -1511,10 +1512,14 @@ export function evaluateOptionDataFreshness(options: {
     }
 
     // Weekday outside active session (overnight pre-market or post-market)
+    const schedule = getSessionSchedule(new Date(nowMs));
     if (ageMs <= 26 * 3600 * 1000) {
+      const freshnessLabel = schedule.seasonUs === "WINTER"
+        ? "Данные опционов: закрытие прошлой сессии США (зима EST, 00:00 МСК) — норма до 17:30 МСК"
+        : "Данные опционов: закрытие прошлой сессии США (лето EDT, 23:00 МСК) — норма до 16:30 МСК";
       return {
         sessionVerdict: "overnight_normal",
-        dataFreshnessLabel: "Данные опционов: закрытие прошлой сессии США (норма до 16:30 МСК)",
+        dataFreshnessLabel: freshnessLabel,
         isDataStale: false,
         isSynthetic: false,
         ageMinutes,

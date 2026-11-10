@@ -483,6 +483,11 @@ import {
   CurrentPriceCountdown
 } from "./TradingViewZonesPrimitive";
 import {
+  PropDeskOverlayPrimitive,
+  PropDeskOverlayOptions,
+  DEFAULT_PROP_OVERLAY_OPTIONS
+} from "./PropDeskOverlay";
+import {
   evaluateSuperIndicator,
   SuperIndicatorOutput,
   resetIndicatorForecast,
@@ -492,6 +497,8 @@ import {
   createSetupLevelsForBar,
   isValidAnchoredSetup
 } from "../lib/pineSuperIndicatorEngine";
+import { getSessionSchedule } from "../lib/marketSessions";
+import { computeConfluenceSetup, ConfluenceSetupResult } from "../lib/confluenceEngine";
 
 interface ChartOverlaysProps {
   chart: IChartApi | null;
@@ -513,6 +520,9 @@ interface ChartOverlaysProps {
   isHudMinimized?: boolean;
   onToggleHudMinimize?: () => void;
   indicatorOutput?: SuperIndicatorOutput | null;
+  useCll?: boolean;
+  onToggleCll?: () => void;
+  cllSetup?: ConfluenceSetupResult | null;
   showEma9?: boolean;
   showEma21?: boolean;
   showEma50?: boolean;
@@ -533,6 +543,9 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   isHudMinimized,
   onToggleHudMinimize,
   indicatorOutput,
+  useCll = true,
+  onToggleCll,
+  cllSetup,
   showEma9 = true,
   showEma21 = true,
   showEma50 = true,
@@ -655,7 +668,7 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
       <div className="absolute top-1.5 left-1.5 sm:left-2 z-20 flex flex-col gap-1 pointer-events-none select-none max-w-[calc(100%-12px)] sm:max-w-fit">
         {/* Row 1: Compact HUD Expand Pill */}
         {showTables && isHudMinimized && (
-          <div className="flex items-center">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               onClick={onToggleHudMinimize}
@@ -663,35 +676,102 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
               title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
             >
               <span className="font-extrabold text-cyan-400">📊 HUD:</span>
-              <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
-                indicatorOutput?.forecast.isBull
-                  ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
-                  : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
-              }`}>
-                {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} {indicatorOutput?.forecast.probability || 74}%
-              </span>
-              <span className="text-gray-300 hidden xs:inline text-[9px]">
-                Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
-              </span>
-              <span className="text-emerald-400 hidden xs:inline text-[9px]">
-                TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
-              </span>
-              {indicatorOutput?.hud?.trendAlignmentBadge && (
-                <span className={`px-1 py-0.2 rounded text-[8.5px] font-bold ${
-                  indicatorOutput.hud.isCounterTrend
-                    ? "bg-amber-500/25 text-amber-200 border border-amber-500/50"
-                    : "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40"
-                }`}>
-                  {indicatorOutput.hud.trendAlignmentBadge}
-                </span>
-              )}
-              {indicatorOutput?.hud?.maeBadge && (
-                <span className="px-1 py-0.2 rounded text-[8.5px] font-extrabold bg-rose-500/30 text-rose-200 border border-rose-500/60 animate-pulse">
-                  {indicatorOutput.hud.maeBadge}
-                </span>
+              {useCll && cllSetup && cllSetup.status !== "NO_TRADE" ? (
+                <>
+                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
+                    cllSetup.direction === "LONG"
+                      ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
+                      : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
+                  }`}>
+                    🎯 CLL: {cllSetup.direction} (S={cllSetup.score.toFixed(2)})
+                  </span>
+                  <span className="text-gray-300 hidden xs:inline text-[9px]">
+                    Вход: <strong className="text-white">{cllSetup.entryMid.toFixed(1)}</strong>
+                  </span>
+                  <span className="text-emerald-400 hidden xs:inline text-[9px]">
+                    TP1: <strong>{cllSetup.tp1?.price.toFixed(1) ?? "-"}</strong>
+                  </span>
+                  <span className="text-rose-400 hidden xs:inline text-[9px]">
+                    SL: <strong>{cllSetup.sl.toFixed(1)}</strong>
+                  </span>
+                  {cllSetup.isScalpMode && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50">
+                      ⚡ СКАЛЬП (ADR&gt;85%)
+                    </span>
+                  )}
+                  {cllSetup.planB && (cllSetup.planB.isActive || cllSetup.planB.isTriggered) && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-purple-500/30 text-purple-200 border border-purple-500/50 animate-pulse">
+                      👻 {cllSetup.planB.type}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
+                    indicatorOutput?.forecast.isBull
+                      ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
+                      : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
+                  }`}>
+                    {useCll ? "CLL: ЖДЁМ СЛОИ" : (indicatorOutput?.forecast.isBull ? "LONG" : "SHORT")} {indicatorOutput?.forecast.probability || 74}%
+                  </span>
+                  <span className="text-gray-300 hidden xs:inline text-[9px]">
+                    Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+                  </span>
+                  <span className="text-emerald-400 hidden xs:inline text-[9px]">
+                    TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+                  </span>
+                  {indicatorOutput?.hud?.trendAlignmentBadge && (
+                    <span className={`px-1 py-0.2 rounded text-[8.5px] font-bold ${
+                      indicatorOutput.hud.isCounterTrend
+                        ? "bg-amber-500/25 text-amber-200 border border-amber-500/50"
+                        : "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40"
+                    }`}>
+                      {indicatorOutput.hud.trendAlignmentBadge}
+                    </span>
+                  )}
+                  {indicatorOutput?.hud?.maeBadge && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-extrabold bg-rose-500/30 text-rose-200 border border-rose-500/60 animate-pulse">
+                      {indicatorOutput.hud.maeBadge}
+                    </span>
+                  )}
+                </>
               )}
               <span className="text-cyan-400 text-[9px] font-bold">▾</span>
             </button>
+
+            {/* Quick Toggle for CLL vs Legacy Wave directly on HUD */}
+            {onToggleCll && (
+              <button
+                type="button"
+                onClick={onToggleCll}
+                className={`pointer-events-auto flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[8.5px] font-mono font-bold cursor-pointer transition border ${
+                  useCll
+                    ? "bg-cyan-500/20 text-cyan-200 border-cyan-500/50 hover:bg-cyan-500/30"
+                    : "bg-gray-800/80 text-gray-400 border-gray-700 hover:text-white"
+                }`}
+                title={useCll ? "Активен Confluence Liquidity Ladder v1 (клик для Legacy Wave)" : "Активен Legacy Wave (клик для Confluence Ladder)"}
+              >
+                <span>{useCll ? "🎯 CLL v1" : "🌊 Wave"}</span>
+                {useCll && cllSetup && cllSetup.status !== "NO_TRADE" && (
+                  <span className="text-[7.5px] text-cyan-300">({cllSetup.activeLayers.length}/6)</span>
+                )}
+              </button>
+            )}
+
+            {/* CLL Layer Chips */}
+            {useCll && cllSetup && cllSetup.activeLayers.length > 0 && (
+              <div className="hidden lg:flex items-center gap-1">
+                {cllSetup.activeLayers.map(layer => (
+                  <span
+                    key={layer.id}
+                    className="px-1 py-0.2 rounded text-[8px] font-mono font-semibold bg-gray-900/90 text-cyan-300 border border-cyan-800/60"
+                    title={`${layer.name}: ${layer.rationale}`}
+                  >
+                    {layer.tag}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1582,6 +1662,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [showForecast, setShowForecast] = useState<boolean>(() =>
     getInitialPref("showForecast", "quantex_show_forecast", true)
   );
+  const [useCll, setUseCll] = useState<boolean>(() =>
+    getInitialPref("useCll", "quantex_use_cll", true)
+  );
+  const [activeCllSetup, setActiveCllSetup] = useState<ConfluenceSetupResult | null>(null);
   const [showAltWave, setShowAltWave] = useState<boolean>(() =>
     getInitialPref("showAltWave", "quantex_show_alt_wave", true)
   );
@@ -1702,6 +1786,38 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   const [vpLookbackBars, setVpLookbackBars] = useState<number>(200);
   const [useFridayBoost, setUseFridayBoost] = useState<boolean>(true);
   const [useGexAudit, setUseGexAudit] = useState<boolean>(true);
+
+  // 🏦 Prop Desk Overlay states (Independent of QUANTEX indicator & GEX walls)
+  const [showPropOverlay, setShowPropOverlay] = useState<boolean>(() =>
+    getInitialPref("showPropOverlay", "quantex_show_prop_overlay", true)
+  );
+  const [showPropVP, setShowPropVP] = useState<boolean>(() =>
+    getInitialPref("showPropVP", "quantex_show_prop_vp", true)
+  );
+  const [showPropSessions, setShowPropSessions] = useState<boolean>(() =>
+    getInitialPref("showPropSessions", "quantex_show_prop_sessions", true)
+  );
+  const [showPropPools, setShowPropPools] = useState<boolean>(() =>
+    getInitialPref("showPropPools", "quantex_show_prop_pools", true)
+  );
+  const [showPropFlow, setShowPropFlow] = useState<boolean>(() =>
+    getInitialPref("showPropFlow", "quantex_show_prop_flow", true)
+  );
+  const [showPropAdr, setShowPropAdr] = useState<boolean>(() =>
+    getInitialPref("showPropAdr", "quantex_show_prop_adr", true)
+  );
+  const [propContextData, setPropContextData] = useState<any>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("quantex_show_prop_overlay", JSON.stringify(showPropOverlay));
+      localStorage.setItem("quantex_show_prop_vp", JSON.stringify(showPropVP));
+      localStorage.setItem("quantex_show_prop_sessions", JSON.stringify(showPropSessions));
+      localStorage.setItem("quantex_show_prop_pools", JSON.stringify(showPropPools));
+      localStorage.setItem("quantex_show_prop_flow", JSON.stringify(showPropFlow));
+      localStorage.setItem("quantex_show_prop_adr", JSON.stringify(showPropAdr));
+    } catch {}
+  }, [showPropOverlay, showPropVP, showPropSessions, showPropPools, showPropFlow, showPropAdr]);
 
   // 100% synchronized indicator output (Engine single source of truth for both chart and HUD)
   const indicatorOutput = useMemo<SuperIndicatorOutput | null>(() => {
@@ -2242,6 +2358,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
   const priceLinesRef = useRef<any[]>([]);
   const zonesPrimitiveRef = useRef<TradingViewZonesPrimitive | null>(null);
+  const propDeskPrimitiveRef = useRef<PropDeskOverlayPrimitive | null>(null);
   const seriesMarkersRef = useRef<any>(null);
   const prevChartStyleRef = useRef<string>(chartStyle);
   const lastFittedKeyRef = useRef<string>("");
@@ -3005,6 +3122,25 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       zonesPrimitiveRef.current = zonesPrimitive;
     } catch (e) {
       console.warn("Could not attach zones primitive:", e);
+    }
+
+    // Attach 🏦 Prop Desk Overlay Primitive
+    try {
+      const propPrimitive = new PropDeskOverlayPrimitive({
+        showPropOverlay,
+        showPropVP,
+        showPropSessions,
+        showPropPools,
+        showPropFlow,
+        showPropAdr
+      });
+      series.attachPrimitive(propPrimitive);
+      propDeskPrimitiveRef.current = propPrimitive;
+      if (propContextData) {
+        propPrimitive.setData(propContextData);
+      }
+    } catch (e) {
+      console.warn("Could not attach PropDesk primitive:", e);
     }
 
     // Volume Series at bottom (dedicated invisible price scale)
@@ -3974,11 +4110,70 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     } catch (e) {
       console.warn("Could not re-attach zones primitive:", e);
     }
+    try {
+      const propPrimitive = new PropDeskOverlayPrimitive({
+        showPropOverlay,
+        showPropVP,
+        showPropSessions,
+        showPropPools,
+        showPropFlow,
+        showPropAdr
+      });
+      series.attachPrimitive(propPrimitive);
+      propDeskPrimitiveRef.current = propPrimitive;
+      if (propContextData) {
+        propPrimitive.setData(propContextData);
+      }
+    } catch (e) {
+      console.warn("Could not re-attach PropDesk primitive:", e);
+    }
     seriesInstanceRef.current = series;
     priceLinesRef.current = [];
     lastFittedKeyRef.current = "";
     prevCleanCandlesRef.current = [];
   }, [chartStyle]);
+
+  // Sync Prop Desk Overlay data and options
+  useEffect(() => {
+    if (propDeskPrimitiveRef.current) {
+      propDeskPrimitiveRef.current.setData(propContextData, {
+        showPropOverlay,
+        showPropVP,
+        showPropSessions,
+        showPropPools,
+        showPropFlow,
+        showPropAdr
+      });
+    }
+  }, [propContextData, showPropOverlay, showPropVP, showPropSessions, showPropPools, showPropFlow, showPropAdr]);
+
+  // Fetch Prop Desk Context from server with cache-busting and no-store
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchProp = async () => {
+      try {
+        const cacheBuster = Date.now();
+        const res = await fetch(
+          `/api/market/prop-context?symbol=${encodeURIComponent(activeAsset)}&interval=${encodeURIComponent(activeTf)}&t=${cacheBuster}`,
+          { cache: "no-store" }
+        );
+        if (res.ok && !isCancelled) {
+          const data = await res.json();
+          if (data && data.success && data.propContext) {
+            setPropContextData(data.propContext);
+          }
+        }
+      } catch (err: any) {
+        console.warn("[PropContext] Notice:", err.message);
+      }
+    };
+    fetchProp();
+    const intervalId = setInterval(fetchProp, 30000);
+    return () => {
+      isCancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [activeAsset, activeTf]);
 
   // 4. Update Market Data, MACD, Trend Lines, GEX Levels, Zones, and Forecast Lines
   useEffect(() => {
@@ -4791,94 +4986,235 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
       const lineEndTime = lastCandle.time + tfSec * 3;
 
-      const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
-      const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
-      const slTagSuffix = (fc?.slSourceTag || fallbackSourceTags.slSourceTag) ? ` ${fc?.slSourceTag || fallbackSourceTags.slSourceTag}` : "";
-      const entryTagSuffix = (fc?.entrySourceTag || fallbackSourceTags.entrySourceTag) ? ` ${fc?.entrySourceTag || fallbackSourceTags.entrySourceTag}` : "";
-      const tp1TagSuffix = (fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag) ? ` ${fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag}` : "";
-      const tp2TagSuffix = (fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag) ? ` ${fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag}` : "";
-
-      // SL (Red dashed line)
-      boundedLines.push({
-        id: "sl_line",
-        price: Number(computedSl.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: "#ef4444",
-        lineWidth: 1,
-        lineStyle: "dashed",
-        label: fc?.isPlanBActive
-          ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}${recalcBadgeSuffix}`
-          : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}${recalcBadgeSuffix}`,
-        labelBg: "rgba(30, 9, 13, 0.98)",
-        labelBorderColor: "#f87171",
-        labelTextColor: "#fecdd3"
-      });
-
-      // Вход (Amber dotted or solid green if hit)
-      const scalpBadgeSuffix = fc?.isScalpMode ? ` • СКАЛЬП (цель = потолок отката, размер 1/2)` : "";
-      const entryRoleSuffix = fc?.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : "";
-      const entryMaeSuffix = fc?.maeBadge ? ` [${fc.maeBadge}]` : "";
-      boundedLines.push({
-        id: "entry_line",
-        price: Number(computedEntry.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
-        lineWidth: 1,
-        lineStyle: fc?.leg1Hit ? "solid" : "dotted",
-        label: fc?.leg1Hit
-          ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`
-          : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`,
-        labelBg: "rgba(24, 18, 6, 0.98)",
-        labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
-        labelTextColor: "#fef3c7"
-      });
-
-      // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line unless fallback recalc)
-      if (isFallbackRecalc || (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0))) {
-        boundedLines.push({
-          id: "tp1_line",
-          price: Number(computedTp1.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
-          lineWidth: 1,
-          lineStyle: "dashed",
-          label: fc?.leg2Hit
-            ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}${recalcBadgeSuffix}`
-            : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}${recalcBadgeSuffix}`,
-          labelBg: "rgba(6, 24, 20, 0.98)",
-          labelBorderColor: "#2dd4bf",
-          labelTextColor: "#ccfbf1"
+      let cllSetup: ConfluenceSetupResult | null = null;
+      if (useCll && cleanCandles.length >= 20) {
+        cllSetup = computeConfluenceSetup({
+          candles: cleanCandles,
+          gexReport: (dayGexReport || gexReport || indicatorOutput?.gex) as any,
+          schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
+          adrPct: indicatorOutput?.hud?.adrPct ?? 50,
+          symbol: activeAsset,
+          timeframe: activeTf,
+          currentPrice: lastCandle.close,
+          tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01
         });
       }
 
-      // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true unless fallback recalc)
-      if (computedTp2 > 0 && (isFallbackRecalc || (!fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)))) {
-        boundedLines.push({
-          id: "tp2_line",
-          price: Number(computedTp2.toFixed(dec)),
+      if (useCll && cllSetup && cllSetup.status !== "NO_TRADE") {
+        // Render Confluence Liquidity Ladder v1 (CLL) Zone & Lines
+        zoneBoxes.push({
+          type: "ob_bull",
+          topPrice: cllSetup.entryZone[1],
+          bottomPrice: cllSetup.entryZone[0],
           startTime: lineStartTime,
           endTime: lineEndTime,
           startLogical: lineStartLog,
           endLogical: lineEndLog,
-          color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
+          fillColor: cllSetup.direction === "LONG" ? "rgba(16, 185, 129, 0.12)" : "rgba(239, 68, 68, 0.12)",
+          borderColor: cllSetup.direction === "LONG" ? "#10b981" : "#ef4444",
+          label: `confl ${cllSetup.activeLayers.length}/6 | S=${cllSetup.score.toFixed(2)}`
+        });
+
+        // SL
+        boundedLines.push({
+          id: "sl_line",
+          price: Number(cllSetup.sl.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: "#ef4444",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: fc?.leg3Hit
-            ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}${recalcBadgeSuffix}`
-            : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}${recalcBadgeSuffix}`,
-          labelBg: "rgba(6, 18, 28, 0.98)",
-          labelBorderColor: "#38bdf8",
-          labelTextColor: "#e0f2fe"
+          label: `SL (CLL): ${cllSetup.sl.toFixed(dec)} [Инвалидация] -1.0R`,
+          labelBg: "rgba(30, 9, 13, 0.98)",
+          labelBorderColor: "#f87171",
+          labelTextColor: "#fecdd3"
         });
+
+        // Вход
+        boundedLines.push({
+          id: "entry_line",
+          price: Number(cllSetup.entryMid.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: cllSetup.direction === "LONG" ? "#10b981" : "#f59e0b",
+          lineWidth: 1,
+          lineStyle: "solid",
+          label: `ВХОД (CLL): ${cllSetup.entryMid.toFixed(dec)} [confl ${cllSetup.activeLayers.length}/6]`,
+          labelBg: "rgba(24, 18, 6, 0.98)",
+          labelBorderColor: cllSetup.direction === "LONG" ? "#34d399" : "#fbbf24",
+          labelTextColor: "#fef3c7"
+        });
+
+        // TP1
+        if (cllSetup.tp1) {
+          boundedLines.push({
+            id: "tp1_line",
+            price: Number(cllSetup.tp1.price.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: "#10b981",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: `TP1 (CLL): ${cllSetup.tp1.price.toFixed(dec)} ${cllSetup.tp1.tag}`,
+            labelBg: "rgba(6, 26, 18, 0.98)",
+            labelBorderColor: "#34d399",
+            labelTextColor: "#a7f3d0"
+          });
+        }
+
+        // TP2
+        if (cllSetup.tp2) {
+          boundedLines.push({
+            id: "tp2_line",
+            price: Number(cllSetup.tp2.price.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: "#06b6d4",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: `TP2 (CLL): ${cllSetup.tp2.price.toFixed(dec)} ${cllSetup.tp2.tag}`,
+            labelBg: "rgba(6, 26, 30, 0.98)",
+            labelBorderColor: "#22d3ee",
+            labelTextColor: "#cffafe"
+          });
+        }
+
+        // TP3 (Runner)
+        if (cllSetup.tp3) {
+          boundedLines.push({
+            id: "tp3_line",
+            price: Number(cllSetup.tp3.price.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: "#8b5cf6",
+            lineWidth: 1,
+            lineStyle: "dotted",
+            label: `TP3 (CLL): ${cllSetup.tp3.price.toFixed(dec)} ${cllSetup.tp3.tag}`,
+            labelBg: "rgba(20, 10, 36, 0.98)",
+            labelBorderColor: "#a78bfa",
+            labelTextColor: "#ede9fe"
+          });
+        }
+
+        // Plan B Ghost
+        if (cllSetup.planB && (showAltWave || cllSetup.planB.isActive || cllSetup.planB.isTriggered)) {
+          boundedLines.push({
+            id: "plan_b_ghost",
+            price: Number(cllSetup.planB.entry.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: "#f59e0b",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: `👻 ${cllSetup.planB.condition}`,
+            labelBg: "rgba(28, 20, 8, 0.98)",
+            labelBorderColor: "#f59e0b",
+            labelTextColor: "#fef3c7"
+          });
+        }
+      } else {
+        // Fallback to legacy wave engine lines
+        const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
+        const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
+        const slTagSuffix = (fc?.slSourceTag || fallbackSourceTags.slSourceTag) ? ` ${fc?.slSourceTag || fallbackSourceTags.slSourceTag}` : "";
+        const entryTagSuffix = (fc?.entrySourceTag || fallbackSourceTags.entrySourceTag) ? ` ${fc?.entrySourceTag || fallbackSourceTags.entrySourceTag}` : "";
+        const tp1TagSuffix = (fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag) ? ` ${fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag}` : "";
+        const tp2TagSuffix = (fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag) ? ` ${fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag}` : "";
+
+        // SL (Red dashed line)
+        boundedLines.push({
+          id: "sl_line",
+          price: Number(computedSl.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: "#ef4444",
+          lineWidth: 1,
+          lineStyle: "dashed",
+          label: fc?.isPlanBActive
+            ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}${recalcBadgeSuffix}`
+            : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}${recalcBadgeSuffix}`,
+          labelBg: "rgba(30, 9, 13, 0.98)",
+          labelBorderColor: "#f87171",
+          labelTextColor: "#fecdd3"
+        });
+
+        // Вход (Amber dotted or solid green if hit)
+        const scalpBadgeSuffix = fc?.isScalpMode ? ` • СКАЛЬП (цель = потолок отката, размер 1/2)` : "";
+        const entryRoleSuffix = fc?.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : "";
+        const entryMaeSuffix = fc?.maeBadge ? ` [${fc.maeBadge}]` : "";
+        boundedLines.push({
+          id: "entry_line",
+          price: Number(computedEntry.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
+          lineWidth: 1,
+          lineStyle: fc?.leg1Hit ? "solid" : "dotted",
+          label: fc?.leg1Hit
+            ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`
+            : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`,
+          labelBg: "rgba(24, 18, 6, 0.98)",
+          labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
+          labelTextColor: "#fef3c7"
+        });
+
+        // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line unless fallback recalc)
+        if (isFallbackRecalc || (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0))) {
+          boundedLines.push({
+            id: "tp1_line",
+            price: Number(computedTp1.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: fc?.leg2Hit
+              ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}${recalcBadgeSuffix}`
+              : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}${recalcBadgeSuffix}`,
+            labelBg: "rgba(6, 24, 20, 0.98)",
+            labelBorderColor: "#2dd4bf",
+            labelTextColor: "#ccfbf1"
+          });
+        }
+
+        // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true unless fallback recalc)
+        if (computedTp2 > 0 && (isFallbackRecalc || (!fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)))) {
+          boundedLines.push({
+            id: "tp2_line",
+            price: Number(computedTp2.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: fc?.leg3Hit
+              ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}${recalcBadgeSuffix}`
+              : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}${recalcBadgeSuffix}`,
+            labelBg: "rgba(6, 18, 28, 0.98)",
+            labelBorderColor: "#38bdf8",
+            labelTextColor: "#e0f2fe"
+          });
+        }
       }
 
       // Note: Alternative Plan B & Target 2 are rendered along the diagonal contingency ray
@@ -5876,6 +6212,21 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
               <button
                 type="button"
+                onClick={() => setUseCll(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  useCll ? "bg-cyan-500/20 border-cyan-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+                title="🎯 Confluence Liquidity Ladder v1 (CLL) vs Legacy wave"
+              >
+                <div className="flex flex-col">
+                  <span className="font-bold text-[11px]">🎯 Confluence Ladder (CLL v1)</span>
+                  <span className="text-[8px] text-gray-400">{useCll ? "CLL v1 активен (S>=0.70, 6 слоёв)" : "Legacy wave fallback"}</span>
+                </div>
+                <span className="text-[9px] font-mono">{useCll ? "CLL" : "WAVE"}</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setShowOb(prev => !prev)}
                 className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
                   showOb ? "bg-blue-500/20 border-blue-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
@@ -5916,6 +6267,93 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
               >
                 <span className="font-bold text-[11px]">HUD Таблица</span>
                 <span className="text-[9px] font-mono">{showTables ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 4: 🏦 Prop Desk Context */}
+          <div className="space-y-1.5 pt-1 border-t border-gray-800/80">
+            <div className="flex items-center justify-between">
+              <span className="text-[10.5px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                <Layers className="h-3 w-3 text-amber-400" />
+                <span>🏦 Prop Desk Оверлей</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !showPropOverlay;
+                  setShowPropOverlay(nextVal);
+                }}
+                className="text-[9.5px] font-mono text-amber-400 hover:text-amber-300 cursor-pointer underline"
+              >
+                {showPropOverlay ? "Скрыть весь деск" : "Показать деск"}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowPropOverlay(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropOverlay ? "bg-amber-500/20 border-amber-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">🏦 Главный оверлей</span>
+                <span className="text-[9px] font-mono">{showPropOverlay ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPropVP(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropVP ? "bg-orange-500/20 border-orange-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">VP POC / VAH / VAL</span>
+                <span className="text-[9px] font-mono">{showPropVP ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPropSessions(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropSessions ? "bg-cyan-500/20 border-cyan-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Сессии (Азия/Лондон/NY)</span>
+                <span className="text-[9px] font-mono">{showPropSessions ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPropPools(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropPools ? "bg-emerald-500/20 border-emerald-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Пулы EQH / EQL</span>
+                <span className="text-[9px] font-mono">{showPropPools ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPropFlow(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropFlow ? "bg-indigo-500/20 border-indigo-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">Order Flow (CVD/ABS)</span>
+                <span className="text-[9px] font-mono">{showPropFlow ? "ВКЛ" : "ВЫКЛ"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPropAdr(prev => !prev)}
+                className={`p-1.5 rounded-lg border flex items-center justify-between text-left cursor-pointer transition ${
+                  showPropAdr ? "bg-rose-500/20 border-rose-400 text-white" : "bg-gray-900/60 border-gray-800 text-gray-400"
+                }`}
+              >
+                <span className="font-bold text-[11px]">ADR (14) Размах</span>
+                <span className="text-[9px] font-mono">{showPropAdr ? "ВКЛ" : "ВЫКЛ"}</span>
               </button>
             </div>
           </div>
@@ -6722,6 +7160,26 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   )}
                 </div>
 
+                {/* 🎯 Quick Toggle: Confluence Ladder (CLL v1) vs Legacy Wave */}
+                <button
+                  type="button"
+                  onClick={() => setUseCll(prev => !prev)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-sm border ${
+                    useCll
+                      ? "bg-cyan-500/25 text-cyan-200 border-cyan-400 ring-1 ring-cyan-400/50 shadow-cyan-900/40"
+                      : "bg-gray-800/90 text-gray-400 hover:text-white border-gray-700 hover:bg-gray-750"
+                  }`}
+                  title={useCll ? "Активен Confluence Liquidity Ladder v1 (CLL). Кликните для переключения на Legacy Wave" : "Активен Legacy Wave. Кликните для переключения на Confluence Ladder (CLL v1)"}
+                >
+                  <span className="text-[12px]">{useCll ? "🎯" : "🌊"}</span>
+                  <span>{useCll ? "CLL v1" : "Legacy wave"}</span>
+                  {useCll && activeCllSetup && activeCllSetup.status !== "NO_TRADE" && (
+                    <span className="text-[9.5px] font-mono px-1 py-0.2 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60">
+                      {activeCllSetup.activeLayers.length}/6
+                    </span>
+                  )}
+                </button>
+
 
                 {/* Settings Tab Button for admins/privileged users */}
                 {stationUser.allowedTabs.includes("settings") && (
@@ -6858,6 +7316,9 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   isHudMinimized={isHudMinimized}
                   onToggleHudMinimize={() => setIsHudMinimized(false)}
                   indicatorOutput={indicatorOutput}
+                  useCll={useCll}
+                  onToggleCll={() => setUseCll(prev => !prev)}
+                  cllSetup={activeCllSetup}
                   showEma9={showEma9}
                   showEma21={showEma21}
                   showEma50={showEma50}

@@ -43,6 +43,7 @@ import ReactMarkdown from "react-markdown";
 import { UserAccountItem } from "./UnifiedStationSettings";
 import { detectMarketRangeMode, auditSingleGexLevel } from "../lib/pineSuperIndicatorEngine";
 import { formatGexLevelLabel, getLevelRole } from "../lib/gexLabels";
+import { getSessionSchedule, SessionSchedule } from "../lib/marketSessions";
 
 export interface MacroCalendarEvent {
   id?: string;
@@ -148,8 +149,10 @@ export interface AutonomousAiAnalystPanelProps {
   onWidthChange?: (newWidth: number) => void;
 }
 
-// Default today's macro & market events (MSK) impacting price across GOLD, MOEX, CRYPTO
-const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
+// Dynamic today's macro & market events (MSK) impacting price across GOLD, MOEX, CRYPTO
+const defaultPanelSchedule = getSessionSchedule(new Date());
+
+const buildDefaultTodayEvents = (sched: SessionSchedule = defaultPanelSchedule): MacroCalendarEvent[] => [
   {
     timeMsk: "10:00",
     title: "Открытие срочного рынка МосБиржи (FORTS): баланс ОИ юрлиц по золоту (GD/GLDRUBF) и Si",
@@ -161,7 +164,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.moex.com/ru/derivatives/"
   },
   {
-    timeMsk: "11:00",
+    timeMsk: sched.deribitDailyExpiryMsk || "11:00",
     title: "Ежедневная экспирация крипто-опционов (BTC & ETH) и пересчет уровней Gamma Flip",
     impact: "HIGH",
     section: "CRYPTO",
@@ -191,7 +194,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://tass.ru/mezhdunarodnaya-panorama"
   },
   {
-    timeMsk: "15:30",
+    timeMsk: sched.macro0830Msk,
     title: "Статистика динамики потребительских цен и инфляции США (CPI / Core PCE / PPI)",
     impact: "CRITICAL",
     section: "GOLD",
@@ -201,7 +204,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.bls.gov/cpi/"
   },
   {
-    timeMsk: "15:30",
+    timeMsk: sched.macro0830Msk,
     title: "Статистика динамики ВВП США (GDP QoQ) и заявок по безработице (Jobless Claims)",
     impact: "HIGH",
     section: "GOLD",
@@ -211,7 +214,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.bea.gov/data/gdp/gross-domestic-product"
   },
   {
-    timeMsk: "16:30",
+    timeMsk: sched.usOpenMsk,
     title: "Открытие торгов спотовыми Bitcoin & Ethereum ETF в США (IBIT, FBTC, ETHA)",
     impact: "CRITICAL",
     section: "CRYPTO",
@@ -221,7 +224,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.cmegroup.com/markets/cryptocurrencies/bitcoin/bitcoin.html"
   },
   {
-    timeMsk: "17:00",
+    timeMsk: sched.ism1000Msk,
     title: "Статистика деловой активности США (ISM Services & Manufacturing PMI)",
     impact: "HIGH",
     section: "GOLD",
@@ -241,7 +244,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.kommersant.ru/rubric/5"
   },
   {
-    timeMsk: "18:30",
+    timeMsk: sched.eia1030Msk,
     title: "Обсуждение ФРС США (FOMC): выступления управляющих по ставке и балансу QT",
     impact: "CRITICAL",
     section: "GOLD",
@@ -261,7 +264,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.moex.com/ru/derivatives/contracts.aspx"
   },
   {
-    timeMsk: "20:00",
+    timeMsk: sched.auction1300Msk,
     title: "Аукцион 10-летних казначейских облигаций США (US10Y Treasury Auction)",
     impact: "HIGH",
     section: "GOLD",
@@ -271,7 +274,7 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.treasurydirect.gov/auctions/upcoming/"
   },
   {
-    timeMsk: "21:00",
+    timeMsk: sched.fomc1400Msk,
     title: "Протоколы и макро-прогнозы комитета ФРС США (FOMC Minutes / Ключевая ставка)",
     impact: "CRITICAL",
     section: "GOLD",
@@ -282,10 +285,12 @@ const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = [
   }
 ];
 
+const DEFAULT_TODAY_EVENTS: MacroCalendarEvent[] = buildDefaultTodayEvents(defaultPanelSchedule);
+
 // Weekend macro & market agenda (MSK) for Saturdays and Sundays
-const WEEKEND_CALENDAR_EVENTS: MacroCalendarEvent[] = [
+const buildWeekendCalendarEvents = (sched: SessionSchedule = defaultPanelSchedule): MacroCalendarEvent[] => [
   {
-    timeMsk: "11:00",
+    timeMsk: sched.deribitDailyExpiryMsk || "11:00",
     title: "Субботний перерасчет позиций и экспирация 24/7 крипто-опционов (Deribit)",
     impact: "HIGH",
     section: "CRYPTO",
@@ -315,7 +320,7 @@ const WEEKEND_CALENDAR_EVENTS: MacroCalendarEvent[] = [
     url: "https://tass.ru/mezhdunarodnaya-panorama"
   },
   {
-    timeMsk: "Вс 23:59 / Пн 01:00",
+    timeMsk: `Вс 23:59 / Пн ${sched.cmeSunOpenMsk}`,
     title: "Открытие торгов металлами (CME Globex) и старт тихоокеанско-азиатской сессии",
     impact: "CRITICAL",
     section: "GOLD",
@@ -325,6 +330,8 @@ const WEEKEND_CALENDAR_EVENTS: MacroCalendarEvent[] = [
     url: "https://www.cmegroup.com/markets/metals/precious/gold.html"
   }
 ];
+
+const WEEKEND_CALENDAR_EVENTS: MacroCalendarEvent[] = buildWeekendCalendarEvents(defaultPanelSchedule);
 
 export interface RawIndicatorsData {
   rsi14: number;
@@ -1629,7 +1636,9 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         history: tickerState.messages.slice(-6).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text })),
         aiProviderConfig: providerSettings,
         responseStyle: activeStyle,
-        username: activeUsername
+        username: activeUsername,
+        candlesticks: candles,
+        schedule: defaultPanelSchedule
       };
 
       const res = await fetch(`/api/ai-analyst/generate-plan?t=${Date.now()}`, {
@@ -1680,7 +1689,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         tp2: String(payload.indicatorForecast?.p3Tp2 ?? (currentPrice * 1.016).toFixed(2)),
         sl: String(payload.indicatorForecast?.activeTrailingSl ?? (currentPrice * 0.995).toFixed(2)),
         gexRegime: payload.gex.regime,
-        dangerWindow: "15:30 & 21:00 МСК",
+        dangerWindow: `${defaultPanelSchedule.macro0830Msk} & ${defaultPanelSchedule.fomc1400Msk} МСК`,
         statusText: payload.indicatorForecast?.currentStatusText || undefined
       };
 
@@ -1831,7 +1840,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
     return `1. 📰 Фундаментальный фон и новости:
 - [${mskNow} МСК] — Фон чистый — Ближайшие важные публикации отсутствуют.
-- [15:30 МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: поддержка котировок у ${formatGexLevelLabel("PW", Number(putWall), "DAY", spotPriceNum)}.
+- [${defaultPanelSchedule.macro0830Msk} МСК] — Ожидания по ставкам ФРС и статистика CPI — Влияние на ${assetNameRu}: поддержка котировок у ${formatGexLevelLabel("PW", Number(putWall), "DAY", spotPriceNum)}.
 
 2. 📊 Опционные уровни (GEX):
 - ${formatGexLevelLabel("CW", Number(callWall), "DAY", spotPriceNum)}
@@ -2138,6 +2147,12 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                 </span>
                 <span className="font-mono text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
                   {activeAsset}
+                </span>
+                <span
+                  className="font-mono text-[9px] font-bold px-1.5 py-0.2 rounded bg-slate-800/90 text-cyan-200 border border-cyan-500/30 shrink-0"
+                  title={defaultPanelSchedule.labelRu}
+                >
+                  {defaultPanelSchedule.seasonUs === "WINTER" ? "❄️ EST" : "☀️ EDT"}
                 </span>
 
                 {/* Market Status Pill */}
