@@ -106,6 +106,7 @@ export interface PropDeskContext {
   orderFlow: OrderFlowResult | null;
   adr: AdrResult | null;
   structure: StructureResult | null;
+  gex?: any;
 }
 
 /**
@@ -714,13 +715,42 @@ export function computeStructureSwings(candles: CandleLike[], len: number = 5): 
  * Без фабрикаций и подмен.
  */
 export function buildPropContext(
-  candles: CandleLike[],
+  candlesOrParams:
+    | CandleLike[]
+    | {
+        candles: CandleLike[];
+        symbol?: string;
+        timeframe?: string;
+        gexReport?: any;
+        schedule?: SessionSchedule;
+      },
   _tfSec?: number,
   date: Date = new Date(),
   symbol?: string,
   timeframe?: string
 ): PropDeskContext {
-  const schedule = getSessionSchedule(date);
+  let candles: CandleLike[];
+  let gexReport: any = null;
+  let scheduleOverride: SessionSchedule | null = null;
+
+  if (candlesOrParams && !Array.isArray(candlesOrParams) && typeof candlesOrParams === "object" && "candles" in candlesOrParams) {
+    const opts = candlesOrParams as {
+      candles: CandleLike[];
+      symbol?: string;
+      timeframe?: string;
+      gexReport?: any;
+      schedule?: SessionSchedule;
+    };
+    candles = opts.candles;
+    symbol = opts.symbol || symbol;
+    timeframe = opts.timeframe || timeframe;
+    gexReport = opts.gexReport || null;
+    scheduleOverride = opts.schedule || null;
+  } else {
+    candles = candlesOrParams as CandleLike[];
+  }
+
+  const schedule = scheduleOverride || getSessionSchedule(date);
 
   if (!candles || candles.length < 50) {
     return {
@@ -735,7 +765,8 @@ export function buildPropContext(
       liquidityPools: [],
       orderFlow: null,
       adr: null,
-      structure: null
+      structure: null,
+      gex: gexReport
     };
   }
 
@@ -757,6 +788,7 @@ export function buildPropContext(
     liquidityPools,
     orderFlow,
     adr,
-    structure
+    structure,
+    gex: gexReport
   };
 }

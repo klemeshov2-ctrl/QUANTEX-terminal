@@ -48,7 +48,8 @@ import {
   deleteIndicatorSetup,
   resetIndicatorStats,
   isValidIndicatorSetupPayload,
-  handleIndicatorSetupsPost
+  handleIndicatorSetupsPost,
+  getUnifiedLayerWeightsReport
 } from "./server/indicatorStatsEngine";
 import { getSessionSchedule, formatScheduleForPrompt, SessionSchedule } from "./src/lib/marketSessions";
 import { buildPropContext, PropDeskContext } from "./server/propContextEngine";
@@ -6302,8 +6303,15 @@ app.get("/api/market/prop-context", async (req, res) => {
       });
     }
 
-    const intervalSeconds = interval === "1m" ? 60 : interval === "5m" ? 300 : interval === "15m" ? 900 : interval === "30m" ? 1800 : interval === "1h" ? 3600 : interval === "4h" ? 14400 : 86400;
-    const propContext = buildPropContext(candles, intervalSeconds, new Date(), symbol, interval);
+    const spot = Number(candles[candles.length - 1]?.close || 0);
+    const gexReport = await getStabilizedGexReport(symbol, "DAY", spot).catch(() => null);
+    const propContext = buildPropContext({
+      symbol,
+      timeframe: interval,
+      candles,
+      gexReport,
+      schedule: getSessionSchedule(new Date())
+    });
 
     return res.json({
       success: true,
@@ -6314,6 +6322,14 @@ app.get("/api/market/prop-context", async (req, res) => {
     console.error("Error in /api/market/prop-context:", err);
     return res.status(500).json({ success: false, error: err.message || "Internal error" });
   }
+});
+
+// 2.2. UFE v1 Layer Weights & Performance Stats Endpoint
+app.get("/api/market/unified-weights", (_req, res) => {
+  return res.json({
+    success: true,
+    ...getUnifiedLayerWeightsReport()
+  });
 });
 
 // 3. Macroeconomic Calendar (USD, EUR, XAU)
@@ -9344,13 +9360,28 @@ app.post("/api/analyze-chart", async (req, res) => {
     }
 
     const currentSchedule = getSessionSchedule(new Date());
-    let currentPropCtx = req.body.propContext || null;
-    if (!currentPropCtx && Array.isArray(candlesticks) && candlesticks.length >= 50) {
+    const symbol = req.body.symbol || asset || "XAUUSD";
+    const interval = req.body.interval || timeframe || "15m";
+    const candles = req.body.candles || candlesticks || [];
+
+    let currentPropCtx: PropDeskContext | null = null;
+    if (Array.isArray(candles) && candles.length >= 50) {
       try {
-        currentPropCtx = buildPropContext(candlesticks, 900, new Date(), asset, timeframe);
+        const spot = Number(candles[candles.length - 1]?.close || 0);
+        const gexReport = await getStabilizedGexReport(symbol, "DAY", spot).catch(() => null);
+        currentPropCtx = buildPropContext({
+          symbol,
+          timeframe: interval,
+          candles,
+          gexReport,
+          schedule: currentSchedule
+        });
       } catch (err: any) {
         console.warn("[AnalyzeChart] Notice computing prop context:", err.message);
+        currentPropCtx = null;
       }
+    } else if (req.body.propContext && req.body.propContext.available) {
+      currentPropCtx = req.body.propContext;
     }
     const propCtxSummary = formatPropContextForPrompt(currentPropCtx);
     const feedbackLoopContext = getAiFeedbackLoopContext(asset);
@@ -11759,13 +11790,28 @@ ${antiChopTrendClause}
 Отвечай только на тот вопрос, который задан. Если тебя спрашивают про события дня, выдай список событий с временем МСК. Не нужно рассказывать, как работает программа, если тебя об этом не просили.`;
 
     const currentSchedule = getSessionSchedule(new Date());
-    let effectivePropContext = req.body.propContext || null;
-    if (!effectivePropContext && Array.isArray(req.body.candlesticks) && req.body.candlesticks.length >= 50) {
+    const propSymbol = req.body.symbol || ticker;
+    const propInterval = req.body.interval || req.body.timeframe || timeframe || "15m";
+    const propCandles = req.body.candles || req.body.candlesticks || [];
+
+    let effectivePropContext: PropDeskContext | null = null;
+    if (Array.isArray(propCandles) && propCandles.length >= 50) {
       try {
-        effectivePropContext = buildPropContext(req.body.candlesticks, 900, new Date(), ticker, req.body.timeframe || "15m");
+        const spot = Number(propCandles[propCandles.length - 1]?.close || currentPriceNum || 0);
+        const gexReport = await getStabilizedGexReport(propSymbol, "DAY", spot).catch(() => null);
+        effectivePropContext = buildPropContext({
+          symbol: propSymbol,
+          timeframe: propInterval,
+          candles: propCandles,
+          gexReport,
+          schedule: currentSchedule
+        });
       } catch (err: any) {
         console.warn("[AiAnalyst] Notice computing prop context:", err.message);
+        effectivePropContext = null;
       }
+    } else if (req.body.propContext && req.body.propContext.available) {
+      effectivePropContext = req.body.propContext;
     }
 
     // Construct institutional Senior Prop Trader system instruction with seasonal schedule and prop context

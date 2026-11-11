@@ -2529,7 +2529,7 @@ async function runTests() {
       { strike: 4040, callGex: 120, putGex: -5, netGex: 115, callOi: 9000, putOi: 500, totalOi: 9500, callVolume: 400, putVolume: 50, iv: 0.18 }
     ];
 
-    const t0 = 1793650000000;
+    const t0 = Date.now();
     const repInit: GexMarketReport = {
       asset: asset as any,
       horizon: "DAY",
@@ -2547,10 +2547,11 @@ async function runTests() {
     await getStabilizedGexReport(asset, "DAY", 4000, repInit, t0);
 
     // Свежая книга: CW сместился на 4040 (|4040 - 4020| = 20 = 2 шага сетки)
+    // callOi 7400 < 7000 * 1.10 -> cooldown+OI не срабатывает, срабатывает corridor_drift
     const driftStrikes: GexStrikeData[] = [
       { strike: 3980, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
       { strike: 4020, callGex: 80, putGex: -5, netGex: 75, callOi: 7000, putOi: 500, totalOi: 7500, callVolume: 200, putVolume: 50, iv: 0.18 },
-      { strike: 4040, callGex: 160, putGex: -5, netGex: 155, callOi: 8000, putOi: 500, totalOi: 8500, callVolume: 600, putVolume: 50, iv: 0.18 }
+      { strike: 4040, callGex: 160, putGex: -5, netGex: 155, callOi: 7400, putOi: 500, totalOi: 7900, callVolume: 600, putVolume: 50, iv: 0.18 }
     ];
     const repDrift: GexMarketReport = {
       ...repInit,
@@ -2587,7 +2588,7 @@ async function runTests() {
       getStabilizerMigrationLog
     } = await import("../server/gexStateManager");
 
-    const t0 = 1793650000000;
+    const t0 = Date.now();
     const asset = "TEST_PINGPONG_V2";
 
     // 1. Миграция CW: 4000 -> 4020 в t0 (DAY: cooldown 5m, noRevert 20m)

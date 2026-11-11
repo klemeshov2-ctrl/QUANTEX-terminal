@@ -326,13 +326,29 @@ export function isMoexAsset(asset: string): boolean {
   );
 }
 
+export function isCryptoAsset(asset: string): boolean {
+  const norm = (asset || "").toUpperCase();
+  return (
+    norm.includes("BTC") ||
+    norm.includes("ETH") ||
+    norm.includes("SOL") ||
+    norm.includes("XRP") ||
+    norm.includes("USDT") ||
+    norm.includes("DERIBIT")
+  );
+}
+
 /**
  * Сессионный TTL кэша базового движка GEX:
+ * - Crypto-активы (BTC, ETH, SOL, XRP) -> 15 минут (900 000 мс) в любое время
  * - US-сессия активна (будни, зима 17:30–00:00 / лето 16:30–23:00 МСК) -> 90 секунд (90 000 мс)
  * - MOEX-активы в торговые часы МосБиржи (07:00–23:50 МСК) -> 60 секунд (60 000 мс)
  * - Вне торговых сессий -> 15 минут (900 000 мс)
  */
 export function getGexCacheTtlMs(asset: string, date: Date = new Date()): number {
+  if (isCryptoAsset(asset)) {
+    return 15 * 60 * 1000;
+  }
   if (isMoexAsset(asset)) {
     return isMoexSessionActive(date) ? 60 * 1000 : 15 * 60 * 1000;
   }
@@ -341,4 +357,5 @@ export function getGexCacheTtlMs(asset: string, date: Date = new Date()): number
   }
   return 15 * 60 * 1000;
 }
+
 

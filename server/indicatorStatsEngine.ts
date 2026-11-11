@@ -60,6 +60,7 @@ export interface IndicatorSetupItem {
   linkedSetupId?: string;
   expirationReason?: string;
   notes?: string;
+  activeLayers?: UnifiedLayerId[];
 }
 
 function tfToSecServer(tf: string): number {
@@ -466,7 +467,8 @@ export function recordOrUpdateIndicatorSetup(key: string, setupPayload: any): In
     isPlanBActive: Boolean(fc?.isPlanBActive),
     counterTrend: Boolean(fc?.counterTrend),
     lockRole: fc?.lockRole || (fc?.counterTrend ? "ОТКАТ (контртренд, уменьшенный размер)" : "ТРЕНД"),
-    expirationReason: fc?.expirationReason
+    expirationReason: fc?.expirationReason,
+    activeLayers: setupPayload?.activeLayers || fc?.activeLayers || fc?.layers || undefined
   };
 
   indicatorSetupsHistory.unshift(newSetup);
@@ -1069,3 +1071,221 @@ export function resetIndicatorStats(): void {
     fs.writeFileSync(INDICATOR_HISTORY_FILE, "[]", "utf-8");
   } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// UNIFIED FORECAST ENGINE (UFE v1): 7-LAYER WEIGHT ADAPTATION
+// ---------------------------------------------------------------------------
+
+export type UnifiedLayerId = "L1" | "L2" | "L3" | "L4" | "L5" | "L6" | "L7";
+
+export interface UnifiedLayerStatEntry {
+  wins: number;
+  losses: number;
+  winRate: number;
+}
+
+export interface UnifiedLayerWeightsFile {
+  updatedAt: string;
+  totalTrades: number;
+  weights: Record<UnifiedLayerId, number>;
+  stats: Record<UnifiedLayerId, UnifiedLayerStatEntry>;
+}
+
+export const DEFAULT_UNIFIED_LAYER_WEIGHTS: Record<UnifiedLayerId, number> = {
+  L1: 0.18, // GEX
+  L2: 0.18, // Volume Profile
+  L3: 0.16, // Liquidity Pools
+  L4: 0.14, // Order Flow
+  L5: 0.14, // SMC
+  L6: 0.10, // Session / ADR
+  L7: 0.10  // Legacy Wave
+};
+
+const UNIFIED_WEIGHTS_FILE = path.join(DATA_DIR, "unified-layer-weights.json");
+
+// Recent trade outcomes per layer (rolling last 100 trades window)
+interface LayerTradeRecord {
+  timestamp: number;
+  layer: UnifiedLayerId;
+  outcome: "WIN" | "LOSS";
+}
+
+let layerTradeHistory: LayerTradeRecord[] = [];
+let currentUnifiedWeights: Record<UnifiedLayerId, number> = { ...DEFAULT_UNIFIED_LAYER_WEIGHTS };
+let currentLayerStats: Record<UnifiedLayerId, UnifiedLayerStatEntry> = {
+  L1: { wins: 0, losses: 0, winRate: 0.5 },
+  L2: { wins: 0, losses: 0, winRate: 0.5 },
+  L3: { wins: 0, losses: 0, winRate: 0.5 },
+  L4: { wins: 0, losses: 0, winRate: 0.5 },
+  L5: { wins: 0, losses: 0, winRate: 0.5 },
+  L6: { wins: 0, losses: 0, winRate: 0.5 },
+  L7: { wins: 0, losses: 0, winRate: 0.5 }
+};
+
+/**
+ * Loads weights from data/unified-layer-weights.json on startup
+ */
+export function loadUnifiedLayerWeights(): Record<UnifiedLayerId, number> {
+  try {
+    if (fs.existsSync(UNIFIED_WEIGHTS_FILE)) {
+      const raw = fs.readFileSync(UNIFIED_WEIGHTS_FILE, "utf-8");
+      const parsed: UnifiedLayerWeightsFile = JSON.parse(raw);
+      if (parsed && parsed.weights) {
+        currentUnifiedWeights = { ...DEFAULT_UNIFIED_LAYER_WEIGHTS, ...parsed.weights };
+        if (parsed.stats) {
+          currentLayerStats = { ...currentLayerStats, ...parsed.stats };
+        }
+        return currentUnifiedWeights;
+      }
+    }
+  } catch (err: any) {
+    console.warn("[UFE Weights] Notice loading unified-layer-weights.json, using defaults:", err.message);
+  }
+  return currentUnifiedWeights;
+}
+
+// Initial load
+loadUnifiedLayerWeights();
+
+/**
+ * Returns currently active UFE weights
+ */
+export function getUnifiedLayerWeights(): Record<UnifiedLayerId, number> {
+  return { ...currentUnifiedWeights };
+}
+
+/**
+ * Recalculates weights based on layer win-rates with corridor [0.05, 0.30] and sum = 1.00
+ */
+export function recalculateUnifiedLayerWeights(): Record<UnifiedLayerId, number> {
+  const layerIds: UnifiedLayerId[] = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
+
+  // 1. Calculate win rate over last 100 trades for each layer
+  const recentTrades = layerTradeHistory.slice(-100);
+  const rawWeightedMap: Record<UnifiedLayerId, number> = {} as any;
+
+  for (const id of layerIds) {
+    const layerEvents = recentTrades.filter(t => t.layer === id);
+    const wins = layerEvents.filter(t => t.outcome === "WIN").length;
+    const losses = layerEvents.filter(t => t.outcome === "LOSS").length;
+    const total = wins + losses;
+    const winRate = total > 0 ? wins / total : 0.50;
+
+    currentLayerStats[id] = {
+      wins,
+      losses,
+      winRate: Math.round(winRate * 1000) / 1000
+    };
+
+    // Raw proportional weight relative to default
+    const baseWeight = DEFAULT_UNIFIED_LAYER_WEIGHTS[id];
+    // Modulate by performance (e.g. 50% wr = 1.0x, 70% wr = 1.4x, 30% wr = 0.6x)
+    const multiplier = 0.5 + winRate;
+    const modulated = baseWeight * multiplier;
+
+    // Apply corridor [0.05, 0.30]
+    rawWeightedMap[id] = Math.max(0.05, Math.min(0.30, modulated));
+  }
+
+  // Normalize sum to 1.00
+  const sumRaw = Object.values(rawWeightedMap).reduce((s, v) => s + v, 0);
+  let accumulated = 0;
+
+  for (let i = 0; i < layerIds.length; i++) {
+    const id = layerIds[i];
+    if (i === layerIds.length - 1) {
+      // Last element takes exact remainder to ensure sum === 1.00
+      const remainder = Math.round((1.0 - accumulated) * 1000) / 1000;
+      currentUnifiedWeights[id] = Math.max(0.05, Math.min(0.30, remainder));
+    } else {
+      const normalized = Math.round((rawWeightedMap[id] / sumRaw) * 1000) / 1000;
+      currentUnifiedWeights[id] = Math.max(0.05, Math.min(0.30, normalized));
+      accumulated += currentUnifiedWeights[id];
+    }
+  }
+
+  // Persist to disk
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const payload: UnifiedLayerWeightsFile = {
+      updatedAt: new Date().toISOString(),
+      totalTrades: layerTradeHistory.length,
+      weights: currentUnifiedWeights,
+      stats: currentLayerStats
+    };
+    fs.writeFileSync(UNIFIED_WEIGHTS_FILE, JSON.stringify(payload, null, 2), "utf-8");
+  } catch (err: any) {
+    console.warn("[UFE Weights] Notice saving unified-layer-weights.json:", err.message);
+  }
+
+  return { ...currentUnifiedWeights };
+}
+
+/**
+ * Record outcome of a trade for participating layers
+ */
+export function recordUnifiedLayerOutcome(
+  activeLayers: UnifiedLayerId[],
+  outcome: "WIN" | "LOSS"
+): Record<UnifiedLayerId, number> {
+  const now = Date.now();
+  const validLayers = Array.isArray(activeLayers) && activeLayers.length > 0
+    ? activeLayers
+    : (["L1", "L2", "L3", "L4", "L5", "L6", "L7"] as UnifiedLayerId[]);
+
+  for (const layer of validLayers) {
+    layerTradeHistory.push({
+      timestamp: now,
+      layer,
+      outcome
+    });
+  }
+
+  // Keep max 200 in memory
+  if (layerTradeHistory.length > 200) {
+    layerTradeHistory = layerTradeHistory.slice(-200);
+  }
+
+  return recalculateUnifiedLayerWeights();
+}
+
+/**
+ * Returns full report of layer weights and stats
+ */
+export function getUnifiedLayerWeightsReport(): UnifiedLayerWeightsFile {
+  return {
+    updatedAt: new Date().toISOString(),
+    totalTrades: layerTradeHistory.length,
+    weights: { ...currentUnifiedWeights },
+    stats: { ...currentLayerStats }
+  };
+}
+
+export function resetUnifiedLayerWeights(): void {
+  layerTradeHistory = [];
+  currentUnifiedWeights = { ...DEFAULT_UNIFIED_LAYER_WEIGHTS };
+  currentLayerStats = {
+    L1: { wins: 0, losses: 0, winRate: 0.5 },
+    L2: { wins: 0, losses: 0, winRate: 0.5 },
+    L3: { wins: 0, losses: 0, winRate: 0.5 },
+    L4: { wins: 0, losses: 0, winRate: 0.5 },
+    L5: { wins: 0, losses: 0, winRate: 0.5 },
+    L6: { wins: 0, losses: 0, winRate: 0.5 },
+    L7: { wins: 0, losses: 0, winRate: 0.5 }
+  };
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const payload: UnifiedLayerWeightsFile = {
+      updatedAt: new Date().toISOString(),
+      totalTrades: 0,
+      weights: currentUnifiedWeights,
+      stats: currentLayerStats
+    };
+    fs.writeFileSync(UNIFIED_WEIGHTS_FILE, JSON.stringify(payload, null, 2), "utf-8");
+  } catch {}
+}
+

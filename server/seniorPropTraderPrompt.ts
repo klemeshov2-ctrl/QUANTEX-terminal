@@ -19,41 +19,98 @@ export function formatPropContextForPrompt(ctx: PropDeskContext | any | null | u
   }
 
   const lines: string[] = [];
-  if (ctx.volumeProfile) {
-    lines.push(
-      `- Объемный профиль (Volume Profile 70% VA): POC = ${ctx.volumeProfile.poc.toFixed(2)} (объем POC: ${ctx.volumeProfile.pocVolumePct}%), VAH = ${ctx.volumeProfile.vah.toFixed(2)}, VAL = ${ctx.volumeProfile.val.toFixed(2)}`
-    );
-  }
-  if (ctx.sessionLevels) {
-    const s = ctx.sessionLevels;
-    const asiaStr = s.asia ? `Азия [${s.asia.low.toFixed(2)}–${s.asia.high.toFixed(2)}]` : "Азия н/д";
-    const lonStr = s.london ? `Лондон [${s.london.low.toFixed(2)}–${s.london.high.toFixed(2)}]` : "Лондон н/д";
-    const nyStr = s.ny ? `NY [${s.ny.low.toFixed(2)}–${s.ny.high.toFixed(2)}]` : "NY н/д";
-    const pdhPdlStr = (s.pdh && s.pdl) ? `, PDH=${s.pdh.toFixed(2)}, PDL=${s.pdl.toFixed(2)}` : "";
-    lines.push(`- Сессионные диапазоны: ${asiaStr}, ${lonStr}, ${nyStr}${pdhPdlStr}`);
-  }
-  if (Array.isArray(ctx.liquidityPools) && ctx.liquidityPools.length > 0) {
-    const poolStrs = ctx.liquidityPools.slice(0, 8).map((p: any) =>
-      `${p.type} (${Number(p.price).toFixed(2)}${p.swept ? ", СНЯТ ✅" : ", ЖИВОЙ 🎯"})`
-    );
-    lines.push(`- Пулы ликвидности: ${poolStrs.join(", ")}`);
-  }
-  if (ctx.orderFlow) {
-    const of = ctx.orderFlow;
-    const divStr = of.deltaDivergence && of.deltaDivergence !== "NONE" ? ` | ⚠️ ДИВЕРГЕНЦИЯ ДЕЛЬТЫ: ${of.deltaDivergence}` : "";
-    const absStr = of.absorption ? ` | 🧲 ПОГЛОЩЕНИЕ: ${of.absorption.direction} @ ${Number(of.absorption.price).toFixed(2)}` : "";
-    lines.push(`- Поток ордеров (Order Flow): Дельта бара = ${of.barDelta > 0 ? "+" : ""}${Math.round(of.barDelta)}, CVD тренд = ${of.cvdTrend}${divStr}${absStr}`);
-  }
-  if (ctx.adr) {
-    const adr = ctx.adr;
-    lines.push(`- ADR (14): Средний дневной ход = ${Number(adr.adr14).toFixed(2)} п., текущий размах дня = ${Number(adr.currentRange).toFixed(2)} п. (исчерпано ${adr.usedPct}% ADR)${adr.isExhausted ? " ⚠️ ВНИМАНИЕ: Дневной диапазон исчерпан на >80%!" : ""}`);
-  }
-  if (ctx.structure) {
-    const st = ctx.structure;
-    lines.push(`- Рыночная структура: Тренд ${st.trend}${st.lastBos ? ` (${st.lastBos})` : ""}`);
+
+  // 1. Сессия и DST-статус
+  if (ctx.schedule) {
+    const s = ctx.schedule;
+    const dstStr = s.isUsDst ? "Летнее время (EDT/BST, смещение +1ч)" : "Зимнее время (EST/GMT, стандартное)";
+    lines.push(`- Режим сессии и DST-статус: ${s.labelRu} | DST: ${dstStr} | Открытие США: ${s.usOpenMsk} МСК | Макро: ${s.macro0830Msk} МСК`);
   }
 
-  return lines.length > 0 ? lines.join("\n") : "- Prop Desk Context: Базовые метрики в пределах нормы.";
+  // 2. GEX режим, расстояние до стен в ATR, skew
+  const atrVal = ctx.adr?.adr14 || 15;
+  if (ctx.gex) {
+    const g = ctx.gex;
+    const spot = g.spotPrice || (ctx.volumeProfile?.poc ?? 0);
+    const cwDist = g.callWall && atrVal > 0 ? ((g.callWall - spot) / atrVal).toFixed(2) : "—";
+    const pwDist = g.putWall && atrVal > 0 ? ((spot - g.putWall) / atrVal).toFixed(2) : "—";
+    const skewStr = typeof g.netGexTotal === "number" ? (g.netGexTotal > 0 ? "Call-heavy (+GEX)" : "Put-heavy (-GEX)") : "нейтральный";
+    lines.push(`- Опционный GEX-контекст: Режим = ${g.regime || (g.netGexTotal >= 0 ? "+GAMMA (Mean Reversion)" : "-GAMMA (Momentum)")} | CW: ${g.callWall || "—"} (~${cwDist} ATR) | PW: ${g.putWall || "—"} (~${pwDist} ATR) | Flip: ${g.gammaFlip || "—"} | Skew: ${skewStr}`);
+  }
+
+  // 3. VP: POC, VAH, VAL, положение спота
+  if (ctx.volumeProfile) {
+    const vp = ctx.volumeProfile;
+    const spot = ctx.gex?.spotPrice || vp.poc;
+    let spotPosition = "внутри Value Area (между VAL и VAH)";
+    if (spot > vp.vah) spotPosition = `выше VAH (+${(spot - vp.vah).toFixed(2)} п., поиск экспансии/ретеста)`;
+    else if (spot < vp.val) spotPosition = `ниже VAL (-${(vp.val - spot).toFixed(2)} п., дисконт)`;
+    lines.push(
+      `- Объемный профиль (Volume Profile 70% VA): POC = ${vp.poc.toFixed(2)} (доля: ${vp.pocVolumePct}%), VAH = ${vp.vah.toFixed(2)}, VAL = ${vp.val.toFixed(2)} | Положение спота: ${spotPosition}`
+    );
+  } else {
+    lines.push(`- Объемный профиль (Volume Profile 70% VA): Расчет в процессе (недостаточно объема)`);
+  }
+
+  // 4. Pools: ближайшие пулы сверху и снизу с расстоянием в ATR
+  if (Array.isArray(ctx.liquidityPools) && ctx.liquidityPools.length > 0) {
+    const spot = ctx.gex?.spotPrice || ctx.volumeProfile?.poc || 0;
+    const unSwept = ctx.liquidityPools.filter((p: any) => !p.swept);
+    const upperPools = unSwept.filter((p: any) => p.price > spot).sort((a: any, b: any) => a.price - b.price);
+    const lowerPools = unSwept.filter((p: any) => p.price < spot).sort((a: any, b: any) => b.price - a.price);
+
+    const upStr = upperPools[0]
+      ? `${upperPools[0].type} @ ${Number(upperPools[0].price).toFixed(2)} (${((upperPools[0].price - spot) / atrVal).toFixed(2)} ATR)`
+      : "нет ближе";
+    const downStr = lowerPools[0]
+      ? `${lowerPools[0].type} @ ${Number(lowerPools[0].price).toFixed(2)} (${((spot - lowerPools[0].price) / atrVal).toFixed(2)} ATR)`
+      : "нет ближе";
+
+    const sweptList = ctx.liquidityPools.filter((p: any) => p.swept).slice(0, 3).map((p: any) => `${p.type}@${Number(p.price).toFixed(1)}`);
+    const sweptStr = sweptList.length > 0 ? ` | Недавно сняты: ${sweptList.join(", ")}` : "";
+
+    lines.push(`- Пулы ликвидности (Pools): Ближайший сверху = ${upStr} | Ближайший снизу = ${downStr}${sweptStr}`);
+  } else {
+    lines.push(`- Пулы ликвидности (Pools): Неснятые пулы EQH/EQL/Session формируются в текущем диапазоне`);
+  }
+
+  // 5. SMC: тренд структуры, последний свип, ближайший OB/FVG
+  if (ctx.structure) {
+    const st = ctx.structure;
+    const lastSweepPool = ctx.liquidityPools?.find((p: any) => p.swept);
+    const lastSweepStr = lastSweepPool ? `${lastSweepPool.type} @ ${Number(lastSweepPool.price).toFixed(2)}` : "нет подтвержденных";
+    const obFvgStr = st.trend === "BULLISH"
+      ? `Бычий OB/FVG у ${ctx.volumeProfile ? ctx.volumeProfile.val.toFixed(2) : "VAL"}`
+      : `Медвежий OB/FVG у ${ctx.volumeProfile ? ctx.volumeProfile.vah.toFixed(2) : "VAH"}`;
+    lines.push(`- SMC & структура: Тренд = ${st.trend}${st.lastBos ? ` (последний BOS: ${st.lastBos})` : ""} | Последний свип: ${lastSweepStr} | Ближайший OB/FVG: ${obFvgStr}`);
+  } else {
+    lines.push(`- SMC & структура: Консолидация структуры`);
+  }
+
+  // 6. Flow: дельта, CVD дивергенция, абсорбция
+  if (ctx.orderFlow) {
+    const of = ctx.orderFlow;
+    const divStr = of.deltaDivergence && of.deltaDivergence !== "NONE" ? ` | ⚠️ ДИВЕРГЕНЦИЯ: ${of.deltaDivergence}` : " | Дивергенция: нет";
+    const absStr = of.absorption ? ` | 🧲 ПОГЛОЩЕНИЕ: ${of.absorption.side || of.absorption.direction} @ ${Number(of.absorption.price).toFixed(2)}` : " | Поглощение: нет";
+    const deltaVal = of.recentDelta ?? of.barDelta ?? 0;
+    lines.push(`- Order Flow & дельта: Дельта = ${deltaVal > 0 ? "+" : ""}${Math.round(deltaVal)}, CVD = ${Math.round(of.cvd || 0)}${divStr}${absStr}`);
+  } else {
+    lines.push(`- Order Flow & дельта: Дельта нейтральна (0), CVD стабилен`);
+  }
+
+  // 7. ADR (14)
+  if (ctx.adr) {
+    const adr = ctx.adr;
+    const range = adr.todayRange ?? adr.currentRange ?? 0;
+    lines.push(`- ADR (14): Средний ход = ${Number(adr.adr14).toFixed(2)} п., текущий размах = ${Number(range).toFixed(2)} п. (исчерпано ${adr.usedPct}% ADR)${adr.usedPct >= 80 ? " ⚠️ ADR исчерпан >80% — только скальп / mean-reversion!" : ""}`);
+  } else {
+    lines.push(`- ADR (14): В пределах нормы`);
+  }
+
+  // Инструкция ИИ (обязательное требование)
+  lines.push(`- ИНСТРУКЦИЯ ИИ: Любой торговый план ОБЯЗАН ссылаться на эти метрики. Игнорирование пула ликвидности ближе 1.5 ATR или попытка входа против сильной гаммы без подтверждения поглощением считается ошибкой первого рода.`);
+
+  return lines.join("\n");
 }
 
 export interface SeniorPropTraderPromptParams {
@@ -121,9 +178,29 @@ export interface SeniorPropTraderPromptParams {
   expiryRuleInstruction?: string;
   feedbackLoopContext?: string;
   webSearchStatusClause?: string;
-  interfaceProhibitionClause?: string;
   isCallWallRunningAway?: boolean;
   isPutWallRunningAway?: boolean;
+  interfaceProhibitionClause?: string;
+  ufeResult?: any;
+}
+
+export function formatUfeForPrompt(ufe: any): string {
+  if (!ufe || !ufe.permission) {
+    return "- UFE v1: Анализ на базе квантового консенсуса (7 слоёв) в процессе расчёта.";
+  }
+  const p = ufe.permission;
+  const activeChips = p.activeLayers ? p.activeLayers.map((l: any) => `${l.id}:${l.tag}`).join(", ") : "—";
+  const lines: string[] = [
+    `- Движок прогноза UFE v1: Направление = ${ufe.direction} | Статус допуска = [${p.state}] | Score = ${p.score?.toFixed(2)} | Активные слои: ${activeChips} (${p.activeLayers?.length || 0}/7)`,
+    `- Уровни лестницы UFE: Вход = ${ufe.entryMid?.toFixed(2)} [зона ${ufe.entryZone ? `${ufe.entryZone[0]?.toFixed(2)}–${ufe.entryZone[1]?.toFixed(2)}` : "—"}], SL = ${ufe.sl?.toFixed(2)}, TP1 = ${ufe.tp1?.price?.toFixed(2)} (${ufe.tp1?.tag || ""}), TP2 = ${ufe.tp2?.price?.toFixed(2)} (${ufe.tp2?.tag || ""})`,
+    `- Статус допуска: ${p.state} | Причина: ${p.primaryReason} | Триггер разблокировки: ${p.unblockTrigger} | Арбитраж: ${p.arbiterNote}`
+  ];
+
+  if (p.state === "BLOCKED" || p.state === "CONDITIONAL") {
+    lines.push(`- ИНСТРУКЦИЯ ИИ ДЛЯ ${p.state}: Проанализируй, ПРИ КАКИХ УСЛОВИЯХ вход станет валидным. Не просто говори 'не торгуй', а сформируй условный торговый план: 'Вход появится, если... (выполнен триггер: ${p.unblockTrigger})'.`);
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -192,11 +269,13 @@ export function buildSeniorPropTraderSystemInstruction(params: SeniorPropTraderP
     webSearchStatusClause = "",
     interfaceProhibitionClause = "",
     isCallWallRunningAway = false,
-    isPutWallRunningAway = false
+    isPutWallRunningAway = false,
+    ufeResult
   } = params;
 
   const scheduleFormatted = formatScheduleForPrompt(schedule);
   const propContextFormatted = formatPropContextForPrompt(propContext);
+  const ufeFormatted = formatUfeForPrompt(ufeResult || indicatorForecast?.ufe);
 
   if (isChatQuery) {
     return `РОЛЬ: Ты — Senior Prop Trader и ведущий квант-аналитик институционального деска QUANTEX по активу ${ticker}.
@@ -214,9 +293,14 @@ ${interfaceProhibitionClause}
 ${scheduleFormatted}
 
 ═══════════════════════════════════════════════
-PROP DESK CONTEXT (ОБЪЁМНЫЙ ПРОФИЛЬ, ЛИКВИДНОСТЬ, ORDER FLOW, ADR):
+PROP DESK CONTEXT (INSTITUTIONAL METRICS):
 ═══════════════════════════════════════════════
 ${propContextFormatted}
+
+═══════════════════════════════════════════════
+ДВИЖОК ПРОГНОЗА UFE v1 (7 СЛОЁВ И СИСТЕМА ДОПУСКОВ):
+═══════════════════════════════════════════════
+${ufeFormatted}
 
 ПРАВИЛА ОПЦИОННОГО КОНТЕКСТА GEX, РЕЖИМА ГАММЫ И АНТИ-ПИЛЫ:
 ${gexDynamicRuleClause}
@@ -250,10 +334,12 @@ ${gexDynamicRuleClause}
 ТВОЯ ЗАДАЧА: Провести строгий аудит торгового плана индикатора QUANTEX, сопоставив его с реальными рыночными данными деска:
 1. Сезонно-осознанное расписание сессий и макро-событий (МСК):
 ${scheduleFormatted}
-2. Prop Desk Context (Volume Profile 70% VA, пулы ликвидности EQH/EQL/PDH/PDL, сессионные уровни, Order Flow/CVD/поглощения, 14-дневный ADR):
+2. PROP DESK CONTEXT (INSTITUTIONAL METRICS):
 ${propContextFormatted}
-3. Опционные уровни GEX, динамика миграции Call Wall/Put Wall/Flip и режим Positive/Negative Gamma.
-4. Консенсус 5 таймфреймов и дневной ATR ~${dailyAtr} п.
+3. ДВИЖОК ПРОГНОЗА UFE v1 (7 СЛОЁВ, СИСТЕМА ДОПУСКОВ И ЛЕСТНИЦА):
+${ufeFormatted}
+4. Опционные уровни GEX, динамика миграции Call Wall/Put Wall/Flip и режим Positive/Negative Gamma.
+5. Консенсус 5 таймфреймов и дневной ATR ~${dailyAtr} п.
 
 ${webSearchStatusClause}
 

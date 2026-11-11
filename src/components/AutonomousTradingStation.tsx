@@ -499,6 +499,7 @@ import {
 } from "../lib/pineSuperIndicatorEngine";
 import { getSessionSchedule } from "../lib/marketSessions";
 import { computeConfluenceSetup, ConfluenceSetupResult } from "../lib/confluenceEngine";
+import { computeUnifiedForecast, UnifiedForecastResult } from "../lib/unifiedForecastEngine";
 
 interface ChartOverlaysProps {
   chart: IChartApi | null;
@@ -554,6 +555,32 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
 }) => {
   const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
   const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
+
+  const ufeSetup = useMemo(() => {
+    if (!candles || candles.length === 0) return null;
+    const lastCandle = candles[candles.length - 1];
+    const fc = indicatorOutput?.forecast;
+    return computeUnifiedForecast({
+      candles,
+      gexReport: indicatorOutput?.gex as any,
+      schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
+      adrPct: (indicatorOutput?.hud as any)?.adrPct ?? 50,
+      symbol: activeAsset,
+      timeframe: activeTf,
+      currentPrice: lastCandle.close,
+      tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01,
+      legacyWave: fc ? {
+        direction: (fc as any)?.direction || (fc.isBull ? "LONG" : "SHORT"),
+        entry: fc.p1Entry ?? lastCandle.close,
+        sl: fc.invalidLevelSl ?? fc.activeTrailingSl ?? (fc.isBull ? lastCandle.close - 15 : lastCandle.close + 15),
+        tp1: fc.p2Tp1 ?? (fc.isBull ? lastCandle.close + 20 : lastCandle.close - 20),
+        tp2: fc.p3Tp2 ?? (fc.isBull ? lastCandle.close + 35 : lastCandle.close - 35),
+        confidence: fc.probability ?? 70,
+        status: fc.status
+      } : null
+    });
+  }, [candles, indicatorOutput, activeAsset, activeTf]);
+
   const candlesRef = useRef(candles);
   useEffect(() => {
     candlesRef.current = candles;
@@ -675,101 +702,83 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
               className="pointer-events-auto flex items-center gap-1.5 bg-[#080d1a]/95 hover:bg-[#121c33] border border-cyan-500/50 text-cyan-300 px-2 py-0.5 rounded-md text-[9.5px] sm:text-[10px] font-mono font-bold cursor-pointer transition shadow-md"
               title="Нажмите чтобы развернуть полную таблицу QUANTEX HUD"
             >
-              <span className="font-extrabold text-cyan-400">📊 HUD:</span>
-              {useCll && cllSetup && cllSetup.status !== "NO_TRADE" ? (
+              <span className="font-extrabold text-cyan-400">📊 UFE v1:</span>
+              {ufeSetup ? (
                 <>
                   <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
-                    cllSetup.direction === "LONG"
+                    ufeSetup.permission.state === "TRADEABLE"
                       ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
-                      : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
+                      : ufeSetup.permission.state === "BLOCKED"
+                      ? "bg-rose-500/30 text-rose-300 border border-rose-500/40"
+                      : ufeSetup.permission.state === "CONDITIONAL"
+                      ? "bg-amber-500/30 text-amber-300 border border-amber-500/40"
+                      : ufeSetup.permission.state === "SCALP"
+                      ? "bg-amber-500/30 text-amber-300 border border-amber-500/40"
+                      : ufeSetup.permission.state === "DEGRADED"
+                      ? "bg-orange-500/30 text-orange-300 border border-orange-500/40"
+                      : "bg-blue-500/30 text-blue-300 border border-blue-500/40"
                   }`}>
-                    🎯 CLL: {cllSetup.direction} (S={cllSetup.score.toFixed(2)})
+                    {ufeSetup.direction} [{ufeSetup.permission.state}] S={ufeSetup.permission.score.toFixed(2)}
                   </span>
                   <span className="text-gray-300 hidden xs:inline text-[9px]">
-                    Вход: <strong className="text-white">{cllSetup.entryMid.toFixed(1)}</strong>
+                    Вход: <strong className="text-white">{ufeSetup.entryMid.toFixed(1)}</strong>
                   </span>
                   <span className="text-emerald-400 hidden xs:inline text-[9px]">
-                    TP1: <strong>{cllSetup.tp1?.price.toFixed(1) ?? "-"}</strong>
+                    TP1: <strong>{ufeSetup.tp1.price.toFixed(1)}</strong>
                   </span>
                   <span className="text-rose-400 hidden xs:inline text-[9px]">
-                    SL: <strong>{cllSetup.sl.toFixed(1)}</strong>
+                    SL: <strong>{ufeSetup.sl.toFixed(1)}</strong>
                   </span>
-                  {cllSetup.isScalpMode && (
+                  {ufeSetup.permission.state === "BLOCKED" && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-rose-500/25 text-rose-200 border border-rose-500/50">
+                      ⛔ {ufeSetup.permission.primaryReason}
+                    </span>
+                  )}
+                  {ufeSetup.permission.state === "CONDITIONAL" && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50">
+                      ⚠️ ЖДАТЬ: {ufeSetup.permission.unblockTrigger}
+                    </span>
+                  )}
+                  {ufeSetup.isScalpMode && (
                     <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50">
                       ⚡ СКАЛЬП (ADR&gt;85%)
                     </span>
                   )}
-                  {cllSetup.planB && (cllSetup.planB.isActive || cllSetup.planB.isTriggered) && (
+                  {ufeSetup.planB && (ufeSetup.planB.isActive || ufeSetup.planB.isTriggered) && (
                     <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-purple-500/30 text-purple-200 border border-purple-500/50 animate-pulse">
-                      👻 {cllSetup.planB.type}
+                      👻 {ufeSetup.planB.type}
                     </span>
                   )}
                 </>
               ) : (
-                <>
-                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-extrabold ${
-                    indicatorOutput?.forecast.isBull
-                      ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40"
-                      : "bg-rose-500/30 text-rose-300 border border-rose-500/40"
-                  }`}>
-                    {useCll ? "CLL: ЖДЁМ СЛОИ" : (indicatorOutput?.forecast.isBull ? "LONG" : "SHORT")} {indicatorOutput?.forecast.probability || 74}%
-                  </span>
-                  <span className="text-gray-300 hidden xs:inline text-[9px]">
-                    Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
-                  </span>
-                  <span className="text-emerald-400 hidden xs:inline text-[9px]">
-                    TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
-                  </span>
-                  {indicatorOutput?.hud?.trendAlignmentBadge && (
-                    <span className={`px-1 py-0.2 rounded text-[8.5px] font-bold ${
-                      indicatorOutput.hud.isCounterTrend
-                        ? "bg-amber-500/25 text-amber-200 border border-amber-500/50"
-                        : "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40"
-                    }`}>
-                      {indicatorOutput.hud.trendAlignmentBadge}
-                    </span>
-                  )}
-                  {indicatorOutput?.hud?.maeBadge && (
-                    <span className="px-1 py-0.2 rounded text-[8.5px] font-extrabold bg-rose-500/30 text-rose-200 border border-rose-500/60 animate-pulse">
-                      {indicatorOutput.hud.maeBadge}
-                    </span>
-                  )}
-                </>
+                <span className="text-gray-400 text-[9px]">UFE расчёт...</span>
               )}
               <span className="text-cyan-400 text-[9px] font-bold">▾</span>
             </button>
 
-            {/* Quick Toggle for CLL vs Legacy Wave directly on HUD */}
-            {onToggleCll && (
-              <button
-                type="button"
-                onClick={onToggleCll}
-                className={`pointer-events-auto flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[8.5px] font-mono font-bold cursor-pointer transition border ${
-                  useCll
-                    ? "bg-cyan-500/20 text-cyan-200 border-cyan-500/50 hover:bg-cyan-500/30"
-                    : "bg-gray-800/80 text-gray-400 border-gray-700 hover:text-white"
-                }`}
-                title={useCll ? "Активен Confluence Liquidity Ladder v1 (клик для Legacy Wave)" : "Активен Legacy Wave (клик для Confluence Ladder)"}
-              >
-                <span>{useCll ? "🎯 CLL v1" : "🌊 Wave"}</span>
-                {useCll && cllSetup && cllSetup.status !== "NO_TRADE" && (
-                  <span className="text-[7.5px] text-cyan-300">({cllSetup.activeLayers.length}/6)</span>
-                )}
-              </button>
-            )}
-
-            {/* CLL Layer Chips */}
-            {useCll && cllSetup && cllSetup.activeLayers.length > 0 && (
+            {/* UFE 7 Layer Chips */}
+            {ufeSetup && (
               <div className="hidden lg:flex items-center gap-1">
-                {cllSetup.activeLayers.map(layer => (
+                {ufeSetup.permission.allLayers.map(layer => (
                   <span
                     key={layer.id}
-                    className="px-1 py-0.2 rounded text-[8px] font-mono font-semibold bg-gray-900/90 text-cyan-300 border border-cyan-800/60"
-                    title={`${layer.name}: ${layer.rationale}`}
+                    className={`px-1.5 py-0.2 rounded text-[8px] font-mono font-semibold transition border ${
+                      layer.active
+                        ? "bg-cyan-500/25 text-cyan-200 border-cyan-400/70 shadow-sm"
+                        : "bg-gray-900/60 text-gray-500 border-gray-800"
+                    }`}
+                    title={`${layer.name} (${layer.id}): ${layer.rationale} [Вес: ${Math.round(layer.weight * 100)}%]`}
                   >
-                    {layer.tag}
+                    {layer.id} {layer.tag}
                   </span>
                 ))}
+                {/* Popover / tooltip explanation button */}
+                <span
+                  className="px-1.5 py-0.2 rounded text-[8px] font-mono cursor-help bg-gray-800 text-gray-300 border border-gray-700 hover:text-white"
+                  title={`${ufeSetup.permission.state}: ${ufeSetup.permission.primaryReason}\nТриггер: ${ufeSetup.permission.unblockTrigger}\nАрбитраж: ${ufeSetup.permission.arbiterNote}`}
+                >
+                  ℹ️ Допуск
+                </span>
               </div>
             )}
           </div>
@@ -4986,235 +4995,220 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
       const lineEndTime = lastCandle.time + tfSec * 3;
 
-      let cllSetup: ConfluenceSetupResult | null = null;
-      if (useCll && cleanCandles.length >= 20) {
-        cllSetup = computeConfluenceSetup({
-          candles: cleanCandles,
-          gexReport: (dayGexReport || gexReport || indicatorOutput?.gex) as any,
-          schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
-          adrPct: indicatorOutput?.hud?.adrPct ?? 50,
-          symbol: activeAsset,
-          timeframe: activeTf,
-          currentPrice: lastCandle.close,
-          tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01
+      // UNIFIED FORECAST ENGINE (UFE v1): Single unified ladder
+      const ufe: UnifiedForecastResult = computeUnifiedForecast({
+        candles: cleanCandles,
+        gexReport: (dayGexReport || gexReport || indicatorOutput?.gex) as any,
+        schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
+        adrPct: (indicatorOutput?.hud as any)?.adrPct ?? 50,
+        symbol: activeAsset,
+        timeframe: activeTf,
+        currentPrice: lastCandle.close,
+        tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01,
+        legacyWave: fc ? {
+          direction: (fc as any)?.direction || (fc.isBull ? "LONG" : "SHORT"),
+          entry: computedEntry,
+          sl: computedSl,
+          tp1: computedTp1,
+          tp2: computedTp2,
+          confidence: fc.probability ?? 70,
+          status: fc.status
+        } : null
+      });
+
+      const pState = ufe.permission.state;
+      const isBlocked = pState === "BLOCKED";
+      const isConditional = pState === "CONDITIONAL";
+      const isScalp = pState === "SCALP" || ufe.isScalpMode;
+      const isDegraded = pState === "DEGRADED";
+      const isBull = ufe.direction === "LONG";
+
+      // 1. Zone Box (Entry Zone)
+      const zoneFill = isBlocked
+        ? "rgba(239, 68, 68, 0.08)"
+        : isConditional
+        ? "rgba(245, 158, 11, 0.08)"
+        : isScalp
+        ? "rgba(245, 158, 11, 0.12)"
+        : isDegraded
+        ? "rgba(245, 158, 11, 0.10)"
+        : isBull
+        ? "rgba(16, 185, 129, 0.14)"
+        : "rgba(6, 182, 212, 0.14)";
+
+      const zoneBorder = isBlocked
+        ? "rgba(239, 68, 68, 0.45)"
+        : isConditional || isScalp || isDegraded
+        ? "#f59e0b"
+        : isBull
+        ? "#10b981"
+        : "#06b6d4";
+
+      const zoneLabel = isBlocked
+        ? `⛔ ВХОД ЗАБЛОКИРОВАН: ${ufe.permission.primaryReason} • Триггер: ${ufe.permission.unblockTrigger}`
+        : isConditional
+        ? `⚠️ ЖДАТЬ: ${ufe.permission.unblockTrigger}`
+        : isScalp
+        ? `⚡ СКАЛЬП (ADR > 85%) | S=${ufe.permission.score.toFixed(2)}`
+        : isDegraded
+        ? `⚠️ DEGRADED (Wave only) [${ufe.permission.score.toFixed(2)}]`
+        : `UFE v1 [S=${ufe.permission.score.toFixed(2)}] ${ufe.permission.activeLayers.length}/7`;
+
+      zoneBoxes.push({
+        id: "ufe_entry_zone",
+        type: isBull ? "ob_bull" : "ob_bear",
+        topPrice: ufe.entryZone[1],
+        bottomPrice: ufe.entryZone[0],
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        fillColor: zoneFill,
+        borderColor: zoneBorder,
+        label: zoneLabel
+      });
+
+      // 2. SL Line
+      const slColor = isBlocked ? "rgba(239, 68, 68, 0.35)" : "#ef4444";
+      const slPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
+      boundedLines.push({
+        id: "sl_line",
+        price: Number(ufe.sl.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: slColor,
+        lineWidth: 1,
+        lineStyle: "dashed",
+        label: `${slPrefix}SL: ${ufe.sl.toFixed(dec)} [Инвалидация] -1.0R`,
+        labelBg: isBlocked ? "rgba(30, 9, 13, 0.5)" : "rgba(30, 9, 13, 0.98)",
+        labelBorderColor: isBlocked ? "rgba(248, 113, 113, 0.4)" : "#f87171",
+        labelTextColor: isBlocked ? "rgba(254, 205, 211, 0.6)" : "#fecdd3"
+      });
+
+      // 3. Entry Line
+      const entryColor = isBlocked
+        ? "rgba(245, 158, 11, 0.35)"
+        : isConditional
+        ? "#f59e0b"
+        : isBull
+        ? "#10b981"
+        : "#f59e0b";
+      const entryPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
+      const entryHit = ufe.stateProgression.stage !== "ST0";
+      boundedLines.push({
+        id: "entry_line",
+        price: Number(ufe.entryMid.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: entryHit ? "#10b981" : entryColor,
+        lineWidth: 1,
+        lineStyle: entryHit ? "solid" : isConditional ? "dotted" : "solid",
+        label: entryHit
+          ? `ВХОД ВЗЯТ: ${ufe.entryMid.toFixed(dec)} ✓ [S=${ufe.permission.score.toFixed(2)}]`
+          : `${entryPrefix}ВХОД (UFE): ${ufe.entryMid.toFixed(dec)} [confl ${ufe.permission.activeLayers.length}/7]`,
+        labelBg: isBlocked ? "rgba(24, 18, 6, 0.5)" : "rgba(24, 18, 6, 0.98)",
+        labelBorderColor: entryHit ? "#34d399" : (isBull ? "#34d399" : "#fbbf24"),
+        labelTextColor: isBlocked ? "rgba(254, 243, 199, 0.6)" : "#fef3c7"
+      });
+
+      // 4. TP1 Line
+      const tp1Color = isBlocked ? "rgba(16, 185, 129, 0.35)" : "#10b981";
+      const tp1Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
+      boundedLines.push({
+        id: "tp1_line",
+        price: Number(ufe.tp1.price.toFixed(dec)),
+        startTime: lineStartTime,
+        endTime: lineEndTime,
+        startLogical: lineStartLog,
+        endLogical: lineEndLog,
+        color: tp1Color,
+        lineWidth: 1,
+        lineStyle: "dashed",
+        label: `${tp1Prefix}TP1 (UFE): ${ufe.tp1.price.toFixed(dec)} ${ufe.tp1.tag} +${ufe.tp1.r}R`,
+        labelBg: isBlocked ? "rgba(6, 26, 18, 0.5)" : "rgba(6, 26, 18, 0.98)",
+        labelBorderColor: isBlocked ? "rgba(52, 211, 153, 0.4)" : "#34d399",
+        labelTextColor: isBlocked ? "rgba(167, 243, 208, 0.6)" : "#a7f3d0"
+      });
+
+      // 5. TP2 Line
+      if (isScalp) {
+        boundedLines.push({
+          id: "tp2_line",
+          price: Number(ufe.tp2.price.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: "rgba(107, 114, 128, 0.4)",
+          lineWidth: 1,
+          lineStyle: "dotted",
+          label: `TP2: ${ufe.tp2.price.toFixed(dec)} [скрыто: ADR ${Math.round((indicatorOutput?.hud as any)?.adrPct ?? 89)}%]`,
+          labelBg: "rgba(17, 24, 39, 0.7)",
+          labelBorderColor: "#4b5563",
+          labelTextColor: "#9ca3af"
+        });
+      } else {
+        const tp2Color = isBlocked ? "rgba(6, 182, 212, 0.35)" : "#06b6d4";
+        const tp2Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
+        boundedLines.push({
+          id: "tp2_line",
+          price: Number(ufe.tp2.price.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: tp2Color,
+          lineWidth: 1,
+          lineStyle: "dashed",
+          label: `${tp2Prefix}TP2 (UFE): ${ufe.tp2.price.toFixed(dec)} ${ufe.tp2.tag} +${ufe.tp2.r}R`,
+          labelBg: isBlocked ? "rgba(6, 26, 30, 0.5)" : "rgba(6, 26, 30, 0.98)",
+          labelBorderColor: isBlocked ? "rgba(34, 211, 238, 0.4)" : "#22d3ee",
+          labelTextColor: isBlocked ? "rgba(207, 250, 254, 0.6)" : "#cffafe"
         });
       }
 
-      if (useCll && cllSetup && cllSetup.status !== "NO_TRADE") {
-        // Render Confluence Liquidity Ladder v1 (CLL) Zone & Lines
-        zoneBoxes.push({
-          type: "ob_bull",
-          topPrice: cllSetup.entryZone[1],
-          bottomPrice: cllSetup.entryZone[0],
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          fillColor: cllSetup.direction === "LONG" ? "rgba(16, 185, 129, 0.12)" : "rgba(239, 68, 68, 0.12)",
-          borderColor: cllSetup.direction === "LONG" ? "#10b981" : "#ef4444",
-          label: `confl ${cllSetup.activeLayers.length}/6 | S=${cllSetup.score.toFixed(2)}`
-        });
-
-        // SL
+      // 6. TP3 Line (Runner)
+      if (!isScalp) {
+        const tp3Color = isBlocked ? "rgba(139, 92, 246, 0.35)" : "#8b5cf6";
+        const tp3Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
         boundedLines.push({
-          id: "sl_line",
-          price: Number(cllSetup.sl.toFixed(dec)),
+          id: "tp3_line",
+          price: Number(ufe.tp3.price.toFixed(dec)),
           startTime: lineStartTime,
           endTime: lineEndTime,
           startLogical: lineStartLog,
           endLogical: lineEndLog,
-          color: "#ef4444",
+          color: tp3Color,
+          lineWidth: 1,
+          lineStyle: "dotted",
+          label: `${tp3Prefix}TP3 (UFE): ${ufe.tp3.price.toFixed(dec)} ${ufe.tp3.tag} +${ufe.tp3.r}R`,
+          labelBg: isBlocked ? "rgba(20, 10, 36, 0.5)" : "rgba(20, 10, 36, 0.98)",
+          labelBorderColor: isBlocked ? "rgba(167, 139, 250, 0.4)" : "#a78bfa",
+          labelTextColor: isBlocked ? "rgba(237, 233, 254, 0.6)" : "#ede9fe"
+        });
+      }
+
+      // 7. Plan B Ghost
+      if (ufe.planB && (showAltWave || ufe.planB.isActive || ufe.planB.isTriggered)) {
+        boundedLines.push({
+          id: "plan_b_ghost",
+          price: Number(ufe.planB.entry.toFixed(dec)),
+          startTime: lineStartTime,
+          endTime: lineEndTime,
+          startLogical: lineStartLog,
+          endLogical: lineEndLog,
+          color: "#f59e0b",
           lineWidth: 1,
           lineStyle: "dashed",
-          label: `SL (CLL): ${cllSetup.sl.toFixed(dec)} [Инвалидация] -1.0R`,
-          labelBg: "rgba(30, 9, 13, 0.98)",
-          labelBorderColor: "#f87171",
-          labelTextColor: "#fecdd3"
-        });
-
-        // Вход
-        boundedLines.push({
-          id: "entry_line",
-          price: Number(cllSetup.entryMid.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: cllSetup.direction === "LONG" ? "#10b981" : "#f59e0b",
-          lineWidth: 1,
-          lineStyle: "solid",
-          label: `ВХОД (CLL): ${cllSetup.entryMid.toFixed(dec)} [confl ${cllSetup.activeLayers.length}/6]`,
-          labelBg: "rgba(24, 18, 6, 0.98)",
-          labelBorderColor: cllSetup.direction === "LONG" ? "#34d399" : "#fbbf24",
+          label: `👻 ${ufe.planB.condition}`,
+          labelBg: "rgba(28, 20, 8, 0.98)",
+          labelBorderColor: "#f59e0b",
           labelTextColor: "#fef3c7"
         });
-
-        // TP1
-        if (cllSetup.tp1) {
-          boundedLines.push({
-            id: "tp1_line",
-            price: Number(cllSetup.tp1.price.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: "#10b981",
-            lineWidth: 1,
-            lineStyle: "dashed",
-            label: `TP1 (CLL): ${cllSetup.tp1.price.toFixed(dec)} ${cllSetup.tp1.tag}`,
-            labelBg: "rgba(6, 26, 18, 0.98)",
-            labelBorderColor: "#34d399",
-            labelTextColor: "#a7f3d0"
-          });
-        }
-
-        // TP2
-        if (cllSetup.tp2) {
-          boundedLines.push({
-            id: "tp2_line",
-            price: Number(cllSetup.tp2.price.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: "#06b6d4",
-            lineWidth: 1,
-            lineStyle: "dashed",
-            label: `TP2 (CLL): ${cllSetup.tp2.price.toFixed(dec)} ${cllSetup.tp2.tag}`,
-            labelBg: "rgba(6, 26, 30, 0.98)",
-            labelBorderColor: "#22d3ee",
-            labelTextColor: "#cffafe"
-          });
-        }
-
-        // TP3 (Runner)
-        if (cllSetup.tp3) {
-          boundedLines.push({
-            id: "tp3_line",
-            price: Number(cllSetup.tp3.price.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: "#8b5cf6",
-            lineWidth: 1,
-            lineStyle: "dotted",
-            label: `TP3 (CLL): ${cllSetup.tp3.price.toFixed(dec)} ${cllSetup.tp3.tag}`,
-            labelBg: "rgba(20, 10, 36, 0.98)",
-            labelBorderColor: "#a78bfa",
-            labelTextColor: "#ede9fe"
-          });
-        }
-
-        // Plan B Ghost
-        if (cllSetup.planB && (showAltWave || cllSetup.planB.isActive || cllSetup.planB.isTriggered)) {
-          boundedLines.push({
-            id: "plan_b_ghost",
-            price: Number(cllSetup.planB.entry.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: "#f59e0b",
-            lineWidth: 1,
-            lineStyle: "dashed",
-            label: `👻 ${cllSetup.planB.condition}`,
-            labelBg: "rgba(28, 20, 8, 0.98)",
-            labelBorderColor: "#f59e0b",
-            labelTextColor: "#fef3c7"
-          });
-        }
-      } else {
-        // Fallback to legacy wave engine lines
-        const isInitialSl = !fc?.trailingStageStr || fc.trailingStageStr.toLowerCase().includes("начальный");
-        const trailingNote = (!isInitialSl && fc?.trailingStageStr) ? ` (${fc.trailingStageStr})` : "";
-        const slTagSuffix = (fc?.slSourceTag || fallbackSourceTags.slSourceTag) ? ` ${fc?.slSourceTag || fallbackSourceTags.slSourceTag}` : "";
-        const entryTagSuffix = (fc?.entrySourceTag || fallbackSourceTags.entrySourceTag) ? ` ${fc?.entrySourceTag || fallbackSourceTags.entrySourceTag}` : "";
-        const tp1TagSuffix = (fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag) ? ` ${fc?.tp1SourceTag || fallbackSourceTags.tp1SourceTag}` : "";
-        const tp2TagSuffix = (fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag) ? ` ${fc?.tp2SourceTag || fallbackSourceTags.tp2SourceTag}` : "";
-
-        // SL (Red dashed line)
-        boundedLines.push({
-          id: "sl_line",
-          price: Number(computedSl.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: "#ef4444",
-          lineWidth: 1,
-          lineStyle: "dashed",
-          label: fc?.isPlanBActive
-            ? `SL ВЫБИТ: ${computedSl.toFixed(dec)} [❌ СЛОМ]${slTagSuffix}${recalcBadgeSuffix}`
-            : `SL: ${computedSl.toFixed(dec)}${trailingNote}${slTagSuffix}${fc?.maeBadge ? ` [${fc.maeBadge}]` : ""}${recalcBadgeSuffix}`,
-          labelBg: "rgba(30, 9, 13, 0.98)",
-          labelBorderColor: "#f87171",
-          labelTextColor: "#fecdd3"
-        });
-
-        // Вход (Amber dotted or solid green if hit)
-        const scalpBadgeSuffix = fc?.isScalpMode ? ` • СКАЛЬП (цель = потолок отката, размер 1/2)` : "";
-        const entryRoleSuffix = fc?.trendAlignmentBadge ? ` • ${fc.trendAlignmentBadge}` : "";
-        const entryMaeSuffix = fc?.maeBadge ? ` [${fc.maeBadge}]` : "";
-        boundedLines.push({
-          id: "entry_line",
-          price: Number(computedEntry.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: fc?.leg1Hit ? "#10b981" : "#f59e0b",
-          lineWidth: 1,
-          lineStyle: fc?.leg1Hit ? "solid" : "dotted",
-          label: fc?.leg1Hit
-            ? `ВХОД ВЗЯТ: ${computedEntry.toFixed(dec)} ✓${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`
-            : `ВХОД: ${computedEntry.toFixed(dec)}${entryTagSuffix}${scalpBadgeSuffix}${entryRoleSuffix}${entryMaeSuffix}${recalcBadgeSuffix}`,
-          labelBg: "rgba(24, 18, 6, 0.98)",
-          labelBorderColor: fc?.leg1Hit ? "#34d399" : "#fbbf24",
-          labelTextColor: "#fef3c7"
-        });
-
-        // TP1 (Teal/Cyan dashed line matching original chart design; forbidden if R:R < 1 / hideTp1Line unless fallback recalc)
-        if (isFallbackRecalc || (!fc?.hideTp1Line && (fc?.rrTp1 === undefined || fc.rrTp1 >= 1.0))) {
-          boundedLines.push({
-            id: "tp1_line",
-            price: Number(computedTp1.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: fc?.leg2Hit ? "#0d9488" : "#2dd4bf",
-            lineWidth: 1,
-            lineStyle: "dashed",
-            label: fc?.leg2Hit
-              ? `TP1 ДОСТИГНУТ: ${computedTp1.toFixed(dec)} ✓${tp1TagSuffix}${recalcBadgeSuffix}`
-              : `TP1: ${computedTp1.toFixed(dec)}${tp1TagSuffix}${recalcBadgeSuffix}`,
-            labelBg: "rgba(6, 24, 20, 0.98)",
-            labelBorderColor: "#2dd4bf",
-            labelTextColor: "#ccfbf1"
-          });
-        }
-
-        // TP2 (Sky-Blue dashed line; omitted in SCALP mode or when hideTp2Line is true unless fallback recalc)
-        if (computedTp2 > 0 && (isFallbackRecalc || (!fc?.hideTp2Line && !fc?.isScalpMode && (fc?.rrTp2 === undefined || fc.rrTp2 >= 2.0)))) {
-          boundedLines.push({
-            id: "tp2_line",
-            price: Number(computedTp2.toFixed(dec)),
-            startTime: lineStartTime,
-            endTime: lineEndTime,
-            startLogical: lineStartLog,
-            endLogical: lineEndLog,
-            color: fc?.leg3Hit ? "#0284c7" : "#38bdf8",
-            lineWidth: 1,
-            lineStyle: "dashed",
-            label: fc?.leg3Hit
-              ? `TP2 ДОСТИГНУТ: ${computedTp2.toFixed(dec)} ✓${tp2TagSuffix}${recalcBadgeSuffix}`
-              : `TP2: ${computedTp2.toFixed(dec)}${tp2TagSuffix}${recalcBadgeSuffix}`,
-            labelBg: "rgba(6, 18, 28, 0.98)",
-            labelBorderColor: "#38bdf8",
-            labelTextColor: "#e0f2fe"
-          });
-        }
       }
 
       // Note: Alternative Plan B & Target 2 are rendered along the diagonal contingency ray
@@ -6219,10 +6213,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                 title="🎯 Confluence Liquidity Ladder v1 (CLL) vs Legacy wave"
               >
                 <div className="flex flex-col">
-                  <span className="font-bold text-[11px]">🎯 Confluence Ladder (CLL v1)</span>
-                  <span className="text-[8px] text-gray-400">{useCll ? "CLL v1 активен (S>=0.70, 6 слоёв)" : "Legacy wave fallback"}</span>
+                  <span className="font-bold text-[11px]">🎯 Unified Forecast Engine (UFE v1)</span>
+                  <span className="text-[8px] text-gray-400">7 слоёв, арбитраж, допуски & постоянная отрисовка</span>
                 </div>
-                <span className="text-[9px] font-mono">{useCll ? "CLL" : "WAVE"}</span>
+                <span className="text-[9px] font-mono text-cyan-300">7-LAYERS</span>
               </button>
 
               <button
@@ -7160,25 +7154,17 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   )}
                 </div>
 
-                {/* 🎯 Quick Toggle: Confluence Ladder (CLL v1) vs Legacy Wave */}
-                <button
-                  type="button"
-                  onClick={() => setUseCll(prev => !prev)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-sm border ${
-                    useCll
-                      ? "bg-cyan-500/25 text-cyan-200 border-cyan-400 ring-1 ring-cyan-400/50 shadow-cyan-900/40"
-                      : "bg-gray-800/90 text-gray-400 hover:text-white border-gray-700 hover:bg-gray-750"
-                  }`}
-                  title={useCll ? "Активен Confluence Liquidity Ladder v1 (CLL). Кликните для переключения на Legacy Wave" : "Активен Legacy Wave. Кликните для переключения на Confluence Ladder (CLL v1)"}
+                {/* 🎯 Unified Forecast Engine (UFE v1) Indicator Button */}
+                <div
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm border bg-cyan-500/25 text-cyan-200 border-cyan-400 ring-1 ring-cyan-400/50 shadow-cyan-900/40"
+                  title="Квантовый прогнозный движок UFE v1: 7 институциональных слоёв, арбитраж и система допусков"
                 >
-                  <span className="text-[12px]">{useCll ? "🎯" : "🌊"}</span>
-                  <span>{useCll ? "CLL v1" : "Legacy wave"}</span>
-                  {useCll && activeCllSetup && activeCllSetup.status !== "NO_TRADE" && (
-                    <span className="text-[9.5px] font-mono px-1 py-0.2 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60">
-                      {activeCllSetup.activeLayers.length}/6
-                    </span>
-                  )}
-                </button>
+                  <span className="text-[12px]">🎯</span>
+                  <span>UFE v1</span>
+                  <span className="text-[9.5px] font-mono px-1 py-0.2 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60">
+                    7 слоёв
+                  </span>
+                </div>
 
 
                 {/* Settings Tab Button for admins/privileged users */}

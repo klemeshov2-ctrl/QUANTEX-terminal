@@ -627,14 +627,25 @@ export function clearGexEngineCache(): void {
 
 export function fetchWithGexDeduplication(
   cacheKey: string,
-  ttlMs: number,
+  ttlMs: number | undefined,
   fetchFn: () => Promise<GexMarketReport>
 ): Promise<GexMarketReport> {
+  const parts = cacheKey.split("_");
+  const keyAsset = parts[0] || "UNKNOWN";
+  const keyHorizon = parts.length > 1 ? parts[parts.length - 1] : "ALL";
+  const effTtl = typeof ttlMs === "number" && !isNaN(ttlMs) && ttlMs > 0 ? ttlMs : CACHE_TTL_MS;
+
   const now = Date.now();
   const cached = gexCache[cacheKey];
-  if (cached && (now - cached.cachedAt) < ttlMs) {
+  if (cached && (now - cached.cachedAt) < effTtl) {
     return Promise.resolve(cached.data);
   }
+
+  const usStatus = isUsOptionsSessionActive() ? "ACTIVE" : "CLOSED";
+  const moexStatus = isMoexSessionActive() ? "ACTIVE" : "CLOSED";
+  console.log(
+    `[GEX Cache] MISS asset=${keyAsset} horizon=${keyHorizon} TTL=${Math.round(effTtl / 1000)}s usSession=${usStatus} moexSession=${moexStatus}`
+  );
 
   const existingInFlight = inFlightGexRequests.get(cacheKey);
   if (existingInFlight) {
@@ -720,7 +731,7 @@ export function getHorizonExpirationDateString(horizon: ExpiryHorizon = "WEEK"):
 
 // In-memory cache (TTL: 4 minutes = 240,000 ms) to prevent exchange rate-limiting / IP bans
 const gexCache: Record<string, { data: GexMarketReport; cachedAt: number }> = {};
-const CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutes (240s)
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes (fallback for undefined asset)
 
 /**
  * Strict timeout wrapper using AbortController + Promise.race.
