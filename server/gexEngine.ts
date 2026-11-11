@@ -1,7 +1,15 @@
 // 🏛️ QUANTEX Real-Time GEX (Gamma Exposure) & Options Analytics Engine
 // Institutional Options & Futures Analytics Engine
 import Decimal from "decimal.js";
-import { getSessionSchedule } from "../src/lib/marketSessions";
+import {
+  getSessionSchedule,
+  isUsOptionsSessionActive,
+  isMoexSessionActive,
+  isMoexAsset,
+  getGexCacheTtlMs
+} from "../src/lib/marketSessions";
+
+export { isUsOptionsSessionActive, isMoexSessionActive, isMoexAsset, getGexCacheTtlMs };
 
 Decimal.config({ precision: 30, rounding: Decimal.ROUND_HALF_UP });
 
@@ -62,6 +70,9 @@ export interface GexMarketReport {
   maxPain: number;            // Expiration magnet (minimum total buyer payout, OI only)
   maxPainRange?: { low: number; high: number; mid: number } | null; // Pinning zone range when zero/min-payout zone is wider than 1 grid step
   freshValues?: { callWall: number; putWall: number; gammaFlip: number; maxPain: number };
+  lastMigrationAt?: number;
+  lastMigrationReason?: string;
+  nextMigrationAllowedAt?: number;
   migrationLog?: {
     timestamp: string;
     asset: string;
@@ -69,7 +80,7 @@ export interface GexMarketReport {
     level: "CW" | "PW" | "FLIP" | "PAIN" | "ALL";
     oldValue: number | null;
     newValue: number;
-    reason: "breach" | "cooldown+OI" | "new session" | "reset" | "source_switch";
+    reason: "breach" | "cooldown+OI" | "oi_leader_persistent" | "corridor_drift" | "new session" | "reset" | "source_switch";
     details: string;
   }[];
   sleeperMagnet?: number;     // Sleeper magnet strike
@@ -985,8 +996,9 @@ export function calculateCryptoGex(
   horizon: ExpiryHorizon = "WEEK"
 ): Promise<GexMarketReport> {
   const cacheKey = `${asset}_${horizon}`;
+  const ttlMs = getGexCacheTtlMs(asset);
 
-  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+  return fetchWithGexDeduplication(cacheKey, ttlMs, async () => {
     const cfg = CRYPTO_ASSET_CONFIG[asset] || CRYPTO_ASSET_CONFIG.BTC;
     const step = cfg.step;
     const decimals = cfg.roundDecimals;
@@ -2745,8 +2757,9 @@ function calculateSyntheticGoldGex(
  */
 export function calculateGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `XAUUSD_${horizon}`;
+  const ttlMs = getGexCacheTtlMs("XAUUSD");
 
-  return fetchWithGexDeduplication(cacheKey, GOLD_GEX_CACHE_TTL_MS, async () => {
+  return fetchWithGexDeduplication(cacheKey, ttlMs, async () => {
     const nowUtc = new Date();
     const utcDay = nowUtc.getUTCDay();
     const utcHour = nowUtc.getUTCHours();
@@ -4185,8 +4198,9 @@ async function buildHybridMoexGexReport(params: MoexHybridParams): Promise<GexMa
 // -------------------------------------------------------------
 export function calculateMoexGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `MOEX_GOLD_${horizon}`;
+  const ttlMs = getGexCacheTtlMs("MOEX_GOLD");
 
-  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+  return fetchWithGexDeduplication(cacheKey, ttlMs, async () => {
     const contracts = await fetchMoexFrontQuarterlyContracts();
     return buildHybridMoexGexReport({
       reportAsset: "MOEX_GOLD",
@@ -4208,8 +4222,9 @@ export function calculateMoexGoldGex(horizon: ExpiryHorizon = "WEEK"): Promise<G
 // -------------------------------------------------------------
 export function calculateMoexMiniGex(horizon: ExpiryHorizon = "WEEK"): Promise<GexMarketReport> {
   const cacheKey = `MOEX_MINI_${horizon}`;
+  const ttlMs = getGexCacheTtlMs("MOEX_MINI");
 
-  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+  return fetchWithGexDeduplication(cacheKey, ttlMs, async () => {
     const contracts = await fetchMoexFrontQuarterlyContracts();
     return buildHybridMoexGexReport({
       reportAsset: "MOEX_MINI",
@@ -4234,8 +4249,9 @@ export function calculateMoexGenericGex(
   horizon: ExpiryHorizon = "WEEK"
 ): Promise<GexMarketReport> {
   const cacheKey = `MOEX_${assetType}_${horizon}`;
+  const ttlMs = getGexCacheTtlMs(`MOEX_${assetType}`);
 
-  return fetchWithGexDeduplication(cacheKey, CACHE_TTL_MS, async () => {
+  return fetchWithGexDeduplication(cacheKey, ttlMs, async () => {
     const contracts = await fetchMoexFrontQuarterlyContracts();
     const active =
       assetType === "SI"

@@ -275,3 +275,70 @@ export function formatScheduleForPrompt(schedule: SessionSchedule): string {
 
   return lines.join("\n");
 }
+
+/**
+ * Проверяет, активна ли торговая сессия опционов США (CBOE / CME / OPRA).
+ * Правило с учетом сезона:
+ * - Зима (EST): 17:30–00:00 МСК (будни Mon-Fri)
+ * - Лето (EDT): 16:30–23:00 МСК (будни Mon-Fri)
+ */
+export function isUsOptionsSessionActive(date: Date = new Date()): boolean {
+  const sched = getSessionSchedule(date);
+  // МСК = UTC+3 круглый год
+  const mskTime = date.getTime() + 3 * 3600 * 1000;
+  const mskDate = new Date(mskTime);
+  const mskDay = mskDate.getUTCDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+  if (mskDay < 1 || mskDay > 5) return false;
+
+  const mskMins = mskDate.getUTCHours() * 60 + mskDate.getUTCMinutes() + mskDate.getUTCSeconds() / 60;
+  return mskMins >= sched.usOpenMins && mskMins < sched.usCloseMins;
+}
+
+/**
+ * Проверяет, активна ли торговая сессия МосБиржи (FORTS / Валютный и Фондовый рынок):
+ * По будням с 07:00 до 23:50 МСК.
+ */
+export function isMoexSessionActive(date: Date = new Date()): boolean {
+  const mskTime = date.getTime() + 3 * 3600 * 1000;
+  const mskDate = new Date(mskTime);
+  const mskDay = mskDate.getUTCDay();
+  if (mskDay < 1 || mskDay > 5) return false;
+
+  const mskMins = mskDate.getUTCHours() * 60 + mskDate.getUTCMinutes() + mskDate.getUTCSeconds() / 60;
+  return mskMins >= 7 * 60 && mskMins < 23 * 60 + 50;
+}
+
+/**
+ * Определяет, относится ли инструмент к срочному рынку МосБиржи
+ */
+export function isMoexAsset(asset: string): boolean {
+  const norm = (asset || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return (
+    norm.includes("MOEX") ||
+    norm.startsWith("SI") ||
+    norm.startsWith("RI") ||
+    norm.startsWith("BR") ||
+    norm.startsWith("NG") ||
+    norm.startsWith("GD") ||
+    norm.startsWith("GN") ||
+    norm.includes("GLDRUB") ||
+    norm.includes("FORTS")
+  );
+}
+
+/**
+ * Сессионный TTL кэша базового движка GEX:
+ * - US-сессия активна (будни, зима 17:30–00:00 / лето 16:30–23:00 МСК) -> 90 секунд (90 000 мс)
+ * - MOEX-активы в торговые часы МосБиржи (07:00–23:50 МСК) -> 60 секунд (60 000 мс)
+ * - Вне торговых сессий -> 15 минут (900 000 мс)
+ */
+export function getGexCacheTtlMs(asset: string, date: Date = new Date()): number {
+  if (isMoexAsset(asset)) {
+    return isMoexSessionActive(date) ? 60 * 1000 : 15 * 60 * 1000;
+  }
+  if (isUsOptionsSessionActive(date)) {
+    return 90 * 1000;
+  }
+  return 15 * 60 * 1000;
+}
+

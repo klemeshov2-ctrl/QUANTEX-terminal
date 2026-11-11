@@ -68,6 +68,16 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
     });
   }, [gexReport, volumeTotals]);
 
+  const migrationBadgeText = useMemo(() => {
+    if (gexReport.lastMigrationAt) {
+      const minsAgo = Math.max(0, Math.round((Date.now() - gexReport.lastMigrationAt) / 60000));
+      const reasonLabel = gexReport.lastMigrationReason || "auto";
+      const timeStr = minsAgo === 0 ? "только что" : `${minsAgo} мин назад`;
+      return `обновлено ${timeStr} (${reasonLabel})`;
+    }
+    return "авто-обновление GEX активно";
+  }, [gexReport.lastMigrationAt, gexReport.lastMigrationReason]);
+
   const currencyPrefix = activeAsset === "MOEX_MINI" ? "" : "$";
   const currencySuffix = activeAsset === "MOEX_MINI" ? " ₽" : "";
   const fmtPrice = (val: number) => `${currencyPrefix}${Math.round(val * 10) / 10}${currencySuffix}`;
@@ -216,6 +226,13 @@ export const GexProbabilityHero: React.FC<GexProbabilityHeroProps> = ({
                   <span>{gexReport.dataFreshnessLabel}</span>
                 </span>
               ) : null}
+              <span
+                className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-200 border border-cyan-500/35 flex items-center gap-1"
+                title={gexReport.nextMigrationAllowedAt ? `Следующая миграция разрешена: ${new Date(gexReport.nextMigrationAllowedAt).toLocaleTimeString()}` : undefined}
+              >
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
+                <span>{migrationBadgeText}</span>
+              </span>
               {(gexReport.asset === "XAUUSD" || gexReport.proxyNote) && (
                 <span className="text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-200 border border-blue-500/35">
                   {gexReport.proxyNote || "Опционы на ETF GLD, не на фьючерс золота COMEX GC"}

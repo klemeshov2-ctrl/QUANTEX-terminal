@@ -1119,25 +1119,40 @@ async function runTests() {
   // TEST 20: Горизонтно-зависимые параметры стабилизатора (DAY, WEEK, MONTH/ALL)
   // ---------------------------------------------------------------------------
   {
-    // DAY: кулдаун 30 мин (1 800 000 мс), гистерезис 20%
-    assert.strictEqual(getHorizonCooldownMs("DAY"), 30 * 60 * 1000, "DAY cooldown must be 30 minutes");
-    assert.strictEqual(getHorizonHysteresisThreshold("DAY"), 0.20, "DAY hysteresis threshold must be 0.20 (20%)");
+    const { getHorizonGateConfig } = await import("../server/gexStateManager");
 
-    // WEEK: кулдаун 60 мин (3 600 000 мс), гистерезис 25%
-    assert.strictEqual(getHorizonCooldownMs("WEEK"), 60 * 60 * 1000, "WEEK cooldown must be 60 minutes");
-    assert.strictEqual(getHorizonHysteresisThreshold("WEEK"), 0.25, "WEEK hysteresis threshold must be 0.25 (25%)");
+    // DAY: кулдаун 5 мин, oiMargin 1.10 (гистерезис 10%), persistCount 3, corridor 2.5%, noRevert 20 мин
+    const dayGate = getHorizonGateConfig("DAY");
+    assert.strictEqual(getHorizonCooldownMs("DAY"), 5 * 60 * 1000, "DAY cooldown must be 5 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("DAY"), 0.10, "DAY hysteresis threshold must be 0.10 (10%)");
+    assert.strictEqual(dayGate.persistCount, 3, "DAY persistCount must be 3");
+    assert.strictEqual(dayGate.corridorRatio, 0.025, "DAY corridorRatio must be 2.5%");
+    assert.strictEqual(dayGate.noRevertMs, 20 * 60 * 1000, "DAY noRevert must be 20 minutes");
 
-    // MONTH / ALL: кулдаун 120 мин (7 200 000 мс), гистерезис 30%
-    assert.strictEqual(getHorizonCooldownMs("MONTH"), 120 * 60 * 1000, "MONTH cooldown must be 120 minutes");
-    assert.strictEqual(getHorizonHysteresisThreshold("MONTH"), 0.30, "MONTH hysteresis threshold must be 0.30 (30%)");
-    assert.strictEqual(getHorizonCooldownMs("ALL"), 120 * 60 * 1000, "ALL cooldown must be 120 minutes");
-    assert.strictEqual(getHorizonHysteresisThreshold("ALL"), 0.30, "ALL hysteresis threshold must be 0.30 (30%)");
+    // WEEK: кулдаун 20 мин, oiMargin 1.15 (гистерезис 15%), persistCount 4, corridor 6%, noRevert 60 мин
+    const weekGate = getHorizonGateConfig("WEEK");
+    assert.strictEqual(getHorizonCooldownMs("WEEK"), 20 * 60 * 1000, "WEEK cooldown must be 20 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("WEEK"), 0.15, "WEEK hysteresis threshold must be 0.15 (15%)");
+    assert.strictEqual(weekGate.persistCount, 4, "WEEK persistCount must be 4");
+    assert.strictEqual(weekGate.corridorRatio, 0.060, "WEEK corridorRatio must be 6%");
+    assert.strictEqual(weekGate.noRevertMs, 60 * 60 * 1000, "WEEK noRevert must be 60 minutes");
+
+    // MONTH / ALL: кулдаун 60 мин, oiMargin 1.25 (гистерезис 25%), persistCount 6, corridor 12%, noRevert 180 мин
+    const monthGate = getHorizonGateConfig("MONTH");
+    assert.strictEqual(getHorizonCooldownMs("MONTH"), 60 * 60 * 1000, "MONTH cooldown must be 60 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("MONTH"), 0.25, "MONTH hysteresis threshold must be 0.25 (25%)");
+    assert.strictEqual(monthGate.persistCount, 6, "MONTH persistCount must be 6");
+    assert.strictEqual(monthGate.corridorRatio, 0.120, "MONTH corridorRatio must be 12%");
+    assert.strictEqual(monthGate.noRevertMs, 180 * 60 * 1000, "MONTH noRevert must be 180 minutes");
+    assert.strictEqual(getHorizonCooldownMs("ALL"), 60 * 60 * 1000, "ALL cooldown must be 60 minutes");
+    assert.strictEqual(getHorizonHysteresisThreshold("ALL"), 0.25, "ALL hysteresis threshold must be 0.25 (25%)");
 
     console.log(
-      `✅ [PASS] Test 20: Горизонтно-зависимые параметры стабилизатора подтверждены: DAY(30м / 20%), WEEK(60м / 25%), MONTH(120м / 30%), ALL(120м / 30%)`
+      `✅ [PASS] Test 20: Адаптивные параметры стабилизатора подтверждены: DAY(5м / 10% / 3 / 2.5% / 20м), WEEK(20м / 15% / 4 / 6% / 60м), MONTH/ALL(60м / 25% / 6 / 12% / 180м)`
     );
     passed++;
   }
+
 
   // ---------------------------------------------------------------------------
   // TEST 21: Авто-миграция reason="source_switch" при смене источника данных
@@ -2357,8 +2372,317 @@ async function runTests() {
     passed++;
   }
 
+  // ---------------------------------------------------------------------------
+  // TEST 37: Сессионный TTL движка GEX и проверка торговых сессий US/MOEX
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      isUsOptionsSessionActive,
+      isMoexSessionActive,
+      isMoexAsset,
+      getGexCacheTtlMs
+    } = await import("../src/lib/marketSessions");
+
+    // 1. Проверка зимнего расписания США: 15 января 2026 (четверг)
+    // 17:30 - 00:00 МСК = активно (14:30 - 21:00 UTC)
+    const winterActiveUs = new Date(Date.UTC(2026, 0, 15, 16, 0, 0)); // 19:00 MSK (16:00 UTC) -> active
+    const winterInactiveUs = new Date(Date.UTC(2026, 0, 15, 12, 0, 0)); // 15:00 MSK (12:00 UTC) -> inactive (до 17:30)
+    assert.strictEqual(isUsOptionsSessionActive(winterActiveUs), true, "Winter weekday 19:00 MSK must be active US options session");
+    assert.strictEqual(isUsOptionsSessionActive(winterInactiveUs), false, "Winter weekday 15:00 MSK must be inactive");
+
+    // 2. Проверка летнего расписания США: 15 июня 2026 (понедельник)
+    // 16:30 - 23:00 МСК = активно (13:30 - 20:00 UTC)
+    const summerActiveUs = new Date(Date.UTC(2026, 5, 15, 14, 0, 0)); // 17:00 MSK (14:00 UTC) -> active
+    const summerInactiveUs = new Date(Date.UTC(2026, 5, 15, 21, 0, 0)); // 00:00 MSK next day (21:00 UTC) -> inactive (после 23:00)
+    assert.strictEqual(isUsOptionsSessionActive(summerActiveUs), true, "Summer weekday 17:00 MSK must be active US options session");
+    assert.strictEqual(isUsOptionsSessionActive(summerInactiveUs), false, "Summer weekday 00:00 MSK must be inactive");
+
+    // 3. Выходной день: суббота 17 января 2026
+    const weekendUs = new Date(Date.UTC(2026, 0, 17, 16, 0, 0));
+    assert.strictEqual(isUsOptionsSessionActive(weekendUs), false, "Weekend must be inactive");
+
+    // 4. Сессия МосБиржи: 07:00 - 23:50 МСК в будни
+    const moexActiveDate = new Date(Date.UTC(2026, 0, 15, 8, 0, 0)); // 11:00 MSK -> active
+    const moexNightDate = new Date(Date.UTC(2026, 0, 15, 1, 0, 0)); // 04:00 MSK -> inactive
+    assert.strictEqual(isMoexSessionActive(moexActiveDate), true, "Weekday 11:00 MSK must be active MOEX session");
+    assert.strictEqual(isMoexSessionActive(moexNightDate), false, "Weekday 04:00 MSK must be inactive MOEX session");
+    assert.strictEqual(isMoexAsset("MOEX_GOLD"), true);
+    assert.strictEqual(isMoexAsset("SI"), true);
+    assert.strictEqual(isMoexAsset("XAUUSD"), false);
+
+    // 5. Проверка динамического TTL
+    assert.strictEqual(getGexCacheTtlMs("XAUUSD", winterActiveUs), 90 * 1000, "Active US session must give 90s TTL");
+    assert.strictEqual(getGexCacheTtlMs("XAUUSD", winterInactiveUs), 15 * 60 * 1000, "Outside US session must give 15m TTL");
+    assert.strictEqual(getGexCacheTtlMs("MOEX_GOLD", moexActiveDate), 60 * 1000, "Active MOEX session must give 60s TTL");
+    assert.strictEqual(getGexCacheTtlMs("MOEX_GOLD", moexNightDate), 15 * 60 * 1000, "Night MOEX must give 15m TTL");
+
+    console.log(
+      `✅ [PASS] Test 37: Сессионный TTL движка GEX подтвержден: активная US-сессия (зима 17:30–00:00, лето 16:30–23:00) -> 90с, MOEX в часы торгов -> 60с, вне сессий -> 15м`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 38: Авто-миграция по персистентному лидеру OI (oi_leader_persistent) и фильтрация спайка
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      resetStabilizedGexCache,
+      getStabilizedGexReport,
+      getStabilizerMigrationLog
+    } = await import("../server/gexStateManager");
+
+    const asset = "TEST_PERSIST_ASSET";
+    resetStabilizedGexCache(asset, "DAY", { force: true });
+
+    // Исходная книга: Call Wall 4040 (OI 10000), 4050 (OI 9000)
+    const baseStrikes: GexStrikeData[] = [
+      { strike: 4000, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
+      { strike: 4040, callGex: 150, putGex: -5, netGex: 145, callOi: 10000, putOi: 500, totalOi: 10500, callVolume: 800, putVolume: 50, iv: 0.18 },
+      { strike: 4050, callGex: 80, putGex: -5, netGex: 75, callOi: 9000, putOi: 500, totalOi: 9500, callVolume: 400, putVolume: 50, iv: 0.18 }
+    ];
+
+    const t0 = Date.now();
+    const repInit: GexMarketReport = {
+      asset: asset as any,
+      horizon: "DAY",
+      spotPrice: 4020,
+      timestamp: new Date(t0).toISOString(),
+      source: "Test Feed",
+      netGexTotal: 90,
+      gammaFlip: 4010,
+      callWall: 4040,
+      putWall: 4000,
+      maxPain: 4020,
+      strikes: baseStrikes
+    };
+
+    // 1. Инициализация стабилизатора в t0
+    const initRes = await getStabilizedGexReport(asset, "DAY", 4020, repInit, t0);
+    assert.strictEqual(initRes.callWall, 4040, "Initial CW must be 4040");
+
+    // 2. Одиночный ложный спайк в t0 + 1 мин: страйк 4060 получает +30% OI на один опрос
+    const spikeStrikes: GexStrikeData[] = [
+      { strike: 4000, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
+      { strike: 4040, callGex: 150, putGex: -5, netGex: 145, callOi: 10000, putOi: 500, totalOi: 10500, callVolume: 800, putVolume: 50, iv: 0.18 },
+      { strike: 4060, callGex: 160, putGex: -5, netGex: 155, callOi: 13000, putOi: 500, totalOi: 13500, callVolume: 900, putVolume: 50, iv: 0.18 }
+    ];
+    const repSpike: GexMarketReport = {
+      ...repInit,
+      callWall: 4060,
+      strikes: spikeStrikes,
+      timestamp: new Date(t0 + 60 * 1000).toISOString()
+    };
+    // На одиночном спайке кулдаун 5 мин от init ещё не прошёл -> миграции нет!
+    const spikeRes = await getStabilizedGexReport(asset, "DAY", 4020, repSpike, t0 + 60 * 1000);
+    assert.strictEqual(spikeRes.callWall, 4040, "Single spike inside cooldown must NOT trigger migration");
+
+    // 3. Персистентный лидер: страйк 4050 становится лидером с умеренным OI (10500 vs 10000, прирост всего +5% < oiMargin 1.10)
+    // Но удерживается 3 отчёта подряд при прошедшем кулдауне 5 мин (t0 + 6 мин)
+    const persistStrikes: GexStrikeData[] = [
+      { strike: 4000, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
+      { strike: 4040, callGex: 140, putGex: -5, netGex: 135, callOi: 10000, putOi: 500, totalOi: 10500, callVolume: 500, putVolume: 50, iv: 0.18 },
+      { strike: 4050, callGex: 145, putGex: -5, netGex: 140, callOi: 10500, putOi: 500, totalOi: 11000, callVolume: 600, putVolume: 50, iv: 0.18 }
+    ];
+    const repPersist: GexMarketReport = {
+      ...repInit,
+      callWall: 4050,
+      strikes: persistStrikes
+    };
+
+    // Опрос 1 (t0 + 6 мин >= 5 мин cooldown): кандидат 4050 зарегистрирован (count = 1)
+    await getStabilizedGexReport(asset, "DAY", 4020, { ...repPersist, timestamp: new Date(t0 + 6 * 60 * 1000).toISOString() }, t0 + 6 * 60 * 1000);
+    // Опрос 2 (t0 + 7.5 мин): кандидат 4050 подтвержден (count = 2)
+    await getStabilizedGexReport(asset, "DAY", 4020, { ...repPersist, timestamp: new Date(t0 + 7.5 * 60 * 1000).toISOString() }, t0 + 7.5 * 60 * 1000);
+    // Опрос 3 (t0 + 9 мин): кандидат 4050 достигает persistCount = 3 -> миграция!
+    const persistRes = await getStabilizedGexReport(asset, "DAY", 4020, { ...repPersist, timestamp: new Date(t0 + 9 * 60 * 1000).toISOString() }, t0 + 9 * 60 * 1000);
+
+    assert.strictEqual(persistRes.callWall, 4050, "Persistent candidate held for 3 reports must migrate to 4050");
+    const logs = getStabilizerMigrationLog(asset, "DAY");
+    const persistLog = logs.find(l => l.newValue === 4050);
+    assert.ok(persistLog, "Migration log must contain record for 4050");
+    assert.strictEqual(persistLog.reason, "oi_leader_persistent", "Reason must be oi_leader_persistent when margin not met but count >= 3");
+
+    console.log(
+      `✅ [PASS] Test 38: Персистентный лидер OI: спайк +30% внутри кулдауна отфильтрован; кандидат +5% OI удержан 3 отчёта подряд -> миграция с reason='oi_leader_persistent'`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 39: Миграция по дрейфу коридора (reason='corridor_drift')
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      resetStabilizedGexCache,
+      getStabilizedGexReport,
+      getStabilizerMigrationLog
+    } = await import("../server/gexStateManager");
+
+    const asset = "TEST_DRIFT_ASSET";
+    resetStabilizedGexCache(asset, "DAY", { force: true });
+
+    // Исходная стена CW 4020, шаг 10
+    const baseStrikes: GexStrikeData[] = [
+      { strike: 3980, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
+      { strike: 4020, callGex: 150, putGex: -5, netGex: 145, callOi: 12000, putOi: 500, totalOi: 12500, callVolume: 800, putVolume: 50, iv: 0.18 },
+      { strike: 4040, callGex: 120, putGex: -5, netGex: 115, callOi: 9000, putOi: 500, totalOi: 9500, callVolume: 400, putVolume: 50, iv: 0.18 }
+    ];
+
+    const t0 = 1793650000000;
+    const repInit: GexMarketReport = {
+      asset: asset as any,
+      horizon: "DAY",
+      spotPrice: 4000,
+      timestamp: new Date(t0).toISOString(),
+      source: "Test Feed",
+      netGexTotal: 90,
+      gammaFlip: 3990,
+      callWall: 4020,
+      putWall: 3980,
+      maxPain: 4000,
+      strikes: baseStrikes
+    };
+
+    await getStabilizedGexReport(asset, "DAY", 4000, repInit, t0);
+
+    // Свежая книга: CW сместился на 4040 (|4040 - 4020| = 20 = 2 шага сетки)
+    const driftStrikes: GexStrikeData[] = [
+      { strike: 3980, callGex: 0, putGex: -50, netGex: -50, callOi: 500, putOi: 15000, totalOi: 15500, callVolume: 100, putVolume: 1000, iv: 0.18 },
+      { strike: 4020, callGex: 80, putGex: -5, netGex: 75, callOi: 7000, putOi: 500, totalOi: 7500, callVolume: 200, putVolume: 50, iv: 0.18 },
+      { strike: 4040, callGex: 160, putGex: -5, netGex: 155, callOi: 8000, putOi: 500, totalOi: 8500, callVolume: 600, putVolume: 50, iv: 0.18 }
+    ];
+    const repDrift: GexMarketReport = {
+      ...repInit,
+      callWall: 4040,
+      strikes: driftStrikes
+    };
+
+    // Опросы 1, 2, 3 спустя 6 минут (кулдаун 5м пройден)
+    await getStabilizedGexReport(asset, "DAY", 4000, { ...repDrift, timestamp: new Date(t0 + 6 * 60 * 1000).toISOString() }, t0 + 6 * 60 * 1000);
+    await getStabilizedGexReport(asset, "DAY", 4000, { ...repDrift, timestamp: new Date(t0 + 7.5 * 60 * 1000).toISOString() }, t0 + 7.5 * 60 * 1000);
+    const driftRes = await getStabilizedGexReport(asset, "DAY", 4000, { ...repDrift, timestamp: new Date(t0 + 9 * 60 * 1000).toISOString() }, t0 + 9 * 60 * 1000);
+
+    assert.strictEqual(driftRes.callWall, 4040, "Drift >= 2 steps held for 3 reports must migrate to 4040");
+    const logs = getStabilizerMigrationLog(asset, "DAY");
+    const driftLog = logs.find(l => l.newValue === 4040);
+    assert.ok(driftLog, "Migration log must contain entry for 4040 drift");
+    assert.strictEqual(driftLog.reason, "corridor_drift", "Reason must be corridor_drift");
+    assert.ok(driftLog.spotPrice !== undefined, "Log entry must record spotPrice");
+    assert.ok(driftLog.freshValues !== undefined, "Log entry must record freshValues");
+    assert.ok(driftLog.topOi !== undefined, "Log entry must record topOi");
+
+    console.log(
+      `✅ [PASS] Test 39: Миграция reason='corridor_drift': сдвиг >= 2 шагов сетки удержан 3 отчёта подряд -> CW обновлен до 4040 с аудитом spot/fresh/topOi`
+    );
+    passed++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TEST 40: Anti-Ping-Pong v2, No-Revert Window и генерация 30-мин лога сессии
+  // ---------------------------------------------------------------------------
+  {
+    const {
+      recordStabilizerMigration,
+      getStabilizerMigrationLog
+    } = await import("../server/gexStateManager");
+
+    const t0 = 1793650000000;
+    const asset = "TEST_PINGPONG_V2";
+
+    // 1. Миграция CW: 4000 -> 4020 в t0 (DAY: cooldown 5m, noRevert 20m)
+    const m1 = recordStabilizerMigration({
+      timestamp: new Date(t0).toISOString(),
+      asset,
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 4000,
+      newValue: 4020,
+      spotPrice: 3990,
+      reason: "cooldown+OI",
+      details: "cooldown passed & OI margin met"
+    });
+    assert.strictEqual(m1, true, "First migration 4000 -> 4020 must be allowed");
+
+    // 2. Две миграции DAY-уровня с интервалом 2 мин (t0 + 2m < 5m cooldown) ЗАПРЕЩЕНЫ
+    const m2 = recordStabilizerMigration({
+      timestamp: new Date(t0 + 2 * 60 * 1000).toISOString(),
+      asset,
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 4020,
+      newValue: 4040,
+      spotPrice: 3990,
+      reason: "cooldown+OI",
+      details: "premature attempt at 2 min"
+    });
+    assert.strictEqual(m2, false, "Migration at 2 min must be blocked by 5 min cooldown");
+
+    // 3. Миграция с интервалом 6 мин (t0 + 6m >= 5m cooldown) при персистентном лидере РАЗРЕШЕНА
+    const m3 = recordStabilizerMigration({
+      timestamp: new Date(t0 + 6 * 60 * 1000).toISOString(),
+      asset,
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 4020,
+      newValue: 4040,
+      spotPrice: 4000,
+      reason: "oi_leader_persistent",
+      details: "6 min elapsed >= 5m cooldown & 3 consecutive reports"
+    });
+    assert.strictEqual(m3, true, "Migration at 6 min with oi_leader_persistent must be allowed");
+
+    // 4. Реверт A -> B -> A внутри 20 мин (t0 + 10m < 20m noRevert) ЗАПРЕЩЕН
+    const m4RevertBlocked = recordStabilizerMigration({
+      timestamp: new Date(t0 + 10 * 60 * 1000).toISOString(),
+      asset,
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 4040,
+      newValue: 4020, // Попытка возврата к 4020 (ушли из него в t0 + 6m, прошло 4м < 20м)
+      spotPrice: 4010,
+      reason: "cooldown+OI",
+      details: "attempted rollback to previous level inside noRevert window"
+    });
+    assert.strictEqual(m4RevertBlocked, false, "Reverting to previous level within 20m noRevert window must be blocked");
+
+    // 5. Но при физическом пробое цены (breach) возврат к уровню РАЗРЕШЕН
+    const m5BreachAllowed = recordStabilizerMigration({
+      timestamp: new Date(t0 + 12 * 60 * 1000).toISOString(),
+      asset,
+      horizon: "DAY",
+      level: "CW",
+      oldValue: 4040,
+      newValue: 4020,
+      spotPrice: 4055, // spot физически пробил уровень
+      reason: "breach",
+      details: "physical price breakout > 0.15% override"
+    });
+    assert.strictEqual(m5BreachAllowed, true, "Physical price breach MUST bypass noRevert guard");
+
+    // Генерация примера 30-минутного лога миграций в активную сессию
+    console.log(`\n📋 [ДЕМОНСТРАЦИЯ] Пример 30-минутного журнала миграций GEX в активную сессию (XAUUSD DAY):`);
+    console.log(`─────────────────────────────────────────────────────────────────────────────────────────`);
+    const demoLogs = [
+      { minute: "00:00", level: "CW", transition: "4030 -> 4040", reason: "oi_leader_persistent", details: "held 3 reports (90s*3), cooldown 5m passed | spot=4015.2 | fresh=[CW:4040, PW:3980]" },
+      { minute: "06:30", level: "PW", transition: "3980 -> 3990", reason: "cooldown+OI", details: "OI 18200 >= 16000 * 1.10 (DAY margin 10%) | spot=4018.0" },
+      { minute: "14:00", level: "FLIP", transition: "4005 -> 4015", reason: "cooldown+OI", details: "flip shift 0.25% inside corridor [3990, 4040] | spot=4022.4" },
+      { minute: "21:30", level: "CW", transition: "4040 -> 4060", reason: "corridor_drift", details: "|4040 - 4060| >= 2 steps (20) held 3 reports | spot=4038.5 | topCalls=[4060:14500]" },
+      { minute: "28:00", level: "PAIN", transition: "4015 -> 4025", reason: "cooldown+OI", details: "min payout shifted to 4025 | spot=4035.1" }
+    ];
+    demoLogs.forEach(d => {
+      console.log(`[+${d.minute}] ${d.level.padEnd(4)} | ${d.transition.padEnd(14)} | reason: ${d.reason.padEnd(20)} | ${d.details}`);
+    });
+    console.log(`─────────────────────────────────────────────────────────────────────────────────────────\n`);
+
+    console.log(
+      `✅ [PASS] Test 40: Anti-Ping-Pong v2 подтвержден: 2 мин (<5м) заблокировано, 6 мин (>=5м) разрешено, реверт A->B->A внутри 20 мин запрещен, пробой (breach) разрешен`
+    );
+    passed++;
+  }
+
   console.log(`\n═══════════════════════════════════════════════════════════════════`);
-  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/36 PASS`);
+  console.log(`🎉 ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ: ${passed}/40 PASS`);
   console.log(`═══════════════════════════════════════════════════════════════════`);
 }
 

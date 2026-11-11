@@ -36,6 +36,17 @@ export function isTradeActive(): boolean {
   return isTradeActiveChecker();
 }
 
+export interface CandidateStrikeRecord {
+  strike: number;
+  count: number;
+  firstSeenAt: number;
+}
+
+export interface PreviousLevelRecord {
+  value: number;
+  migratedAt: number;
+}
+
 export interface StabilizedGexRecord {
   asset: string;
   horizon: ExpiryHorizon;
@@ -51,9 +62,36 @@ export interface StabilizedGexRecord {
   maxPainCost: number;
   isLockedByTrade: boolean;
   dataSource?: string;
+
+  // Persistence tracking for candidate strikes
+  cwCandidate?: CandidateStrikeRecord;
+  pwCandidate?: CandidateStrikeRecord;
+  flipCandidate?: CandidateStrikeRecord;
+  painCandidate?: CandidateStrikeRecord;
+
+  // Drift candidate tracking (|stabilized - fresh| >= 2 steps)
+  cwDriftCandidate?: CandidateStrikeRecord;
+  pwDriftCandidate?: CandidateStrikeRecord;
+
+  // Previous levels for Anti-Ping-Pong v2 no-revert window
+  previousCw?: PreviousLevelRecord;
+  previousPw?: PreviousLevelRecord;
+  previousFlip?: PreviousLevelRecord;
+  previousPain?: PreviousLevelRecord;
+
+  // Migration tracking
+  lastMigrationAt?: number;
+  lastMigrationReason?: string;
 }
 
-export type StabilizerMigrationReason = "breach" | "cooldown+OI" | "new session" | "reset" | "source_switch";
+export type StabilizerMigrationReason =
+  | "breach"
+  | "cooldown+OI"
+  | "oi_leader_persistent"
+  | "corridor_drift"
+  | "new session"
+  | "reset"
+  | "source_switch";
 
 export interface StabilizerMigrationEntry {
   timestamp: string;
@@ -82,49 +120,124 @@ const migrationAuditLog: StabilizerMigrationEntry[] = [];
 const pendingResetKeys = new Set<string>();
 let globalResetPending = false;
 
-// 1. Горизонтно-зависимые параметры стабилизатора:
-// DAY: кулдаун 30 мин, гистерезис OI ×1.20;
-// WEEK: кулдаун 60 мин, ×1.25 (как сейчас);
-// MONTH/ALL: кулдаун 120 мин, ×1.30.
-export function getHorizonCooldownMs(horizon?: ExpiryHorizon | string): number {
+/**
+ * 2. Адаптивные ворота миграции по горизонтам:
+ * DAY: cooldown 5 мин, oiMargin 1.10, persistCount 3, corridor 2.5%, noRevert 20 мин;
+ * WEEK: 20 мин / 1.15 / 4 / 6% / 60 мин;
+ * MONTH и ALL: 60 мин / 1.25 / 6 / 12% / 180 мин.
+ */
+export interface HorizonGateConfig {
+  cooldownMs: number;
+  oiMargin: number;
+  persistCount: number;
+  corridorRatio: number;
+  noRevertMs: number;
+}
+
+export const HORIZON_GATES: Record<string, HorizonGateConfig> = {
+  DAY: {
+    cooldownMs: 5 * 60 * 1000,
+    oiMargin: 1.10,
+    persistCount: 3,
+    corridorRatio: 0.025,
+    noRevertMs: 20 * 60 * 1000
+  },
+  WEEK: {
+    cooldownMs: 20 * 60 * 1000,
+    oiMargin: 1.15,
+    persistCount: 4,
+    corridorRatio: 0.060,
+    noRevertMs: 60 * 60 * 1000
+  },
+  MONTH: {
+    cooldownMs: 60 * 60 * 1000,
+    oiMargin: 1.25,
+    persistCount: 6,
+    corridorRatio: 0.120,
+    noRevertMs: 180 * 60 * 1000
+  },
+  ALL: {
+    cooldownMs: 60 * 60 * 1000,
+    oiMargin: 1.25,
+    persistCount: 6,
+    corridorRatio: 0.120,
+    noRevertMs: 180 * 60 * 1000
+  }
+};
+
+export function getHorizonGateConfig(horizon?: ExpiryHorizon | string): HorizonGateConfig {
   const norm = (horizon || "").toUpperCase();
-  if (norm === "DAY") return 30 * 60 * 1000; // 30 мин
-  if (norm === "WEEK") return 60 * 60 * 1000; // 60 мин
-  return 120 * 60 * 1000; // 120 мин (MONTH / ALL)
+  if (norm === "DAY") return HORIZON_GATES.DAY;
+  if (norm === "WEEK") return HORIZON_GATES.WEEK;
+  return HORIZON_GATES.MONTH;
+}
+
+export function getHorizonCooldownMs(horizon?: ExpiryHorizon | string): number {
+  return getHorizonGateConfig(horizon).cooldownMs;
 }
 
 export function getHorizonHysteresisThreshold(horizon?: ExpiryHorizon | string): number {
-  const norm = (horizon || "").toUpperCase();
-  if (norm === "DAY") return 0.20; // x1.20 (+20% OI)
-  if (norm === "WEEK") return 0.25; // x1.25 (+25% OI)
-  return 0.30; // x1.30 (+30% OI)
+  return Math.round((getHorizonGateConfig(horizon).oiMargin - 1) * 100) / 100;
 }
 
-// Minimum cooldown period before considering a normal level shift (default fallback 1 hour = 3600s)
-export const MIN_LEVEL_COOLDOWN_MS = 60 * 60 * 1000;
-// Hysteresis threshold: new level must have at least +25% greater volume/OI to trigger migration before cooldown
-export const HYSTERESIS_THRESHOLD = 0.25;
+// Minimum cooldown period before considering a normal level shift (default fallback 5 min)
+export const MIN_LEVEL_COOLDOWN_MS = 5 * 60 * 1000;
+// Hysteresis threshold default: +10% for DAY
+export const HYSTERESIS_THRESHOLD = 0.10;
 
 export function recordStabilizerMigration(entry: StabilizerMigrationEntry): boolean {
-  // STRICT COOLDOWN GUARD (Anti-Ping-Pong):
-  // Two migrations of the same level with reason "cooldown+OI" within < horizonCooldownMs are strictly prohibited
-  if (entry.reason === "cooldown+OI") {
-    const entryTime = new Date(entry.timestamp).getTime();
+  const gateConfig = getHorizonGateConfig(entry.horizon);
+  const entryTime = new Date(entry.timestamp).getTime();
+
+  // (а) МИНИМУМ-ИНТЕРВАЛ = cooldown горизонта для ЛЮБОЙ причины, кроме breach, reset и source_switch
+  const isCooldownExempt =
+    entry.reason === "breach" ||
+    entry.reason === "reset" ||
+    entry.reason === "source_switch";
+
+  if (!isCooldownExempt) {
     const prevMigration = migrationAuditLog.slice().reverse().find(
-      m => m.asset === entry.asset && m.horizon === entry.horizon && m.level === entry.level && m.reason === "cooldown+OI"
+      m => m.asset === entry.asset &&
+           m.horizon === entry.horizon &&
+           m.level === entry.level &&
+           m.reason !== "reset"
     );
     if (prevMigration) {
       const prevTime = new Date(prevMigration.timestamp).getTime();
       const diffMs = entryTime - prevTime;
-      const requiredCooldownMs = getHorizonCooldownMs(entry.horizon);
+      const requiredCooldownMs = gateConfig.cooldownMs;
       if (diffMs < requiredCooldownMs) {
         console.warn(
-          `[GEX Stabilizer] BLOCKED duplicate/premature cooldown+OI migration for ${entry.asset} ${entry.horizon} ${entry.level} (${entry.oldValue} -> ${entry.newValue}): only ${Math.round(diffMs / 60000)}m elapsed (< ${Math.round(requiredCooldownMs / 60000)}m)`
+          `[GEX Stabilizer] BLOCKED premature ${entry.reason} migration for ${entry.asset} ${entry.horizon} ${entry.level} (${entry.oldValue} -> ${entry.newValue}): only ${Math.round(diffMs / 60000)}m elapsed (< ${Math.round(requiredCooldownMs / 60000)}m)`
         );
         return false;
       }
     }
   }
+
+  // (б) NO-REVERT WINDOW: возврат уровня к прежнему значению запрещён в течение noRevert минут,
+  // кроме breach цены через прежнее значение.
+  if (entry.reason !== "breach" && entry.oldValue !== null) {
+    const prevDeparture = migrationAuditLog.slice().reverse().find(
+      m => m.asset === entry.asset &&
+           m.horizon === entry.horizon &&
+           m.level === entry.level &&
+           m.oldValue === entry.newValue &&
+           m.reason !== "reset"
+    );
+    if (prevDeparture) {
+      const departureTime = new Date(prevDeparture.timestamp).getTime();
+      const timeSinceDeparture = entryTime - departureTime;
+      const requiredNoRevertMs = gateConfig.noRevertMs;
+      if (timeSinceDeparture < requiredNoRevertMs) {
+        console.warn(
+          `[GEX Stabilizer] BLOCKED ping-pong no-revert migration for ${entry.asset} ${entry.horizon} ${entry.level} (attempted return to ${entry.newValue}): only ${Math.round(timeSinceDeparture / 60000)}m elapsed within noRevert window (< ${Math.round(requiredNoRevertMs / 60000)}m)`
+        );
+        return false;
+      }
+    }
+  }
+
 
   migrationAuditLog.push(entry);
   if (migrationAuditLog.length > MAX_MIGRATION_LOG_ENTRIES) {
@@ -285,6 +398,9 @@ export function enrichReportWithStandardLabels(report: GexMarketReport, spotPric
     outOfCorridor,
     flipOutOfCorridor,
     painOutOfCorridor,
+    lastMigrationAt: report.lastMigrationAt,
+    lastMigrationReason: report.lastMigrationReason,
+    nextMigrationAllowedAt: report.nextMigrationAllowedAt,
     migrationLog: recentMigrations,
     freshValues: {
       callWall: freshWalls.callWall,
@@ -326,12 +442,13 @@ export async function getStabilizedGexReport(
   asset: string,
   horizon: ExpiryHorizon = "WEEK",
   spotPrice?: number,
-  overrideFreshReport?: GexMarketReport
+  overrideFreshReport?: GexMarketReport,
+  overrideNow?: number
 ): Promise<GexMarketReport> {
   const assetUpper = asset.toUpperCase();
   const horizonUpperKey = horizon.toUpperCase() as ExpiryHorizon;
   const key = `${assetUpper}_${horizonUpperKey}`;
-  const now = Date.now();
+  const now = typeof overrideNow === "number" ? overrideNow : Date.now();
   const isTradeActive = isTradeActiveChecker();
 
   const cached = stabilizedCache.get(key);
@@ -510,14 +627,15 @@ export async function getStabilizedGexReport(
     cached.putWallOi = currentPwStrikeInFresh.putOi;
   }
 
-  // 1. Горизонтно-зависимые параметры стабилизатора:
-  // DAY: кулдаун 30 мин, гистерезис OI ×1.20;
-  // WEEK: кулдаун 60 мин, ×1.25;
-  // MONTH/ALL: кулдаун 120 мин, ×1.30.
-  const horizonCooldownMs = getHorizonCooldownMs(horizonUpperKey);
-  const horizonHysteresis = getHorizonHysteresisThreshold(horizonUpperKey);
+  // 1. Горизонтно-зависимые параметры стабилизатора (таблица адаптивных ворот):
+  // DAY: cooldown 5 мин, oiMargin 1.10, persistCount 3, corridor 2.5%, noRevert 20 мин;
+  // WEEK: 20 мин / 1.15 / 4 / 6% / 60 мин;
+  // MONTH и ALL: 60 мин / 1.25 / 6 / 12% / 180 мин.
+  const gateConfig = getHorizonGateConfig(horizonUpperKey);
+  const horizonCooldownMs = gateConfig.cooldownMs;
+  const maxCorridorRatio = gateConfig.corridorRatio;
 
-  // Шаг сетки страйков для детекции сдвига > 2 шагов
+  // Шаг сетки страйков для детекции сдвига >= 2 шагов
   let strikeStep = 10;
   if (freshReport.strikes && freshReport.strikes.length >= 2) {
     const sortedStrikes = freshReport.strikes.slice().sort((a, b) => a.strike - b.strike);
@@ -541,14 +659,6 @@ export async function getStabilizedGexReport(
 
   // 4. ПРОБОЙ УРОВНЕЙ (Breach Detection) & ВЫХОД ЗА ПРЕДЕЛЫ КОРИДОРА:
   const breachBufferPct = 0.0015; // 0.15% подтвержденного пробоя
-  const maxCorridorRatio =
-    horizonUpper === "DAY"
-      ? 0.055
-      : horizonUpper === "WEEK"
-      ? 0.100
-      : horizonUpper === "MONTH"
-      ? 0.200
-      : 0.300;
 
   // Истинный пробой Call Wall вверх: спот физически превысил уровень с подтверждением
   const isCwBreakout = currentCw > 0 && spot > currentCw * (1 + breachBufferPct);
@@ -581,31 +691,65 @@ export async function getStabilizedGexReport(
   const isSyntheticToRealCw = Boolean(cached.report.isSynthetic && !freshReport.isSynthetic);
   const isOldCwVanished = !currentCwStrikeInFresh || (currentCwStrikeInFresh.callOi || 0) === 0;
 
+  // Track CW candidate for OI leader persistence
+  if (newCw !== currentCw) {
+    if (cached.cwCandidate && cached.cwCandidate.strike === newCw) {
+      cached.cwCandidate.count += 1;
+    } else {
+      cached.cwCandidate = { strike: newCw, count: 1, firstSeenAt: now };
+    }
+  } else {
+    cached.cwCandidate = undefined;
+  }
+
+  // Track CW candidate for corridor_drift (|stabilized - fresh| >= 2 * strikeStep)
+  const isCwDiff2Steps = Math.abs(newCw - currentCw) >= 2 * strikeStep - 1e-6;
+  if (isCwDiff2Steps) {
+    if (cached.cwDriftCandidate && cached.cwDriftCandidate.strike === newCw) {
+      cached.cwDriftCandidate.count += 1;
+    } else {
+      cached.cwDriftCandidate = { strike: newCw, count: 1, firstSeenAt: now };
+    }
+  } else {
+    cached.cwDriftCandidate = undefined;
+  }
+
   // 1a. Стабилизация Call Wall (Потолок):
   if (newCw !== currentCw) {
     const prevCwOi = cached.callWallOi;
-    const isNewCwStronger = new Decimal(newCwOi).gte(new Decimal(prevCwOi).times(new Decimal(1).plus(horizonHysteresis)));
+    const isNewCwStronger = prevCwOi > 0
+      ? new Decimal(newCwOi).gte(new Decimal(prevCwOi).times(new Decimal(gateConfig.oiMargin)))
+      : newCwOi > 0;
+    const isCwPersistent = Boolean(cached.cwCandidate && cached.cwCandidate.count >= gateConfig.persistCount);
+    const isCwDriftPersistent = Boolean(cached.cwDriftCandidate && cached.cwDriftCandidate.count >= gateConfig.persistCount);
+
     const shouldMigrateCw =
       isCwSourceSwitch ||
       isCwBreached ||
-      isNewDaySession ||
+      (isNewDaySession && isCwCooldownPassed) ||
       isSyntheticToRealCw ||
       isOldCwVanished ||
-      (isCwCooldownPassed && isNewCwStronger);
+      (isCwCooldownPassed && (isNewCwStronger || isCwPersistent || isCwDriftPersistent));
 
     if (shouldMigrateCw) {
-      const reason: StabilizerMigrationReason = isCwSourceSwitch
-        ? "source_switch"
-        : isCwBreached
-        ? "breach"
-        : isNewDaySession
-        ? "new session"
-        : isSyntheticToRealCw
-        ? "reset"
-        : "cooldown+OI";
+      let reason: StabilizerMigrationReason = "cooldown+OI";
+      if (isCwSourceSwitch) {
+        reason = "source_switch";
+      } else if (isCwBreached || isOldCwVanished) {
+        reason = "breach";
+      } else if (isSyntheticToRealCw) {
+        reason = "reset";
+      } else if (isNewDaySession) {
+        reason = "new session";
+      } else if (isCwDriftPersistent) {
+        reason = "corridor_drift";
+      } else if (isCwPersistent && !isNewCwStronger) {
+        reason = "oi_leader_persistent";
+      } else {
+        reason = "cooldown+OI";
+      }
 
-      // Hard anti-ping-pong guard: if reason is cooldown+OI, cooldown MUST be passed!
-      if (reason === "cooldown+OI" && !isCwCooldownPassed) {
+      if ((reason === "cooldown+OI" || reason === "oi_leader_persistent" || reason === "corridor_drift") && !isCwCooldownPassed) {
         console.warn(
           `[GEX Stabilizer] Blocked CW migration: cooldown not passed (${Math.round(timeSinceCwUpdate / 60000)}m < ${Math.round(horizonCooldownMs / 60000)}m)`
         );
@@ -614,12 +758,16 @@ export async function getStabilizedGexReport(
           reason === "source_switch"
             ? `source switch (${prevSource} -> ${currentSource}): fresh CW=${newCw} differs from stabilized CW=${currentCw} by > 2 steps (${2 * strikeStep})`
             : reason === "breach"
-            ? `spot=${spot} breached CW=${currentCw} (${isCwBreakout ? "breakout > +0.15%" : "corridor ratio exceeded"})`
+            ? `spot=${spot} breached CW=${currentCw} (${isCwBreakout ? "breakout > +0.15%" : `corridor ratio ${(gateConfig.corridorRatio * 100).toFixed(1)}% exceeded`})`
             : reason === "new session"
             ? `exchange(${exchangeTz}) session roll ${lastDateStr} -> ${nowDateStr}`
             : reason === "reset"
             ? `synthetic-to-real transition: adopting exchange chain (CW=${newCw}, OI=${newCwOi})`
-            : `cooldown=${Math.round(timeSinceCwUpdate / 60000)}m>=${Math.round(horizonCooldownMs / 60000)}m & newCwOi=${newCwOi}>=prevCwOi=${prevCwOi}*${(1 + horizonHysteresis).toFixed(2)}`;
+            : reason === "corridor_drift"
+            ? `corridor_drift: |stabilized ${currentCw} - fresh ${newCw}| >= 2 steps (${2 * strikeStep}) held for ${cached.cwDriftCandidate?.count || gateConfig.persistCount} reports (cooldown=${Math.round(timeSinceCwUpdate / 60000)}m >= ${Math.round(horizonCooldownMs / 60000)}m)`
+            : reason === "oi_leader_persistent"
+            ? `oi_leader_persistent: new candidate CW=${newCw} held for ${cached.cwCandidate?.count || gateConfig.persistCount} reports (cooldown=${Math.round(timeSinceCwUpdate / 60000)}m >= ${Math.round(horizonCooldownMs / 60000)}m)`
+            : `cooldown=${Math.round(timeSinceCwUpdate / 60000)}m>=${Math.round(horizonCooldownMs / 60000)}m & newCwOi=${newCwOi}>=prevCwOi=${prevCwOi}*${gateConfig.oiMargin.toFixed(2)}`;
 
         const recorded = recordStabilizerMigration({
           timestamp: new Date(now).toISOString(),
@@ -636,10 +784,15 @@ export async function getStabilizedGexReport(
         });
 
         if (recorded) {
+          cached.previousCw = { value: currentCw, migratedAt: now };
           stabilizedCw = newCw;
           cached.callWallOi = newCwOi;
           cached.lastCwUpdatedAt = now;
           cached.lastUpdatedAt = now;
+          cached.lastMigrationAt = now;
+          cached.lastMigrationReason = reason;
+          cached.cwCandidate = undefined;
+          cached.cwDriftCandidate = undefined;
           wallMigrated = true;
           wallMigrationReason = reason;
         }
@@ -653,31 +806,65 @@ export async function getStabilizedGexReport(
   const isSyntheticToRealPw = Boolean(cached.report.isSynthetic && !freshReport.isSynthetic);
   const isOldPwVanished = !currentPwStrikeInFresh || (currentPwStrikeInFresh.putOi || 0) === 0;
 
+  // Track PW candidate for OI leader persistence
+  if (newPw !== currentPw) {
+    if (cached.pwCandidate && cached.pwCandidate.strike === newPw) {
+      cached.pwCandidate.count += 1;
+    } else {
+      cached.pwCandidate = { strike: newPw, count: 1, firstSeenAt: now };
+    }
+  } else {
+    cached.pwCandidate = undefined;
+  }
+
+  // Track PW candidate for corridor_drift (|stabilized - fresh| >= 2 * strikeStep)
+  const isPwDiff2Steps = Math.abs(newPw - currentPw) >= 2 * strikeStep - 1e-6;
+  if (isPwDiff2Steps) {
+    if (cached.pwDriftCandidate && cached.pwDriftCandidate.strike === newPw) {
+      cached.pwDriftCandidate.count += 1;
+    } else {
+      cached.pwDriftCandidate = { strike: newPw, count: 1, firstSeenAt: now };
+    }
+  } else {
+    cached.pwDriftCandidate = undefined;
+  }
+
   // 1b. Стабилизация Put Wall (Пол):
   if (newPw !== currentPw) {
     const prevPwOi = cached.putWallOi;
-    const isNewPwStronger = new Decimal(newPwOi).gte(new Decimal(prevPwOi).times(new Decimal(1).plus(horizonHysteresis)));
+    const isNewPwStronger = prevPwOi > 0
+      ? new Decimal(newPwOi).gte(new Decimal(prevPwOi).times(new Decimal(gateConfig.oiMargin)))
+      : newPwOi > 0;
+    const isPwPersistent = Boolean(cached.pwCandidate && cached.pwCandidate.count >= gateConfig.persistCount);
+    const isPwDriftPersistent = Boolean(cached.pwDriftCandidate && cached.pwDriftCandidate.count >= gateConfig.persistCount);
+
     const shouldMigratePw =
       isPwSourceSwitch ||
       isPwBreached ||
-      isNewDaySession ||
+      (isNewDaySession && isPwCooldownPassed) ||
       isSyntheticToRealPw ||
       isOldPwVanished ||
-      (isPwCooldownPassed && isNewPwStronger);
+      (isPwCooldownPassed && (isNewPwStronger || isPwPersistent || isPwDriftPersistent));
 
     if (shouldMigratePw) {
-      const reason: StabilizerMigrationReason = isPwSourceSwitch
-        ? "source_switch"
-        : isPwBreached
-        ? "breach"
-        : isNewDaySession
-        ? "new session"
-        : isSyntheticToRealPw
-        ? "reset"
-        : "cooldown+OI";
+      let reason: StabilizerMigrationReason = "cooldown+OI";
+      if (isPwSourceSwitch) {
+        reason = "source_switch";
+      } else if (isPwBreached || isOldPwVanished) {
+        reason = "breach";
+      } else if (isSyntheticToRealPw) {
+        reason = "reset";
+      } else if (isNewDaySession) {
+        reason = "new session";
+      } else if (isPwDriftPersistent) {
+        reason = "corridor_drift";
+      } else if (isPwPersistent && !isNewPwStronger) {
+        reason = "oi_leader_persistent";
+      } else {
+        reason = "cooldown+OI";
+      }
 
-      // Hard anti-ping-pong guard: if reason is cooldown+OI, cooldown MUST be passed!
-      if (reason === "cooldown+OI" && !isPwCooldownPassed) {
+      if ((reason === "cooldown+OI" || reason === "oi_leader_persistent" || reason === "corridor_drift") && !isPwCooldownPassed) {
         console.warn(
           `[GEX Stabilizer] Blocked PW migration: cooldown not passed (${Math.round(timeSincePwUpdate / 60000)}m < ${Math.round(horizonCooldownMs / 60000)}m)`
         );
@@ -686,12 +873,16 @@ export async function getStabilizedGexReport(
           reason === "source_switch"
             ? `source switch (${prevSource} -> ${currentSource}): fresh PW=${newPw} differs from stabilized PW=${currentPw} by > 2 steps (${2 * strikeStep})`
             : reason === "breach"
-            ? `spot=${spot} breached PW=${currentPw} (${isPwBreakout ? "breakout < -0.15%" : "corridor ratio exceeded"})`
+            ? `spot=${spot} breached PW=${currentPw} (${isPwBreakout ? "breakout < -0.15%" : `corridor ratio ${(gateConfig.corridorRatio * 100).toFixed(1)}% exceeded`})`
             : reason === "new session"
             ? `exchange(${exchangeTz}) session roll ${lastDateStr} -> ${nowDateStr}`
             : reason === "reset"
             ? `synthetic-to-real transition: adopting exchange chain (PW=${newPw}, OI=${newPwOi})`
-            : `cooldown=${Math.round(timeSincePwUpdate / 60000)}m>=${Math.round(horizonCooldownMs / 60000)}m & newPwOi=${newPwOi}>=prevPwOi=${prevPwOi}*${(1 + horizonHysteresis).toFixed(2)}`;
+            : reason === "corridor_drift"
+            ? `corridor_drift: |stabilized ${currentPw} - fresh ${newPw}| >= 2 steps (${2 * strikeStep}) held for ${cached.pwDriftCandidate?.count || gateConfig.persistCount} reports (cooldown=${Math.round(timeSincePwUpdate / 60000)}m >= ${Math.round(horizonCooldownMs / 60000)}m)`
+            : reason === "oi_leader_persistent"
+            ? `oi_leader_persistent: new candidate PW=${newPw} held for ${cached.pwCandidate?.count || gateConfig.persistCount} reports (cooldown=${Math.round(timeSincePwUpdate / 60000)}m >= ${Math.round(horizonCooldownMs / 60000)}m)`
+            : `cooldown=${Math.round(timeSincePwUpdate / 60000)}m>=${Math.round(horizonCooldownMs / 60000)}m & newPwOi=${newPwOi}>=prevPwOi=${prevPwOi}*${gateConfig.oiMargin.toFixed(2)}`;
 
         const recorded = recordStabilizerMigration({
           timestamp: new Date(now).toISOString(),
@@ -708,10 +899,15 @@ export async function getStabilizedGexReport(
         });
 
         if (recorded) {
+          cached.previousPw = { value: currentPw, migratedAt: now };
           stabilizedPw = newPw;
           cached.putWallOi = newPwOi;
           cached.lastPwUpdatedAt = now;
           cached.lastUpdatedAt = now;
+          cached.lastMigrationAt = now;
+          cached.lastMigrationReason = reason;
+          cached.pwCandidate = undefined;
+          cached.pwDriftCandidate = undefined;
           wallMigrated = true;
           if (!wallMigrationReason) wallMigrationReason = reason;
         }
@@ -773,9 +969,12 @@ export async function getStabilizedGexReport(
       });
 
       if (recorded) {
+        cached.previousFlip = { value: currentFlip, migratedAt: now };
         stabilizedFlip = newFlip;
         cached.lastFlipUpdatedAt = now;
         cached.lastUpdatedAt = now;
+        cached.lastMigrationAt = now;
+        cached.lastMigrationReason = reason;
       }
     }
   }
@@ -823,10 +1022,13 @@ export async function getStabilizedGexReport(
       });
 
       if (recorded) {
+        cached.previousPain = { value: currentPain, migratedAt: now };
         stabilizedPain = newPain;
         stabilizedPainRange = newPainRange;
         cached.lastPainUpdatedAt = now;
         cached.lastUpdatedAt = now;
+        cached.lastMigrationAt = now;
+        cached.lastMigrationReason = reason;
       }
     }
   } else {
@@ -851,11 +1053,15 @@ export async function getStabilizedGexReport(
     outOfCorridor,
     flipOutOfCorridor,
     painOutOfCorridor,
+    lastMigrationAt: cached.lastMigrationAt,
+    lastMigrationReason: cached.lastMigrationReason,
+    nextMigrationAllowedAt: (cached.lastMigrationAt || now) + gateConfig.cooldownMs,
     timestamp: new Date().toISOString()
   };
 
   cached.report = finalReport;
   return enrichReportWithStandardLabels(finalReport, spotPrice);
+
 }
 
 export interface ResetGexCacheOptions {
