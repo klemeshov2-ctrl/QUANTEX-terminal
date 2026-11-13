@@ -45,6 +45,8 @@ import { detectMarketRangeMode, auditSingleGexLevel } from "../lib/pineSuperIndi
 import { formatGexLevelLabel, getLevelRole } from "../lib/gexLabels";
 import { getSessionSchedule, SessionSchedule } from "../lib/marketSessions";
 
+export const AI_AUTONOMOUS_ENABLED = false;
+
 export interface MacroCalendarEvent {
   id?: string;
   date?: string;
@@ -735,17 +737,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }
   }, []);
 
-  // Scheduler Configuration (User Preferences)
-  const [schedulerConfig, setSchedulerConfig] = useState({
-    morningBriefingEnabled: true,
-    morningTimeMsk: "08:50",
-    noonUpdateEnabled: true,
-    noonTimeMsk: "12:30",
-    preEventAlertsEnabled: true,
-    alertBefore15m: true,
-    alertBefore10m: true,
-    soundAlerts: true
-  });
+  // Manual cache / Telegram control state (AI_AUTONOMOUS_ENABLED = false)
+  const [forceRecalculate, setForceRecalculate] = useState<boolean>(false);
+  const [planIsCached, setPlanIsCached] = useState<boolean>(false);
+  const [planCachedAt, setPlanCachedAt] = useState<number | null>(null);
+  const [isSendingTg, setIsSendingTg] = useState<boolean>(false);
+  const [tgStatusMsg, setTgStatusMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    setPlanIsCached(false);
+    setPlanCachedAt(null);
+    setTgStatusMsg(null);
+  }, [activeAsset]);
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -768,15 +771,18 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     if (!curMonthCw && !curDayCw) return;
 
     try {
-      const storageKey = `quantex_gex_history_${activeAsset}`;
-      const raw = localStorage.getItem(storageKey);
+      // Pure server mirror: do not persist GEX history in localStorage; keep ephemeral in-memory history
+      if (!(window as any).__quantexEphemeralGexHistory) {
+        (window as any).__quantexEphemeralGexHistory = {};
+      }
+      const memMap = (window as any).__quantexEphemeralGexHistory;
       let history: Array<{
         monthCallWall?: number;
         dayCallWall?: number;
         monthPutWall?: number;
         dayPutWall?: number;
         timestamp: number;
-      }> = raw ? JSON.parse(raw) : [];
+      }> = Array.isArray(memMap[activeAsset]) ? memMap[activeAsset] : [];
 
       // Find last entry that had different values
       const lastDiff = history.slice().reverse().find(h => 
@@ -806,7 +812,6 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 
       if (isNew) {
         if (latest) {
-          // Latest now becomes previous!
           previousGexLevelsRef.current[activeAsset] = {
             monthCallWall: latest.monthCallWall,
             dayCallWall: latest.dayCallWall,
@@ -822,7 +827,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
           timestamp: Date.now()
         });
         if (history.length > 25) history = history.slice(-25);
-        localStorage.setItem(storageKey, JSON.stringify(history));
+        memMap[activeAsset] = history;
       }
     } catch (e) {
       console.warn("Notice tracking GEX history:", e);
@@ -1517,14 +1522,23 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     return list;
   }, [activeTf, indicatorOutput, currentPrice, candles, gexReport]);
 
-  // Generate Daily Trading Plan or Response from Server AI Endpoint
+  // Generate Daily Trading Plan, Audit UFE, or Chat Response from Server AI Endpoint (strictly manual/chat)
   const requestAiAnalysis = async (
     mode: "daily_plan" | "morning_brief" | "noon_update" | "event_alert" | "custom_query",
     customUserPrompt?: string,
     eventContext?: MacroCalendarEvent,
-    overrideResponseStyle?: "short" | "detailed" | "autonomous"
+    overrideResponseStyle?: "short" | "detailed" | "autonomous",
+    sourceOverride?: "manual_button" | "audit_button" | "chat_message",
+    forceRecalcOverride?: boolean
   ) => {
     const activeStyle = overrideResponseStyle || responseStyleMode;
+    const requestSource: "manual_button" | "audit_button" | "chat_message" =
+      sourceOverride || (mode === "custom_query" ? "chat_message" : "manual_button");
+    const shouldForceRecalc =
+      typeof forceRecalcOverride === "boolean"
+        ? forceRecalcOverride
+        : Boolean(forceRecalculate || (requestSource !== "chat_message" && planIsCached));
+
     setIsGenerating(true);
     const mskNow = new Intl.DateTimeFormat("ru-RU", {
       timeZone: "Europe/Moscow",
@@ -1572,6 +1586,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       };
 
       const payload = {
+        source: requestSource,
+        forceRecalculate: shouldForceRecalc,
         ticker: activeAsset,
         timeframe: activeTf,
         currentPrice: reliableCurrentPrice,
@@ -1630,7 +1646,7 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         latestNews: freshNewsContext,
         rawIndicators: computeRawTechnicalIndicators(candles, reliableCurrentPrice, activeAsset),
         marketRegimeContext,
-        mode,
+        mode: requestSource === "audit_button" ? "audit_plan" : mode,
         eventContext,
         userQuery: customUserPrompt || "",
         history: tickerState.messages.slice(-6).map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.text })),
@@ -1641,9 +1657,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         schedule: defaultPanelSchedule
       };
 
+      const authToken = typeof window !== "undefined" ? localStorage.getItem("quantex_auth_token") : null;
       const res = await fetch(`/api/ai-analyst/generate-plan?t=${Date.now()}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+        },
         cache: "no-store",
         body: JSON.stringify(payload)
       });
@@ -1654,6 +1674,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         const data = await res.json();
         generatedPlanText = data.plan || data.analysis || "";
         if (data.provider) providerName = data.provider;
+        if (requestSource !== "chat_message") {
+          if (data.cached) {
+            setPlanIsCached(true);
+            setPlanCachedAt(data.cachedAt || Date.now());
+          } else {
+            setPlanIsCached(false);
+            setPlanCachedAt(data.cachedAt || Date.now());
+            setForceRecalculate(false);
+          }
+        }
       }
 
       // If network issue or server offline, synthesize institutional quant fallback
@@ -1867,16 +1897,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
 - План Б: При пробое уровня ${cancelLevel} в обратную сторону, ищем вход с целями ${altTarget}.`;
   };
 
-  // Switch response style mode and immediately refresh active plan
+  // Switch response style mode (no autonomous LLM call on toggle)
   const handleSelectResponseMode = (newMode: "short" | "detailed" | "autonomous") => {
     setResponseStyleMode(newMode);
     try {
       localStorage.setItem("st_ai_response_mode", newMode);
     } catch {}
     setShowModeSettings(false);
-    if (!isGenerating) {
-      requestAiAnalysis("daily_plan", undefined, undefined, newMode);
-    }
   };
 
   // Switch AI Provider (DeepSeek, Gemini, Qwen, Autonomous) directly from panel
@@ -1911,6 +1938,39 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
     }
   };
 
+  // Manual-only dispatch of current plan to Telegram
+  const handleSendPlanToTelegram = async () => {
+    if (!tickerState.dailyPlan || isSendingTg) return;
+    setIsSendingTg(true);
+    setTgStatusMsg(null);
+    try {
+      const authToken = typeof window !== "undefined" ? localStorage.getItem("quantex_auth_token") : null;
+      const res = await fetch(`/api/ai-analyst/send-telegram?t=${Date.now()}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          source: "manual_button",
+          ticker: activeAsset,
+          plan: tickerState.dailyPlan
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setTgStatusMsg({ ok: true, text: data.message || "Отправлено в Telegram" });
+      } else {
+        setTgStatusMsg({ ok: false, text: data.error || `Ошибка отправки (${res.status})` });
+      }
+    } catch (e: any) {
+      setTgStatusMsg({ ok: false, text: e.message || "Ошибка сети" });
+    } finally {
+      setIsSendingTg(false);
+    }
+  };
+
   // User sends manual text query
   const handleSendManualQuery = (overrideText?: string) => {
     const textToSend = overrideText || inputQuery;
@@ -1934,94 +1994,16 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
       username: activeUsername
     };
 
-    // Immediately save user message safely
     appendChatMessage(userMsg);
 
     if (!overrideText) {
       setInputQuery("");
     }
 
-    // Switch to Chat tab to see message and ensure user stays in chat
     setPanelTab("chat");
 
-    requestAiAnalysis("custom_query", textToSend.trim());
+    requestAiAnalysis("custom_query", textToSend.trim(), undefined, undefined, "chat_message");
   };
-
-  // Check automated scheduling clock (08:50, 12:30, and 15m/10m before macro events)
-  useEffect(() => {
-    const checkSchedule = () => {
-      const now = new Date();
-      const mskHours = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", hour: "numeric", hour12: false }).format(now);
-      const mskMinutes = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Moscow", minute: "numeric" }).format(now);
-      const mskDateStr = now.toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" }); // YYYY-MM-DD
-      const currentTimeStr = `${mskHours.padStart(2, "0")}:${mskMinutes.padStart(2, "0")}`;
-
-      // 1. Morning Briefing (08:50 MSK)
-      if (
-        schedulerConfig.morningBriefingEnabled &&
-        currentTimeStr === schedulerConfig.morningTimeMsk &&
-        tickerState.lastMorningRunDate !== mskDateStr
-      ) {
-        saveTickerState({
-          ...tickerState,
-          lastMorningRunDate: mskDateStr
-        });
-        requestAiAnalysis("morning_brief");
-      }
-
-      // 2. Noon Update (12:30 MSK)
-      if (
-        schedulerConfig.noonUpdateEnabled &&
-        currentTimeStr === schedulerConfig.noonTimeMsk &&
-        tickerState.lastNoonRunDate !== mskDateStr
-      ) {
-        saveTickerState({
-          ...tickerState,
-          lastNoonRunDate: mskDateStr
-        });
-        requestAiAnalysis("noon_update");
-      }
-
-      // 3. Pre-event Alerts (15 min and 10 min before scheduled events)
-      if (schedulerConfig.preEventAlertsEnabled) {
-        const eventsList = calendarEvents.length > 0 ? calendarEvents : DEFAULT_TODAY_EVENTS;
-        eventsList.forEach(ev => {
-          if (!ev.timeMsk) return;
-          const [evH, evM] = ev.timeMsk.split(":").map(Number);
-          const evTotalMin = evH * 60 + evM;
-          const nowTotalMin = Number(mskHours) * 60 + Number(mskMinutes);
-          const diff = evTotalMin - nowTotalMin;
-
-          // 15-minute alert
-          if (schedulerConfig.alertBefore15m && diff === 15) {
-            const alertKey = `${mskDateStr}_15m_${ev.title}`;
-            if (!tickerState.dispatchedAlertIds?.includes(alertKey)) {
-              saveTickerState({
-                ...tickerState,
-                dispatchedAlertIds: [...(tickerState.dispatchedAlertIds || []), alertKey]
-              });
-              requestAiAnalysis("event_alert", `Внимание: через 15 минут выходит ${ev.title}!`, ev);
-            }
-          }
-
-          // 10-minute alert
-          if (schedulerConfig.alertBefore10m && diff === 10) {
-            const alertKey = `${mskDateStr}_10m_${ev.title}`;
-            if (!tickerState.dispatchedAlertIds?.includes(alertKey)) {
-              saveTickerState({
-                ...tickerState,
-                dispatchedAlertIds: [...(tickerState.dispatchedAlertIds || []), alertKey]
-              });
-              requestAiAnalysis("event_alert", `Внимание: через 10 минут выходит ${ev.title}! Проверьте стоп-лоссы.`, ev);
-            }
-          }
-        });
-      }
-    };
-
-    const interval = setInterval(checkSchedule, 25000); // Check every 25 seconds
-    return () => clearInterval(interval);
-  }, [schedulerConfig, tickerState, calendarEvents, activeAsset]);
 
   // Copy plan to clipboard
   const copyPlanToClipboard = () => {
@@ -2585,7 +2567,13 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
         </div>
       ) : (
         <>
-          {/* 2. Sub-Tabs Bar: Plan, Chat, Schedule, News, Providers */}
+          {/* Static banner: Autonomous LLM disabled */}
+          <div className="px-2.5 py-1 bg-slate-900/90 border-b border-gray-800/80 text-[10px] text-amber-300/90 font-medium flex items-center gap-1.5 shrink-0">
+            <ShieldAlert className="h-3 w-3 text-amber-400 shrink-0" />
+            <span className="truncate">Автономный режим отключён: ИИ работает только по кнопке и в чате</span>
+          </div>
+
+          {/* 2. Sub-Tabs Bar: Plan, Chat, Mode, News */}
           <div className="px-1.5 pt-1.5 bg-[#0a0e1a] border-b border-gray-800/80 flex items-center justify-between gap-0.5 shrink-0 text-[11px] font-bold">
             <button
               onClick={() => setPanelTab("plan")}
@@ -2619,8 +2607,8 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
                   : "text-gray-400 hover:text-white"
               }`}
             >
-              <Bell className="h-3 w-3 text-amber-400" />
-              <span>Авто</span>
+              <ShieldAlert className="h-3 w-3 text-amber-400" />
+              <span>Режим</span>
             </button>
 
             <button
@@ -2636,44 +2624,95 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
             </button>
           </div>
 
-          {/* 3. Action Bar: Generate Now & Status */}
-          <div className="p-2 bg-[#0e1424] border-b border-gray-800/80 flex items-center justify-between gap-2 shrink-0">
-            <button
-              onClick={() => requestAiAnalysis("daily_plan")}
-              disabled={isGenerating}
-              className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-md cursor-pointer ${
-                isGenerating
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : "bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white shadow-cyan-600/20 active:scale-[0.98]"
-              }`}
-            >
-              <Sparkles className={`h-3.5 w-3.5 ${isGenerating ? "animate-spin text-cyan-400" : ""}`} />
-              <span>{isGenerating ? "ИИ анализирует ТФ & GEX..." : `Сформировать План (${providerBadgeText})`}</span>
-            </button>
-
-            {tickerState.dailyPlan && (
+          {/* 3. Action Bar: Manual Plan, Audit UFE, Telegram, Recalculate checkbox */}
+          <div className="p-2 bg-[#0e1424] border-b border-gray-800/80 space-y-1.5 shrink-0">
+            <div className="flex items-center justify-between gap-1.5">
               <button
-                onClick={copyPlanToClipboard}
-                className="p-1.5 rounded-lg bg-gray-900 border border-gray-800 hover:bg-gray-800 text-gray-300 hover:text-white transition cursor-pointer"
-                title="Скопировать торговый план"
+                onClick={() => requestAiAnalysis("daily_plan", undefined, undefined, undefined, "manual_button")}
+                disabled={isGenerating}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-md cursor-pointer ${
+                  isGenerating
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : "bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white shadow-cyan-600/20 active:scale-[0.98]"
+                }`}
               >
-                {copiedPlan ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                <Sparkles className={`h-3.5 w-3.5 ${isGenerating ? "animate-spin text-cyan-400" : ""}`} />
+                <span className="truncate">{isGenerating ? "Анализ..." : "Сформировать План"}</span>
               </button>
-            )}
 
-            {panelTab === "chat" && (
               <button
                 type="button"
-                onClick={() => {
-                  setClearScope(chatViewMode === "all_history" ? "all_history" : "current_asset");
-                  setIsClearModalOpen(true);
-                }}
-                className="py-1.5 px-2.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 border border-rose-600/60 hover:border-rose-500 text-rose-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-rose-950/40 active:scale-95 shrink-0"
-                title="Удалить переписку и историю чата с ИИ"
+                onClick={() => requestAiAnalysis("daily_plan", undefined, undefined, undefined, "audit_button", true)}
+                disabled={isGenerating}
+                className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition flex items-center gap-1 border cursor-pointer shrink-0 ${
+                  isGenerating
+                    ? "bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed"
+                    : "bg-amber-950/60 hover:bg-amber-900/80 text-amber-200 border-amber-500/40"
+                }`}
+                title="Аудит UFE v1 и проверка рисков в ATR"
               >
-                <Trash2 className="h-3.5 w-3.5 text-rose-400" />
-                <span>Удалить чат</span>
+                <span>🛡️ Аудит UFE</span>
               </button>
+
+              {tickerState.dailyPlan && (
+                <button
+                  onClick={copyPlanToClipboard}
+                  className="p-1.5 rounded-lg bg-gray-900 border border-gray-800 hover:bg-gray-800 text-gray-300 hover:text-white transition cursor-pointer shrink-0"
+                  title="Скопировать торговый план"
+                >
+                  {copiedPlan ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              )}
+
+              {panelTab === "chat" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClearScope(chatViewMode === "all_history" ? "all_history" : "current_asset");
+                    setIsClearModalOpen(true);
+                  }}
+                  className="py-1.5 px-2 rounded-lg bg-rose-950/70 hover:bg-rose-900 border border-rose-600/60 hover:border-rose-500 text-rose-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-md shadow-rose-950/40 active:scale-95 shrink-0"
+                  title="Удалить переписку и историю чата с ИИ"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                  <span>Удалить</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-[10px]">
+              <label className="flex items-center gap-1.5 text-gray-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={forceRecalculate}
+                  onChange={(e) => setForceRecalculate(e.target.checked)}
+                  className="rounded border-gray-700 text-cyan-500 focus:ring-0 cursor-pointer h-3.5 w-3.5"
+                />
+                <span>Пересчитать</span>
+              </label>
+
+              {tickerState.dailyPlan && (
+                <button
+                  type="button"
+                  onClick={handleSendPlanToTelegram}
+                  disabled={isSendingTg}
+                  className="px-2 py-0.5 rounded bg-sky-950/70 hover:bg-sky-900/80 border border-sky-500/40 text-sky-200 font-bold transition cursor-pointer disabled:opacity-50"
+                >
+                  {isSendingTg ? "Отправка..." : "📤 Отправить план в Telegram"}
+                </button>
+              )}
+            </div>
+
+            {planIsCached && planCachedAt && (
+              <div className="px-2 py-1 rounded bg-cyan-950/40 border border-cyan-500/30 text-[10px] text-cyan-200 font-mono">
+                план актуален, обновлён {Math.max(0, Math.round((Date.now() - planCachedAt) / 60000))} мин назад; нажать ещё раз для пересчёта
+              </div>
+            )}
+
+            {tgStatusMsg && (
+              <div className={`px-2 py-1 rounded border text-[10px] font-mono ${tgStatusMsg.ok ? "bg-emerald-950/50 border-emerald-500/40 text-emerald-300" : "bg-rose-950/50 border-rose-500/40 text-rose-300"}`}>
+                {tgStatusMsg.text}
+              </div>
             )}
           </div>
 
@@ -2930,96 +2969,27 @@ export const AutonomousAiAnalystPanel: React.FC<AutonomousAiAnalystPanelProps> =
               </div>
             )}
 
-            {/* TAB 3: AUTOMATED DISPATCH SCHEDULE (08:50, 12:30, 15m/10m Alerts) */}
+            {/* TAB 3: MANUAL MODE INFO (Autonomous scheduling & alerts permanently disabled) */}
             {panelTab === "schedule" && (
               <div className="space-y-3">
-                <div className="p-2.5 rounded-xl bg-[#0b0f1d] border border-gray-800 space-y-2.5">
+                <div className="p-3 rounded-xl bg-[#0b0f1d] border border-amber-500/30 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-xs text-amber-300 flex items-center gap-1.5">
-                      <Clock className="h-3.5 w-3.5 text-amber-400" />
-                      <span>Автономный график рассылок</span>
+                      <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+                      <span>Ручной режим ИИ-Аналитика</span>
                     </span>
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/60">
-                      АКТИВЕН
+                    <span className="text-[10px] text-amber-300 font-mono font-bold bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-700/60">
+                      ОТКЛЮЧЕН
                     </span>
                   </div>
-                  <p className="text-[11px] text-gray-400 leading-normal">
-                    ИИ-аналитик автоматически формирует план перед открытием торговых сессий и присылает предупреждения перед важными событиями.
+                  <p className="text-[11px] text-gray-200 leading-relaxed">
+                    Автономный режим отключён: ИИ работает только по кнопке и в чате.
                   </p>
-
-                  <div className="space-y-2 pt-1 font-mono text-xs">
-                    {/* Morning Briefing (08:50 MSK) */}
-                    <div className="flex items-center justify-between p-2 rounded-lg bg-[#0e1424] border border-gray-800">
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>🌅 Утренний брифинг</span>
-                          <span className="text-cyan-400 font-extrabold">{schedulerConfig.morningTimeMsk} МСК</span>
-                        </div>
-                        <div className="text-[10px] text-gray-400">Перед открытием MOEX FORTS &amp; Лондона</div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={schedulerConfig.morningBriefingEnabled}
-                        onChange={(e) => setSchedulerConfig({ ...schedulerConfig, morningBriefingEnabled: e.target.checked })}
-                        className="rounded border-gray-700 text-cyan-600 focus:ring-0 cursor-pointer h-4 w-4"
-                      />
-                    </div>
-
-                    {/* Noon Update (12:30 MSK) */}
-                    <div className="flex items-center justify-between p-2 rounded-lg bg-[#0e1424] border border-gray-800">
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>☀️ Дневной апдейт</span>
-                          <span className="text-amber-400 font-extrabold">{schedulerConfig.noonTimeMsk} МСК</span>
-                        </div>
-                        <div className="text-[10px] text-gray-400">Корректировка уровней перед сессией США</div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={schedulerConfig.noonUpdateEnabled}
-                        onChange={(e) => setSchedulerConfig({ ...schedulerConfig, noonUpdateEnabled: e.target.checked })}
-                        className="rounded border-gray-700 text-cyan-600 focus:ring-0 cursor-pointer h-4 w-4"
-                      />
-                    </div>
-
-                    {/* Pre-event Alerts (15m & 10m) */}
-                    <div className="flex items-center justify-between p-2 rounded-lg bg-[#0e1424] border border-gray-800">
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>⚡ Алерты до новостей (15м &amp; 10м)</span>
-                        </div>
-                        <div className="text-[10px] text-gray-400">Предупреждение за 15 и 10 мин до выхода CPI/FOMC</div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={schedulerConfig.preEventAlertsEnabled}
-                        onChange={(e) => setSchedulerConfig({ ...schedulerConfig, preEventAlertsEnabled: e.target.checked })}
-                        className="rounded border-gray-700 text-cyan-600 focus:ring-0 cursor-pointer h-4 w-4"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Manual Test Dispatch Buttons */}
-                  <div className="pt-2 border-t border-gray-800 grid grid-cols-3 gap-1.5 text-[10px] font-mono">
-                    <button
-                      onClick={() => requestAiAnalysis("morning_brief")}
-                      className="p-1.5 rounded bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 transition cursor-pointer text-center"
-                    >
-                      ▶ Тест 08:50
-                    </button>
-                    <button
-                      onClick={() => requestAiAnalysis("noon_update")}
-                      className="p-1.5 rounded bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-800/60 transition cursor-pointer text-center"
-                    >
-                      ▶ Тест 12:30
-                    </button>
-                    <button
-                      onClick={() => requestAiAnalysis("event_alert", "Тестовый алерт за 15 минут до публикации CPI США", DEFAULT_TODAY_EVENTS[2])}
-                      className="p-1.5 rounded bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/60 transition cursor-pointer text-center"
-                    >
-                      ▶ Алерт 15м
-                    </button>
-                  </div>
+                  <ul className="text-[10.5px] text-gray-400 space-y-1 list-disc list-inside">
+                    <li>Доступные источники LLM: «Сформировать План», «🛡️ Аудит UFE» и сообщения чата.</li>
+                    <li>Кэш ручных планов: 30 минут по сигнатуре состояния (кнопка повторного нажатия или галочка «Пересчитать»).</li>
+                    <li>Математика UFE v1, стабилизатор GEX, Prop Context и пре-ньюс метки продолжают работать как автономные индикаторы без LLM.</li>
+                  </ul>
                 </div>
               </div>
             )}

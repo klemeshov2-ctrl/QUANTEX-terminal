@@ -51,21 +51,29 @@ import {
   handleIndicatorSetupsPost,
   getUnifiedLayerWeightsReport
 } from "./server/indicatorStatsEngine";
-import { getSessionSchedule, formatScheduleForPrompt, SessionSchedule } from "./src/lib/marketSessions";
+import { getSessionSchedule, formatScheduleForPrompt, getDeterministicPreNewsWarning, SessionSchedule } from "./src/lib/marketSessions";
 import { buildPropContext, PropDeskContext } from "./server/propContextEngine";
 import {
   buildSeniorPropTraderSystemInstruction,
   buildSeniorPropTraderColleagueInstruction,
-  formatPropContextForPrompt
+  formatPropContextForPrompt,
+  getStaticSeniorPropSystemPrompt,
+  buildSlimDataPayload,
+  buildCachedUserMessage,
+  CachedPromptMode
 } from "./server/seniorPropTraderPrompt";
+import { computeUnifiedForecast } from "./src/lib/unifiedForecastEngine";
 
 dotenv.config();
 
-const app = express();
+export const AI_AUTONOMOUS_ENABLED = false;
+
+export const app = express();
 app.set("trust proxy", 1);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const serverStartTime = Date.now();
+export const BUILD_ID = `v2.1.0-ufe-mirror-${Math.floor(serverStartTime / 1000)}`;
 
 // --- IN-MEMORY LOGGING SYSTEM ---
 interface ServerLogEntry {
@@ -3316,18 +3324,22 @@ async function pollAndProcessMacroNews(force: boolean = false) {
 
         sentNewsIds.add(item.id);
         persistSentNewsIds();
-        await broadcastNewsAlertToTelegram(item);
 
-        if (cfg.autoTriggerAnalysisOnNews && item.impact === "CRITICAL") {
-          addServerLog("AI_AUDIT", `Внеплановый запуск аудита золота DeepSeek по критической новости: ${item.title}`);
-          await runDeepSeekAnalysis({
-            triggerType: "MACRO_EVENT",
-            macroEvent: `${item.title} (${item.goldEffect})`
-          });
-        }
+        // Автономная рассылка в Telegram и авто-триггер LLM отключены при AI_AUTONOMOUS_ENABLED = false
+        if (AI_AUTONOMOUS_ENABLED) {
+          await broadcastNewsAlertToTelegram(item);
 
-        if (cfg.postNewsFollowupEnabled && (item.impact === "CRITICAL" || item.impact === "HIGH")) {
-          schedulePostNewsFollowUp(item);
+          if (cfg.autoTriggerAnalysisOnNews && item.impact === "CRITICAL") {
+            addServerLog("AI_AUDIT", `Внеплановый запуск аудита золота DeepSeek по критической новости: ${item.title}`);
+            await runDeepSeekAnalysis({
+              triggerType: "MACRO_EVENT",
+              macroEvent: `${item.title} (${item.goldEffect})`
+            });
+          }
+
+          if (cfg.postNewsFollowupEnabled && (item.impact === "CRITICAL" || item.impact === "HIGH")) {
+            schedulePostNewsFollowUp(item);
+          }
         }
       }
     }
@@ -3361,6 +3373,7 @@ let pendingNewsFollowUps: PendingNewsFollowUp[] = [];
 
 // Schedule a post-news follow-up analysis 5-15 minutes after a significant news event
 function schedulePostNewsFollowUp(newsItem: MacroNewsItem, customDelayMinutes?: number) {
+  if (!AI_AUTONOMOUS_ENABLED) return;
   const cfg = goldScheduleConfig.newsFilter;
   if (!cfg || !cfg.postNewsFollowupEnabled) return;
 
@@ -3543,9 +3556,38 @@ export async function runDeepSeekAnalysis(params: {
   newsItem?: MacroNewsItem;
   mockDualMarketData?: DualMarketDataPayload;
 }): Promise<ScheduledReport> {
-  const apiKey = goldScheduleConfig.deepSeekApiKey || process.env.DEEPSEEK_API_KEY;
   const pair = params.tradingPair || goldScheduleConfig.tradingPair;
   const tfs = goldScheduleConfig.timeframes;
+
+  // Hard guard: disallow any scheduled/autonomous LLM triggers when AI_AUTONOMOUS_ENABLED === false
+  if (
+    !AI_AUTONOMOUS_ENABLED &&
+    params.triggerType !== "MANUAL" &&
+    params.triggerType !== "DUAL_MARKET_SYNTHESIS"
+  ) {
+    return {
+      id: "rep-disabled-" + Math.random().toString(36).substring(2, 9),
+      timestamp: new Date().toISOString(),
+      triggerType: params.triggerType,
+      tradingPair: pair,
+      timeframes: tfs,
+      reportText: "Автономный режим ИИ отключён (AI_AUTONOMOUS_ENABLED = false). Доступны только ручные запросы.",
+      newsContext: [],
+      macroEvent: params.macroEvent,
+      telegramDelivered: false,
+      modelUsed: "QUANTEX Autonomous Disabled (Manual Only)",
+      chartSourceUsed: goldScheduleConfig.chartSourceMode || "standalone_engine",
+      dataSources: {
+        spot: "unavailable",
+        candles: "unavailable",
+        moex: "unavailable",
+        options: "unavailable",
+        news: "unavailable"
+      }
+    };
+  }
+
+  const apiKey = goldScheduleConfig.deepSeekApiKey || process.env.DEEPSEEK_API_KEY;
   const newsContext = params.customNews || liveMacroNewsFeed.map(n => `[${n.time}] ${n.title}: ${n.goldEffect}`);
 
   // Strictly mutually exclusive chart data generation
@@ -4006,7 +4048,9 @@ ${moexSummaryLine}
   const tgToken = goldScheduleConfig.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
   const tgChatId = goldScheduleConfig.telegramChatId || process.env.TELEGRAM_CHAT_ID;
 
-  if (goldScheduleConfig.telegramEnabled && tgToken && dualMarketData.scriptIndicators.entryPrice !== null) {
+  // Automatic Telegram broadcasts from background/runDeepSeekAnalysis disabled when AI_AUTONOMOUS_ENABLED = false;
+  // Manual sending uses POST /api/ai-analyst/send-telegram
+  if (AI_AUTONOMOUS_ENABLED && goldScheduleConfig.telegramEnabled && tgToken && dualMarketData.scriptIndicators.entryPrice !== null) {
     try {
       const sourceLabel = sourceMode === "standalone_engine" ? "Встроенный QUANTEX Движок" : sourceMode === "tradingview_link" ? "TradingView Link" : "Ручной скриншот";
       let tgHeader = "";
@@ -4125,65 +4169,64 @@ ${moexSummaryLine}
   return report;
 }
 
-// Background scheduler tick: checks both custom interactive calendar slots (days of week + exact times) and general slots
+// Background LLM scheduler tick disabled when AI_AUTONOMOUS_ENABLED === false
 let lastDispatchedMinuteKey = "";
-setInterval(async () => {
-  if (process.env.QUANTEX_UNIT_TEST === "1" || !goldScheduleConfig.enabled) return;
+if (AI_AUTONOMOUS_ENABLED && process.env.QUANTEX_UNIT_TEST !== "1") {
+  setInterval(async () => {
+    if (!AI_AUTONOMOUS_ENABLED || !goldScheduleConfig.enabled) return;
 
-  try {
-    const now = new Date();
-    // Get Moscow time & day of week
-    const mskFormatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: "Europe/Moscow",
-      hour: "2-digit",
-      minute: "2-digit",
-      weekday: "short",
-      hour12: false
-    });
-    const parts = mskFormatter.formatToParts(now);
-    const hStr = parts.find(p => p.type === "hour")?.value || "00";
-    const mStr = parts.find(p => p.type === "minute")?.value || "00";
-    const currentTimeMsk = `${hStr}:${mStr}`; // e.g. "09:00", "15:30"
-
-    // Numeric day of week in Moscow: 0=Sunday, 1=Monday ... 6=Saturday
-    const mskDateStr = now.toLocaleDateString("en-US", { timeZone: "Europe/Moscow" });
-    const mskDayOfWeek = new Date(mskDateStr).getDay();
-
-    const minuteKey = `${mskDayOfWeek}-${currentTimeMsk}`;
-    if (lastDispatchedMinuteKey === minuteKey) {
-      return; // Already executed in this minute
-    }
-
-    // 1. Check custom calendar slots
-    const activeSlots = goldScheduleConfig.scheduleCalendar || [];
-    const matchedSlot = activeSlots.find(
-      s => s.enabled && s.dayOfWeek === mskDayOfWeek && s.timeMsk === currentTimeMsk
-    );
-
-    if (matchedSlot) {
-      lastDispatchedMinuteKey = minuteKey;
-      addServerLog("INFO", `⏰ Сработал календарный триггер [${matchedSlot.label}] (${matchedSlot.timeMsk} МСК, день недели: ${mskDayOfWeek})`);
-      await runDeepSeekAnalysis({
-        triggerType: "CALENDAR_SLOT",
-        macroEvent: `Календарное расписание: ${matchedSlot.label} (${matchedSlot.timeMsk} МСК)`
+    try {
+      const now = new Date();
+      // Get Moscow time & day of week
+      const mskFormatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Europe/Moscow",
+        hour: "2-digit",
+        minute: "2-digit",
+        weekday: "short",
+        hour12: false
       });
-      return;
-    }
+      const parts = mskFormatter.formatToParts(now);
+      const hStr = parts.find(p => p.type === "hour")?.value || "00";
+      const mStr = parts.find(p => p.type === "minute")?.value || "00";
+      const currentTimeMsk = `${hStr}:${mStr}`;
 
-    // 2. Check general timesMsk (e.g. 09:00, 15:00) on weekdays (Mon-Fri)
-    if (mskDayOfWeek >= 1 && mskDayOfWeek <= 5 && goldScheduleConfig.timesMsk.includes(currentTimeMsk)) {
-      lastDispatchedMinuteKey = minuteKey;
-      const isMorning = currentTimeMsk === "09:00";
-      addServerLog("INFO", `⏰ Сработал таймер ${currentTimeMsk} МСК: мульти-ТФ анализ золота через DeepSeek`);
-      await runDeepSeekAnalysis({
-        triggerType: isMorning ? "SCHEDULED_9MSK" : "SCHEDULED_15MSK"
-      });
-      return;
+      const mskDateStr = now.toLocaleDateString("en-US", { timeZone: "Europe/Moscow" });
+      const mskDayOfWeek = new Date(mskDateStr).getDay();
+
+      const minuteKey = `${mskDayOfWeek}-${currentTimeMsk}`;
+      if (lastDispatchedMinuteKey === minuteKey) {
+        return;
+      }
+
+      const activeSlots = goldScheduleConfig.scheduleCalendar || [];
+      const matchedSlot = activeSlots.find(
+        s => s.enabled && s.dayOfWeek === mskDayOfWeek && s.timeMsk === currentTimeMsk
+      );
+
+      if (matchedSlot) {
+        lastDispatchedMinuteKey = minuteKey;
+        addServerLog("INFO", `⏰ Сработал календарный триггер [${matchedSlot.label}] (${matchedSlot.timeMsk} МСК, день недели: ${mskDayOfWeek})`);
+        await runDeepSeekAnalysis({
+          triggerType: "CALENDAR_SLOT",
+          macroEvent: `Календарное расписание: ${matchedSlot.label} (${matchedSlot.timeMsk} МСК)`
+        });
+        return;
+      }
+
+      if (mskDayOfWeek >= 1 && mskDayOfWeek <= 5 && goldScheduleConfig.timesMsk.includes(currentTimeMsk)) {
+        lastDispatchedMinuteKey = minuteKey;
+        const isMorning = currentTimeMsk === "09:00";
+        addServerLog("INFO", `⏰ Сработал таймер ${currentTimeMsk} МСК: мульти-ТФ анализ золота через DeepSeek`);
+        await runDeepSeekAnalysis({
+          triggerType: isMorning ? "SCHEDULED_9MSK" : "SCHEDULED_15MSK"
+        });
+        return;
+      }
+    } catch (err: any) {
+      console.error("Scheduler error:", err);
     }
-  } catch (err: any) {
-    console.error("Scheduler error:", err);
-  }
-}, 20000); // Check every 20 seconds
+  }, 20000);
+}
 
 
 // --- TELEGRAM BOT SUBSCRIBER & APPROVAL POLLER ---
@@ -4357,7 +4400,9 @@ async function pollTelegramUpdates() {
 }
 
 // Poll telegram updates every 6 seconds
-setInterval(pollTelegramUpdates, 6000);
+if (process.env.QUANTEX_UNIT_TEST !== "1") {
+  setInterval(pollTelegramUpdates, 6000);
+}
 
 
 // --- IN-MEMORY WEBHOOK SIGNALS STORE ---
@@ -4534,6 +4579,18 @@ function getGeminiClient(overrideKey?: string): GoogleGenAI | null {
 // API Routes
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// --- SERVER VERSION STAMP (30s Mirror Polling) ---
+app.get("/api/server/version", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("X-Build-Id", BUILD_ID);
+  res.json({
+    success: true,
+    buildId: BUILD_ID,
+    uptime: Math.floor((Date.now() - serverStartTime) / 1000),
+    serverTimeMs: Date.now()
+  });
 });
 
 // --- SERVER STATUS & SYSTEM METRICS ---
@@ -6330,6 +6387,159 @@ app.get("/api/market/unified-weights", (_req, res) => {
     success: true,
     ...getUnifiedLayerWeightsReport()
   });
+});
+
+// --- 2.3. SERVER-AUTHORITATIVE UFE v1 ENDPOINT (Block A) ---
+interface UnifiedForecastCacheEntry {
+  promise: Promise<any>;
+  data?: any;
+  timestamp: number;
+}
+const serverUnifiedForecastCache = new Map<string, UnifiedForecastCacheEntry>();
+
+app.get("/api/forecast/unified", authenticateJwt, generalApiLimiter, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("X-Build-Id", BUILD_ID);
+
+  const symbol = ((req.query.symbol as string) || "XAUUSD").toUpperCase();
+  const interval = (req.query.interval as string) || "15m";
+  const cacheKey = `${symbol}_${interval}`;
+  const now = Date.now();
+
+  const cached = serverUnifiedForecastCache.get(cacheKey);
+  if (cached && now - cached.timestamp < 5000 && cached.data) {
+    return res.json({
+      success: true,
+      buildId: BUILD_ID,
+      serverTimeMs: now,
+      forecast: cached.data
+    });
+  }
+
+  if (cached && now - cached.timestamp < 5000) {
+    try {
+      const data = await cached.promise;
+      return res.json({
+        success: true,
+        buildId: BUILD_ID,
+        serverTimeMs: Date.now(),
+        forecast: data
+      });
+    } catch {
+      // recalculate if failed
+    }
+  }
+
+  const computePromise = (async () => {
+    let candles: any[] = [];
+    try {
+      const internalRes = await fetch(
+        `http://127.0.0.1:${PORT}/api/market/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=250&t=${Date.now()}`,
+        {
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache",
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+          }
+        }
+      );
+      if (internalRes.ok) {
+        const cdata = await internalRes.json();
+        if (Array.isArray(cdata.candles)) {
+          candles = cdata.candles;
+        }
+      }
+    } catch (e: any) {
+      console.warn("[Server UFE] Error fetching internal candles:", e.message);
+    }
+
+    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : null;
+    const spot = Number(lastCandle?.close || 0);
+
+    // 1. Stabilized GEX report
+    const gexReport = await getStabilizedGexReport(symbol, "DAY", spot).catch(() => null);
+
+    // 2. Schedule
+    const schedule = getSessionSchedule(new Date());
+
+    // 3. Prop Desk Context (with honest ADR)
+    let propContext = null;
+    if (candles.length >= 50) {
+      try {
+        propContext = buildPropContext({
+          symbol,
+          timeframe: interval,
+          candles,
+          gexReport,
+          schedule
+        });
+      } catch (e: any) {
+        console.warn("[Server UFE] Notice building prop context:", e.message);
+      }
+    }
+
+    // 4. Compute Unified Forecast (isomorphic engine running strictly on server)
+    const rawForecast = computeUnifiedForecast({
+      candles,
+      gexReport,
+      schedule,
+      adr: propContext?.adr || null,
+      symbol,
+      timeframe: interval,
+      currentPrice: spot,
+      tickSize: (symbol === "XRPUSDT" || symbol === "MOEX_NG") ? 0.0001 : 0.01,
+      legacyWave: null,
+      now: Date.now()
+    });
+
+    const reasonsDetailed = rawForecast.permission.reasonsDetailed && rawForecast.permission.reasonsDetailed.length > 0
+      ? rawForecast.permission.reasonsDetailed
+      : rawForecast.permission.reasons.map((r, idx) => ({
+          code: `REASON_${idx + 1}`,
+          text: r,
+          unblockTrigger: rawForecast.permission.unblockTrigger
+        }));
+
+    const result = {
+      ...rawForecast,
+      state: rawForecast.permission.state,
+      score: rawForecast.permission.score,
+      activeLayers: rawForecast.permission.activeLayers,
+      reasons: reasonsDetailed,
+      primaryReason: rawForecast.permission.primaryReason,
+      arbiterNote: rawForecast.permission.arbiterNote,
+      vp: rawForecast.vp ? { poc: rawForecast.vp.poc, vah: rawForecast.vp.vah, val: rawForecast.vp.val } : null,
+      adr: rawForecast.adr || { available: false, adr14: null, todayRange: 0, usedPct: null },
+      scheduleLabel: rawForecast.scheduleLabel || schedule.labelRu,
+      stateHistoryLast5: rawForecast.stateHistoryLast5 || []
+    };
+
+    return result;
+  })();
+
+  serverUnifiedForecastCache.set(cacheKey, {
+    promise: computePromise,
+    timestamp: now
+  });
+
+  try {
+    const forecast = await computePromise;
+    const entry = serverUnifiedForecastCache.get(cacheKey);
+    if (entry) entry.data = forecast;
+
+    return res.json({
+      success: true,
+      buildId: BUILD_ID,
+      serverTimeMs: Date.now(),
+      forecast
+    });
+  } catch (err: any) {
+    serverUnifiedForecastCache.delete(cacheKey);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Failed to compute server unified forecast"
+    });
+  }
 });
 
 // 3. Macroeconomic Calendar (USD, EUR, XAU)
@@ -8394,7 +8604,10 @@ app.post("/api/indicator/reset-stats", (_req, res) => {
 app.post("/api/gold/trigger-analysis", async (req, res) => {
   try {
     const { triggerType = "MANUAL", macroEvent, customPrompt, tradingPair } = req.body;
-    addServerLog("INFO", `Ручной/Событийный запуск анализа золота DeepSeek (Причина: ${macroEvent || triggerType})`);
+    if (!AI_AUTONOMOUS_ENABLED && triggerType !== "MANUAL") {
+      return res.status(403).json({ success: false, error: "autonomous mode disabled" });
+    }
+    addServerLog("INFO", `Ручной запуск анализа золота DeepSeek (Причина: ${macroEvent || triggerType})`);
 
     const report = await runDeepSeekAnalysis({
       triggerType: (triggerType as any) || "MANUAL",
@@ -9194,24 +9407,24 @@ app.post("/api/gold/publish-news", async (req, res) => {
 
     addServerLog("INFO", `Опубликовано важное макро-событие: ${title} [${impact}]`);
 
-    // Dispatch to Telegram news alert channel
-    if (goldScheduleConfig.newsFilter.telegramAlertsEnabled) {
-      await broadcastNewsAlertToTelegram(newItem);
-    }
-
-    // Auto-trigger DeepSeek updated trade plan if requested
+    // Dispatch to Telegram & auto-trigger LLM only if AI_AUTONOMOUS_ENABLED
     let generatedReport: ScheduledReport | null = null;
-    if (autoTrigger && goldScheduleConfig.newsFilter.autoTriggerAnalysisOnNews) {
-      addServerLog("AI_AUDIT", `Авто-запуск внепланового аудита золота по событию: ${title}`);
-      generatedReport = await runDeepSeekAnalysis({
-        triggerType: "MACRO_EVENT",
-        macroEvent: `${title} (${goldEffect})`
-      });
-    }
+    if (AI_AUTONOMOUS_ENABLED) {
+      if (goldScheduleConfig.newsFilter.telegramAlertsEnabled) {
+        await broadcastNewsAlertToTelegram(newItem);
+      }
 
-    // Auto schedule post-news follow-up chart analysis after 5-15 minutes if enabled
-    if (goldScheduleConfig.newsFilter.postNewsFollowupEnabled && (impact === "CRITICAL" || impact === "HIGH")) {
-      schedulePostNewsFollowUp(newItem);
+      if (autoTrigger && goldScheduleConfig.newsFilter.autoTriggerAnalysisOnNews) {
+        addServerLog("AI_AUDIT", `Авто-запуск внепланового аудита золота по событию: ${title}`);
+        generatedReport = await runDeepSeekAnalysis({
+          triggerType: "MACRO_EVENT",
+          macroEvent: `${title} (${goldEffect})`
+        });
+      }
+
+      if (goldScheduleConfig.newsFilter.postNewsFollowupEnabled && (impact === "CRITICAL" || impact === "HIGH")) {
+        schedulePostNewsFollowUp(newItem);
+      }
     }
 
     res.json({ success: true, newsItem: newItem, generatedReport });
@@ -11191,11 +11404,152 @@ function computeHonest5TfConsensus(
 
 // (GexTrackerSnapshot & persistent gexTrackersHistory are exported at top of server.ts)
 
-// --- AUTONOMOUS AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE ---
-app.post("/api/ai-analyst/generate-plan", async (req, res) => {
+export interface CachedManualPlanEntry {
+  plan: string;
+  provider: string;
+  isSimulated: boolean;
+  timestamp: string;
+  cachedAt: number;
+  stateSignature: string;
+}
+
+export const MANUAL_PLAN_CACHE_TTL_MS = 30 * 60 * 1000;
+const manualPlanCache = new Map<string, CachedManualPlanEntry>();
+
+export function clearManualPlanCache(): void {
+  manualPlanCache.clear();
+}
+
+function resolveGexRoundingStep(ticker: string, price: number): number {
+  const t = (ticker || "").toUpperCase();
+  if (t.includes("BTC")) return 500;
+  if (t.includes("ETH")) return 50;
+  if (t.includes("SOL") || t.includes("XRP")) return 1;
+  if (t.includes("XAU") || t.includes("GOLD") || t.includes("GLD")) return 10;
+  if (price > 1000) return 10;
+  if (price > 100) return 1;
+  return 0.1;
+}
+
+function roundToGexStep(val: number, step: number): number {
+  if (!Number.isFinite(val) || step <= 0) return 0;
+  return Math.round(val / step) * step;
+}
+
+export function buildPlanStateSignature(params: {
+  ticker: string;
+  spot: number;
+  direction: string;
+  permissionState: string;
+  callWall: number;
+  putWall: number;
+  gammaFlip: number;
+  isDangerWindow: boolean;
+}): string {
+  const step = resolveGexRoundingStep(params.ticker, params.spot);
+  const cwR = roundToGexStep(params.callWall, step);
+  const pwR = roundToGexStep(params.putWall, step);
+  const flR = roundToGexStep(params.gammaFlip, step);
+  const spotBucket = params.spot > 0 ? Math.floor(Math.log(params.spot) / Math.log(1.002)) : 0;
+  return `${params.direction}|${params.permissionState}|cw=${cwR},pw=${pwR},fl=${flR}|sb=${spotBucket}|${params.isDangerWindow ? "DANGER" : "CLEAN"}`;
+}
+
+// --- MANUAL TELEGRAM DISPATCH (ONLY VIA PANEL BUTTON) ---
+app.post("/api/ai-analyst/send-telegram", authenticateJwt, async (req, res) => {
   try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: "Unauthorized" });
+    }
+    if (req.body?.source !== "manual_button") {
+      return res.status(403).json({ success: false, error: "autonomous mode disabled" });
+    }
+    const planText = String(req.body?.plan || "").trim();
+    const ticker = String(req.body?.ticker || "XAUUSD").toUpperCase();
+    if (!planText) {
+      return res.status(400).json({ success: false, error: "Нет текста торгового плана для отправки" });
+    }
+
+    const tgToken = goldScheduleConfig.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
+    const tgChatId = goldScheduleConfig.telegramChatId || process.env.TELEGRAM_CHAT_ID;
+    if (!tgToken || (!tgChatId && telegramSubscribers.filter(s => s.status === "approved").length === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: "Telegram Bot Token или Chat ID не настроены в настройках станции"
+      });
+    }
+
+    const recipientChatIds = new Set<string>();
+    if (tgChatId) recipientChatIds.add(tgChatId);
+    for (const sub of telegramSubscribers) {
+      if (sub.status === "approved" && sub.chatId) {
+        recipientChatIds.add(sub.chatId);
+      }
+    }
+
+    const mskNow = new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Europe/Moscow",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date());
+    const header = `📊 <b>QUANTEX ТОРГОВЫЙ ПЛАН (${ticker})</b>\n🕒 <i>${mskNow} МСК • Ручная отправка (${req.user.username})</i>\n\n`;
+    const bodyHtml = convertMdToTelegramHtml(planText);
+    const fullMsg = header + bodyHtml;
+    const truncated = fullMsg.length > 4000 ? fullMsg.substring(0, 3920) + "\n\n...<i>[Сокращено по лимиту Telegram]</i>" : fullMsg;
+
+    let deliveredCount = 0;
+    for (const targetId of recipientChatIds) {
+      try {
+        const tgRes = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: targetId,
+            text: truncated,
+            parse_mode: "HTML",
+            disable_web_page_preview: true
+          })
+        });
+        const tgData = await tgRes.json();
+        if (tgRes.ok && tgData.ok) deliveredCount++;
+      } catch {
+        // continue
+      }
+    }
+
+    if (deliveredCount === 0) {
+      return res.status(502).json({
+        success: false,
+        error: "Не удалось доставить сообщение в Telegram (проверьте Bot Token и Chat ID)"
+      });
+    }
+
+    addServerLog("INFO", `Торговый план ${ticker} отправлен вручную в Telegram (${deliveredCount} получ.)`);
+    return res.json({
+      success: true,
+      deliveredCount,
+      message: `План отправлен в Telegram (${deliveredCount} получ.)`
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || "Telegram send error" });
+  }
+});
+
+// --- MANUAL AI ANALYST & MULTI-TIMEFRAME PLAN ENGINE (STRICTLY MANUAL BUTTONS & CHAT ONLY) ---
+app.post("/api/ai-analyst/generate-plan", authenticateJwt, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: "Unauthorized" });
+    }
+
+    const requestSource = req.body?.source;
+    const allowedSources = new Set(["manual_button", "audit_button", "chat_message"]);
+    if (!allowedSources.has(requestSource)) {
+      return res.status(403).json({ success: false, error: "autonomous mode disabled" });
+    }
+
     const {
-      username = "admin",
+      username = req.user.username || "admin",
       ticker = "BTCUSDT",
       timeframe = "15m",
       currentPrice = 4006.0,
@@ -11214,7 +11568,8 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       aiProviderConfig = null,
       responseStyle = "detailed",
       rawIndicators = null,
-      marketRegimeContext = null
+      marketRegimeContext = null,
+      forceRecalculate = false
     } = req.body;
 
     const now = new Date();
@@ -11472,99 +11827,11 @@ app.post("/api/ai-analyst/generate-plan", async (req, res) => {
       }
     };
 
-    // 0. Fetch real-time live world news & macro releases from external web
-    const liveWorldNews = await fetchLiveWorldNews(userQuery, ticker);
-
-    // If user explicitly selected "autonomous" mode in AI Analyst settings, execute built-in quant engine directly
-    if (responseStyle === "autonomous") {
-      const rawAutonomousPlan = generateAutonomousAiPlan({
-        ticker,
-        timeframe,
-        currentPrice,
-        multiTfMetrics,
-        indicatorForecast,
-        gex,
-        events: effectiveEvents,
-        mode,
-        eventContext,
-        userQuery: userQuery || "",
-        timeMsk,
-        dateMsk,
-        responseStyle: "autonomous",
-        marketInfo,
-        liveWorldNews,
-        marketRegimeContext
-      });
-      const autonomousPlan = sanitizeTradePlanOutput(rawAutonomousPlan, sanitizeOpts);
-      const autoProvider = "🤖 Автономный ИИ QUANTEX (Мировые данные 🌐)";
-      autoRecordForecast(autoProvider);
-      return res.json({
-        plan: autonomousPlan,
-        provider: autoProvider,
-        isSimulated: false,
-        timestamp: `${timeMsk} МСК`
-      });
-    }
-
-    const client = getGeminiClient();
-
-    const scheduleRuleInstruction = `
-РЕАЛЬНЫЙ СТАТУС БИРЖИ И ТАЙМИНГ НА МОМЕНТ АНАЛИЗА:
-- Текущая дата и время: ${dateMsk} (${marketInfo.dayOfWeekRu}), ${timeMsk} МСК.
-- Инструмент: ${ticker}
-- Статус биржи: ${marketInfo.statusTextRu}
-- Режим: ${marketInfo.operatingRegimeRu}
-- Следующее открытие торгов: ${marketInfo.nextOpenTextRu}
-${!marketInfo.isOpen ? `
-⚠️ СТРОЖАЙШЕЕ ТРЕБОВАНИЕ — СЕГОДНЯ ${marketInfo.dayOfWeekRu.toUpperCase()} (ВЫХОДНОЙ ДЕНЬ):
-Рынок ${ticker} ЗАКРЫТ НА ВЫХОДНЫЕ! Торги возобновятся: ${marketInfo.nextOpenTextRu}.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО говорить, что сегодня проводятся сессии Лондона (10:00), Нью-Йорка (16:30), публикуются отчеты по инфляции CPI (15:30) или проходит заседание ФРС США (21:00). Все физические и фьючерсные биржи металлов (COMEX, LBMA, МосБиржа) и ведомства США (BLS, Fed) в выходные дни полностью закрыты!
-Твоя задача при закрытом рынке:
-1. Четко и авторитетно заявить: сегодня ${marketInfo.dayOfWeekRu}, регулярные торги закрыты, следующее открытие — ${marketInfo.nextOpenTextRu}.
-2. Провести профессиональный АУДИТ ЗАКРЫТИЯ НЕДЕЛИ (Weekly Close Audit по цене закрытия недели ${currentPrice}): анализ недельной свечи, тренда, макроэкономических факторов (ставки ФРС, DXY, доходности US 10Y, скупка золота ЦБ Китая/Индии).
-3. Разобрать опционную карту GEX на следующую неделю (Call Wall, Put Wall, Max Pain).
-4. Дать четкий план подготовки к открытию сессии в понедельник (включая сценарии с ценовым гэпом на открытии CME Globex в 01:00 МСК).` : ''}
-${marketInfo.isCrypto && marketInfo.isWeekend ? `
-⚠️ КРИПТОРЫНОК НА ВЫХОДНЫХ (24/7):
-Крипторынок активен 24/7, но традиционные шлюзы (CME фьючерсы и спотовые ETF США) закрыты до понедельника. Обязательно учитывай тонкий розничный стакан, повышенные риски манипуляций/сбора стопов и формирование CME Gap перед открытием понедельника.` : ''}
-`;
-
-    const dLower = marketInfo.dayOfWeekRu.toLowerCase();
-    const isFriday = dLower.includes("пятниц");
-    const isMonday = dLower.includes("понедельн");
-    const isExpiryDay = isFriday || isMonday;
-
-    const expHorizonCtx = detectOptionExpirationHorizon();
-    const expiryRuleInstruction = `
-⚖️ ПРАВИЛО УЧЕТА ГОРИЗОНТОВ ОПЦИОННОЙ ЭКСПИРАЦИИ (ДНЕВНЫЕ, НЕДЕЛЬНЫЕ, МЕСЯЧНЫЕ, КВАРТАЛЬНЫЕ):
-- Текущий горизонт: ${expHorizonCtx.horizonNameRu.toUpperCase()} (${marketInfo.dayOfWeekRu}, ${dateMsk})
-- Статус экспирации: ${expHorizonCtx.isExpiryDay ? "⚠️ ДЕНЬ ПОВЫШЕННОЙ ЭКСПИРАЦИОННОЙ ВОЛАТИЛЬНОСТИ / РОЛЛОВЕРА" : "Регулярный торговый день"}.
-- Опционный ориентир: ${expHorizonCtx.pinningTargetDesc}
-- Руководство: ${expHorizonCtx.adviceForAi}
-
-1. ⚡ ДНЕВНЫЕ ЭКСПИРАЦИИ (Интрадей):
-   - Активны каждый рабочий день на индексах США и 24/7 в крипто-опционах.
-   - Экстремальная тета-деградация (Theta decay) и постоянная дельта-гамма ребалансировка дилеров. После 17:00 МСК дилеры ускоренно сжимают волатильность к суточному магниту.
-2. 📅 НЕДЕЛЬНЫЕ ЭКСПИРАЦИИ (Weekly OPEX - Каждая пятница):
-   - Институциональные дилеры и маркетмейкеры притягивают цену к недельному страйку Max Pain (${gex?.maxPain || "Max Pain"}) для максимального обесценения премий.
-   - Ожидай ложные пробои (Fakeouts / срыв стопов) ключевых стен Call Wall (${gex?.callWall || "Call Wall"}) и Put Wall (${gex?.putWall || "Put Wall"}). Закладывай отступ стопа +0.35%.
-3. 🗓️ МЕСЯЧНЫЕ ЭКСПИРАЦИИ (Monthly OPEX - 3-я пятница каждого месяца):
-   - Концентрация максимального открытого интереса (OI) институциональных фондов.
-   - Call/Put Wall выступают мощнейшими железобетонными барьерами. В случае истинного импульсного пробоя стены происходит каскадный Гамма-Сквиз (Gamma Squeeze).
-4. 🌪️ КВАРТАЛЬНЫЕ ЭКСПИРАЦИИ (Quadruple Witching - Март, Июнь, Сентябрь, Декабрь):
-   - Одновременная экспирация 4 классов деривативов (фьючерсы на индексы/товары и опционы). Экспирируются квартальные фьючерсы FORTS (GDZ6, SiZ6, RIZ6, BRZ6) и контракты CME.
-   - КРИТИЧЕСКИЙ ФАКТОР: Массовый ролловер (Rollover) институционалов в следующий контракт, иссякание ликвидности уходящего контракта, схлопывание базиса спот-фьючерс до 0.
-   - На следующей неделе после квартальной экспирации исторически формируется среднесрочная смена квартального тренда!
-5. 🔄 ПОНЕДЕЛЬНИКИ (Gap Fill & Ролловер):
-   - Открытие недели, балансировка спредов и закрытие ценового разрыва CME Gap. Ожидай ложный импульс Азии перед Лондоном (10:00 МСК).
-`;
-
-    const feedbackLoopContext = getAiFeedbackLoopContext(ticker);
-
     const qLower = (userQuery || "").toLowerCase();
     const isPlanGeneration = (mode === "daily_plan" || mode === "morning_brief" || mode === "noon_update") ||
       qLower.includes("сформируй план") || qLower.includes("сформировать план") || qLower.includes("план на день");
-    const isChatQuery = !isPlanGeneration && Boolean(userQuery && userQuery.trim().length > 0);
+    const isChatQuery = requestSource === "chat_message" ||
+      (!isPlanGeneration && requestSource !== "audit_button" && Boolean(userQuery && userQuery.trim().length > 0));
 
     const fiveTfList = [
       { name: "1D", trend: d1Trend, level: d1KeyLevel, desc: d1LevelDesc },
@@ -11789,16 +12056,18 @@ ${antiChopTrendClause}
 ЗАПРЕТ НА ВЫДУМЫВАНИЕ ФАКТОВ:
 Отвечай только на тот вопрос, который задан. Если тебя спрашивают про события дня, выдай список событий с временем МСК. Не нужно рассказывать, как работает программа, если тебя об этом не просили.`;
 
-    const currentSchedule = getSessionSchedule(new Date());
+    const currentSchedule = getSessionSchedule(now);
     const propSymbol = req.body.symbol || ticker;
     const propInterval = req.body.interval || req.body.timeframe || timeframe || "15m";
     const propCandles = req.body.candles || req.body.candlesticks || [];
 
     let effectivePropContext: PropDeskContext | null = null;
+    let resolvedDayGexReport: any = dayGex || null;
     if (Array.isArray(propCandles) && propCandles.length >= 50) {
       try {
         const spot = Number(propCandles[propCandles.length - 1]?.close || currentPriceNum || 0);
-        const gexReport = await getStabilizedGexReport(propSymbol, "DAY", spot).catch(() => null);
+        const gexReport = resolvedDayGexReport || await getStabilizedGexReport(propSymbol, "DAY", spot).catch(() => null);
+        resolvedDayGexReport = gexReport;
         effectivePropContext = buildPropContext({
           symbol: propSymbol,
           timeframe: propInterval,
@@ -11814,186 +12083,63 @@ ${antiChopTrendClause}
       effectivePropContext = req.body.propContext;
     }
 
-    // Construct institutional Senior Prop Trader system instruction with seasonal schedule and prop context
-    const systemInstruction = buildSeniorPropTraderSystemInstruction({
+    // Resolve server-side UFE for stateSignature & DATA PAYLOAD
+    let effectiveUfe: any = serverUnifiedForecastCache.get(`${String(ticker).toUpperCase()}_${propInterval}`)?.data || null;
+    if (!effectiveUfe && Array.isArray(propCandles) && propCandles.length >= 20) {
+      try {
+        effectiveUfe = computeUnifiedForecast({
+          candles: propCandles,
+          gexReport: resolvedDayGexReport,
+          schedule: currentSchedule,
+          adr: effectivePropContext?.adr || null,
+          symbol: propSymbol,
+          timeframe: propInterval,
+          currentPrice: currentPriceNum,
+          tickSize: (propSymbol === "XRPUSDT" || propSymbol === "MOEX_NG") ? 0.0001 : 0.01,
+          legacyWave: null,
+          now: now.getTime()
+        });
+      } catch {}
+    }
+
+    const detWarning = getDeterministicPreNewsWarning(now);
+    const isDangerWindow = Boolean(imminentInfo.isImminent || detWarning?.active);
+    const ufeDirForSig = String(effectiveUfe?.direction || indDirection || "NEUTRAL");
+    const ufeStateForSig = String(effectiveUfe?.permission?.state || effectiveUfe?.state || "NONE");
+    const stateSignature = buildPlanStateSignature({
       ticker,
-      schedule: currentSchedule,
-      propContext: effectivePropContext,
-      isChatQuery,
-      isShortMode,
-      userQuery,
-      imminentInfo,
-      gexDynamicRuleClause,
-      antiChopTrendClause,
-      rawRsi14,
-      rawMacdHist,
-      rawDelta,
-      rawDiv,
-      dailyAtr,
-      indDirection,
-      indEntry,
-      indSl,
-      indTp1,
-      indStopAtrRatio,
-      isBull,
-      entryPriceFormatted,
-      entryRationale,
-      slFormatted,
-      slRationale,
-      tp1Formatted,
-      tp1Rationale,
-      tp2Formatted,
-      tp2Rationale,
-      nearestNewsStr,
-      promptShortGexLine,
-      promptDetailedGexWalls,
-      currentFlip,
-      currentMaxPain,
-      isPositiveGamma,
-      migrationDiagnosis,
-      d1Trend,
-      d1KeyLevel,
-      d1LevelDesc,
-      h4Trend,
-      h4KeyLevel,
-      h4LevelDesc,
-      h1Trend,
-      h1KeyLevel,
-      h1LevelDesc,
-      m30Trend,
-      m30KeyLevel,
-      m30LevelDesc,
-      m15Trend,
-      m15KeyLevel,
-      m15LevelDesc,
-      consensus5Str,
-      indicatorForecast,
-      currentDayPw,
-      currentDayCw,
-      isEntryTriggered,
-      scheduleRuleInstruction,
-      expiryRuleInstruction,
-      feedbackLoopContext,
-      webSearchStatusClause,
-      interfaceProhibitionClause,
-      isCallWallRunningAway,
+      spot: currentPriceNum,
+      direction: ufeDirForSig,
+      permissionState: ufeStateForSig,
+      callWall: currentDayCw,
+      putWall: currentDayPw,
+      gammaFlip: currentFlip,
+      isDangerWindow
     });
 
+    const cachedPromptMode: CachedPromptMode = isChatQuery
+      ? "chat"
+      : (requestSource === "audit_button" || mode === "audit_plan")
+      ? "audit"
+      : responseStyle === "short"
+      ? "short"
+      : "detailed";
+    const planCacheKey = `${String(ticker).toUpperCase()}_${cachedPromptMode}_${stateSignature}`;
 
-    const newsListFormatted = (Array.isArray(latestNews) && latestNews.length > 0)
-      ? `\nСвежие поступающие новости и публикации ленты:\n${latestNews.slice(0, 8).map((n: any) => `- [${n.time || ""}] ${n.title || ""} [${n.impact || "Новость"}] ${n.details ? `— ${n.details}` : ""}`).join("\n")}`
-      : "";
-
-    const liveWorldNewsFormatted = (Array.isArray(liveWorldNews) && liveWorldNews.length > 0)
-      ? `\n🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ (Google News Live Search):\n${liveWorldNews.map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate}) -> ${n.link}`).join("\n")}\n`
-      : "";
-
-    const chatEventsContext = effectiveEvents && effectiveEvents.length > 0
-      ? effectiveEvents.map((e: any) => `- [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n")
-      : "- На сегодня важных запланированных макроэкономических релизов нет.";
-
-    const chatRecentNewsItems: string[] = [];
-    if (Array.isArray(latestNews)) {
-      chatRecentNewsItems.push(...latestNews.slice(0, 4).map((n: any) => `- [${n.time || timeMsk} МСК] ${n.title}`));
-    }
-    if (Array.isArray(liveWorldNews)) {
-      chatRecentNewsItems.push(...liveWorldNews.slice(0, 4).map((n: any) => `- [${n.source}] ${n.title} (${n.pubDate})`));
-    }
-    const chatNewsContext = chatRecentNewsItems.length > 0
-      ? `\nСвежие мировые новости за последние 24–48 часов:\n${chatRecentNewsItems.join("\n")}`
-      : "\nСвежих новостей за последние часы не поступало.";
-
-    let prompt = isChatQuery
-      ? `❓ ВОПРОС ТРЕЙДЕРА В ЧАТЕ ПО ${ticker}:
-"${userQuery.trim()}"
-
-📅 РЕАЛЬНЫЙ КАЛЕНДАРЬ МАКРОЭКОНОМИЧЕСКИХ СОБЫТИЙ НА СЕГОДНЯ (${timeMsk} МСК):
-${chatEventsContext}${chatNewsContext}
-
-📊 ТЕКУЩИЙ РЫНОЧНЫЙ КОНТЕКСТ (${ticker}, ${timeMsk} МСК):
-- Текущая цена: ${currentPrice} | Консенсус 5 ТФ: ${consensus5Str} | ATR: ~${dailyAtr} п.
-- Сырые индикаторы: RSI 14 = ${rawRsi14} (пред: ${rawPrevRsi14}), MACD Hist = ${rawMacdHist}, Дельта = ${rawDelta}, Дивергенция = ${rawDiv}
-- Предложение индикатора QUANTEX: ${indDirection} (Вход: ${indEntry}, SL: ${indSl}, TP1: ${indTp1})
-- GEX уровни и сдвиг: Дневной CW: ${prevDayCw} ➔ ${currentDayCw} (${dayCwShiftLabel}), Месячный CW: ${prevMonthCw} ➔ ${currentMonthCw} (${monthCwShiftLabel}), Put Wall: ${currentDayPw}, Flip: ${currentFlip} (${isPositiveGamma ? "Positive Gamma — уровни держат" : "Negative Gamma — уровни пробиваются"}).
-- Статус динамики уровней: ${migrationSummaryShort}
-
-ИНСТРУКЦИЯ К ОТВЕТУ В ЧАТЕ:
-- Ответь КОРОТКО (2–4 емких предложения) строго на суть заданного вопроса!
-- Если трейдер спросил про события дня или новости — перечисли события из календаря выше с точным временем МСК. Не выдумывай отсутствующие события!
-- Если спросили про настройки или подключение — ответь: «Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX».
-- Если спросили про GEX или шорт от пробитого уровня — объясни, почему шорт от убегающего уровня опасен и как работает Gamma Squeeze!
-- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «интернет отключен», «нет доступа к сети» или выдумывать названия меню!
-- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, если трейдер прямо не нажал «Сформировать торговый план»!`
-      : `${imminentInfo.isImminent ? `🚨 ВНИМАНИЕ! ДО ВЫХОДА МАКРОСТАТИСТИКИ ОСТАЛОСЬ ${imminentInfo.minutesRemaining} МИНУТ (${imminentInfo.timeMsk} МСК — ${imminentInfo.title})! ПЕРВОЙ СТРОКОЙ ОТВЕТА ОБЯЗАТЕЛЬНО ПОМЕСТИ КРАСНОЕ ПРЕДУПРЕЖДЕНИЕ!\n\n` : ""}Инструмент: ${ticker} | Статус рынка: ${marketInfo.statusTextRu} | Режим: ${marketInfo.operatingRegimeRu} | Текущая цена: ${currentPrice} | Время: ${dateMsk} (${marketInfo.dayOfWeekRu}) ${timeMsk} МСК.
-Формат ответа: ${isShortMode ? "«КОРОТКИЙ ОТВЕТ» (СТРОГО 4 СТРОКИ: Новости/Предупреждение, GEX + Консенсус ТФ, Сделка, Вердикт)" : "«РАЗВЁРНУТЫЙ ОТВЕТ» (СТРОГО 4 БЛОКА: 1. Новости, 2. GEX уровни, 3. Технический анализ и Консенсус 5 ТФ, 4. Торговый план на основе консенсуса и GEX)"}.
-Режим запроса: ${mode === "morning_brief" ? "Утренний макро-брифинг" : mode === "noon_update" ? "Дневной апдейт" : mode === "event_alert" ? "Предупреждение перед выходом данных" : mode === "custom_query" ? "Вопрос трейдера к аналитику" : (!marketInfo.isOpen ? "Аудит закрытия недели и план на понедельник" : "Общий торговый план на день по всем таймфреймам")}.
-
-${!marketInfo.isOpen ? `⚠️ НАПОМИНАНИЕ: Сегодня ${marketInfo.dayOfWeekRu} — регулярные торги закрыты до ${marketInfo.nextOpenTextRu}. Отчетов CPI и биржевых сессий сегодня НЕТ.` : ''}
-
-1. 📰 НОВОСТНОЙ И МАКРОЭКОНОМИЧЕСКИЙ КОНТЕКСТ:
-${effectiveEvents.map((e: any) => `- [${e.timeMsk} МСК] — ${e.title} [${e.impact || "Влияние"}] ${e.details ? `— ${e.details}` : ""}`).join("\n")}
-${newsListFormatted}
-${liveWorldNewsFormatted}
-
-2. 📊 ОПЦИОННЫЕ УРОВНИ GEX И ДИНАМИКА МИГРАЦИИ (LEVEL SHIFT):
-- Текущая цена: ${currentPrice} | Рубеж Zero-Flip: ${currentFlip}
-- Гамма-режим: ${isPositiveGamma ? "POSITIVE GAMMA (+GEX, цена ВЫШЕ Flip — дилеры гасят волатильность, уровни ДЕРЖАТ цену, торгуем на отбой)" : "NEGATIVE GAMMA (-GEX, цена НИЖЕ Flip — дилеры разгоняют тренд, уровни ПРОБИВАЮТСЯ, торговля на отбой ЗАПРЕЩЕНА)"}
-- Режим рынка (Anti-Chop & Trend): ${antiChopTrendClause}
-- Дневной Call Wall (0DTE/1D): был ${prevDayCw}, стал ${currentDayCw} (${dayCwShiftLabel})
-- Дневной Put Wall (0DTE/1D): был ${prevDayPw}, стал ${currentDayPw} (${dayPwShiftLabel})
-- Месячный Call Wall (Monthly OPEX): был ${prevMonthCw}, стал ${currentMonthCw} (${monthCwShiftLabel})
-- Месячный Put Wall (Monthly OPEX): был ${prevMonthPw}, стал ${currentMonthPw} (${monthPwShiftLabel})
-- Точка Max Pain: ${currentMaxPain}
-- Статус миграции открытого интереса (OI Migration Status):
-  ${migrationDiagnosis}
-
-3. 📈 ДАННЫЕ ПО ВСЕМ 5 ТАЙМФРЕЙМАМ:
-- 1D: ${d1Trend} | Уровень: ${d1KeyLevel} (${d1LevelDesc})
-- 4H: ${h4Trend} | Уровень: ${h4KeyLevel} (${h4LevelDesc})
-- 1H: ${h1Trend} | Уровень: ${h1KeyLevel} (${h1LevelDesc})
-- 30M: ${m30Trend} | Уровень: ${m30KeyLevel} (${m30LevelDesc})
-- 15M: ${m15Trend} | Уровень: ${m15KeyLevel} (${m15LevelDesc})
-👉 ИТОГОВЫЙ КОНСЕНСУС: ${consensus5Str}
-
-📊 СЫРЫЕ ЗНАЧЕНИЯ ИНДИКАТОРОВ (ДЛЯ АНАЛИЗА ДИВЕРГЕНЦИЙ И ИМПУЛЬСА):
-- RSI (14): ${rawRsi14} (предыдущий экстремум: ${rawPrevRsi14}) | RSI (6): ${rawRsi6}
-- MACD (12, 26, 9): Line = ${rawMacdLine}, Signal = ${rawMacdSignal}, Histogram = ${rawMacdHist} (пред. бар: ${rawPrevMacdHist})
-- Стохастик (%K / %D): ${rawStochK} / ${rawStochD}
-- Текущий ATR (14): ${rawAtr14} п.
-- Дельта объемов (Delta / CVD): ${rawDelta} | ${rawCvd}
-- Анализ расхождений: ${rawDiv}
-👉 ОБЯЗАТЕЛЬНО: Оцени эти сырые значения индикаторов на предмет скрытых или явных дивергенций (расхождения между экстремумами цены и пиками RSI / гистограммы MACD) и отрази их в Блоке 3!
-
-4. 🤖 ПРЕДЛОЖЕНИЕ ИНДИКАТОРА QUANTEX (ДЛЯ ПРОВЕРКИ РИСК-МЕНЕДЖЕРОМ):
-- Предложение индикатора: "${indProposalNotice}"
-- Направление: ${indDirection} | Вход: ${indEntry} | Стоп: ${indSl} (дистанция: ${indStopDist} п. / ${indStopAtrRatio} ATR) | TP1: ${indTp1} | TP2: ${indTp2}
-- Статус в терминале (HUD): "${hudStatus}"
-
-5. 🛡️ РАСЧЕТНЫЕ ПАРАМЕТРЫ СДЕЛКИ ОТ РЕАЛЬНЫХ УРОВНЕЙ ТФ (ДНЕВНОЙ ATR ~${dailyAtr} п.):
-- Консенсус ТФ: ${isBull ? "LONG" : "SHORT"} (${consensus5Str})
-- Безопасный вход: ${entryPriceFormatted} (${entryRationale}) [${isEntryTriggered ? "✅ ВХОД УЖЕ СРАБОТАЛ, ПОЗИЦИЯ В РЫНКЕ" : "⏳ ВХОД ЕЩЁ НЕ СРАБОТАЛ"}]
-- Защитный стоп-лосс (SL): ${slFormatted} (${slRationale})
-- Тейк 1: ${tp1Formatted} (${tp1Rationale}) [${isTp1Hit ? "✅ TP1 УЖЕ ВЗЯТ" : isEntryTriggered ? `⏳ В позиции, ждём TP1 (до цели: ${distToTp1} п.)` : "⏳ В ожидании входа"}]
-- Тейк 2: ${tp2Formatted} (${tp2Rationale})
-- План Б (инвалидация): пробой уровня ${slFormatted} с целью ${indicatorForecast?.altTp1 ?? (isBull ? (gex?.putWall || "4000") : (gex?.callWall || "4040"))}
-👉 ТВОЯ ЗАДАЧА КАК РИСК-МЕНЕДЖЕРА В БЛОКЕ 4:
-Сравни предложение индикатора с дневным ATR (~${dailyAtr} п.), 5-ТФ консенсусом (${consensus5Str}) и уровнями GEX (Call Wall ${gex?.callWall || "N/A"}, Put Wall ${gex?.putWall || "N/A"}).
-Если предложение индикатора адекватно (стоп ≤ 1.5 ATR, логично и согласуется с рынком) — напиши «Мой вердикт: Согласен с индикатором».
-Если же стоп индикатора чрезмерен (${indStopAtrRatio} ATR > 1.5 ATR) или сигнал противоречит рыночным данным — напиши «Мой вердикт: ВНИМАНИЕ: ДИВЕРГЕНЦИЯ», объясни почему и выведи скорректированный безопасный торговый план!`;
-
-    if (!isChatQuery) {
-      if (Array.isArray(history) && history.length > 0) {
-        prompt += `\n💬 ИСТОРИЯ ПРЕДЫДУЩЕГО ДИАЛОГА С ТРЕЙДЕРОМ:\n${history.slice(-6).map((h: any) => `[${h.role === "user" ? "Трейдер" : "Аналитик"}]: ${String(h.text || "").slice(0, 350)}`).join("\n")}\n`;
+    // БЛОК 2: Серверный 30-минутный кэш ручных планов (ТОЛЬКО не для чата и при !forceRecalculate)
+    if (!isChatQuery && !forceRecalculate) {
+      const hit = manualPlanCache.get(planCacheKey);
+      if (hit && now.getTime() - hit.cachedAt < MANUAL_PLAN_CACHE_TTL_MS) {
+        return res.json({
+          plan: hit.plan,
+          provider: hit.provider,
+          isSimulated: hit.isSimulated,
+          timestamp: hit.timestamp,
+          cached: true,
+          cachedAt: hit.cachedAt,
+          stateSignature
+        });
       }
-      if (userQuery && userQuery.trim().length > 0) {
-        prompt += isShortMode
-          ? `\n❓ ЗАПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция: Ответь максимально кратко и по сути (до 6–8 строк): статус рынка + точные мировые данные/макро-фактор + точные уровни входа, целей, стопа и GEX.`
-          : `\n❓ КОНКРЕТНЫЙ ЗАПРОС / ВОПРОС ТРЕЙДЕРА:\n"${userQuery.trim()}"\n\nИнструкция к ответу: Дай глубокий, исчерпывающий, фундаментально аргументированный ответ на вопрос трейдера с выходом в мировой контекст. Если трейдер спрашивает о прогнозах, ожиданиях аналитиков к концу года или оценках инвестбанков (Goldman Sachs, UBS, JP Morgan, Morgan Stanley, Citi, Bank of America, HSBC) — ПЕРВЫМ ДЕЛОМ ОТВЕТЬ НА ЭТОТ ВОПРОС! Назови конкретные таргеты и прогнозы цен крупнейших инвестдомов, ключевые драйверы и консенсус аналитиков. Если вопрос о макростатистике (инфляция США CPI/PCE, ставка ФРС, NFP, мировые новости) — приведи точные фактические данные, раскрывай причинно-следственные связи с доходностями US Treasuries, DXY и котировками ${ticker}, а также сопоставь с опционными барьерами GEX.`;
-      }
-      if (eventContext) {
-        prompt += `\nКонтекст события для алерта: ${eventContext.timeMsk} МСК — ${eventContext.title} (${eventContext.details || ""})`;
-      }
-      prompt += `\n${expiryRuleInstruction}\n${feedbackLoopContext}\n`;
     }
 
     const effectiveDsKey = sanitizeApiKey(clientAi.deepSeekApiKey || serverAi.deepSeekApiKey || process.env.DEEPSEEK_API_KEY || "");
@@ -12004,191 +12150,203 @@ ${liveWorldNewsFormatted}
     const hasValidQwen = Boolean(effectiveQwenKey && effectiveQwenKey.trim().length > 5);
     const hasValidGemini = Boolean(effectiveGeminiKey && effectiveGeminiKey.trim().length > 5);
 
-    // Primary priority: client's explicit provider or server's configured activeProvider
+    // Determine active provider
     let activeProvider = clientAi.provider || serverAi.activeProvider || "autonomous";
-
-    // If activeProvider is deepseek and valid key exists, keep deepseek!
     if (activeProvider === "deepseek" && hasValidDs) {
       // confirmed
     } else if (activeProvider === "qwen" && hasValidQwen) {
       // confirmed
     } else if (activeProvider === "gemini" && hasValidGemini) {
       // confirmed
+    } else if (hasValidDs) {
+      activeProvider = "deepseek";
+    } else if (hasValidGemini) {
+      activeProvider = "gemini";
+    } else if (hasValidQwen) {
+      activeProvider = "qwen";
     } else {
-      // Auto-fallback cascade to whatever provider has a valid key
-      if (hasValidDs) {
-        activeProvider = "deepseek";
-      } else if (hasValidGemini) {
-        activeProvider = "gemini";
-      } else if (hasValidQwen) {
-        activeProvider = "qwen";
-      } else {
-        activeProvider = "autonomous";
+      activeProvider = "autonomous";
+    }
+
+    // Fetch live news ONLY if cache missed and not offline autonomous mode
+    const liveWorldNews = (responseStyle === "autonomous" || activeProvider === "autonomous")
+      ? []
+      : await fetchLiveWorldNews(userQuery, ticker).catch(() => []);
+
+    if (responseStyle === "autonomous") {
+      const rawAutonomousPlan = generateAutonomousAiPlan({
+        ticker,
+        timeframe,
+        currentPrice,
+        multiTfMetrics,
+        indicatorForecast,
+        gex,
+        events: effectiveEvents,
+        mode,
+        eventContext,
+        userQuery: userQuery || "",
+        timeMsk,
+        dateMsk,
+        responseStyle: "autonomous",
+        marketInfo,
+        liveWorldNews,
+        marketRegimeContext,
+        migrationDiagnosis,
+        hasPreviousSnapshot
+      });
+      const autonomousPlan = sanitizeTradePlanOutput(rawAutonomousPlan, sanitizeOpts);
+      const autoProvider = "🤖 QUANTEX Квант-движок";
+      const cachedAt = Date.now();
+      if (!isChatQuery) {
+        manualPlanCache.set(planCacheKey, {
+          plan: autonomousPlan,
+          provider: autoProvider,
+          isSimulated: false,
+          timestamp: `${timeMsk} МСК`,
+          cachedAt,
+          stateSignature
+        });
+      }
+      autoRecordForecast(autoProvider);
+      return res.json({
+        plan: autonomousPlan,
+        provider: autoProvider,
+        isSimulated: false,
+        timestamp: `${timeMsk} МСК`,
+        cached: false,
+        cachedAt,
+        stateSignature
+      });
+    }
+
+    // БЛОК 3: Статический system-промпт под Context Cache (байт-в-байт одинаковый префикс)
+    const staticSystemPrompt = getStaticSeniorPropSystemPrompt(cachedPromptMode);
+
+    // Optional DeepSeek live web search results (placed into DATA PAYLOAD in user message, NEVER system prompt)
+    const isDsWebSearchEnabled = clientAi.deepSeekWebSearch !== false && serverAi.deepSeekWebSearch !== false;
+    let dsSearchResults: Array<{ title?: string; url?: string }> = [];
+    if (activeProvider === "deepseek" && hasValidDs && isDsWebSearchEnabled) {
+      try {
+        const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
+        dsSearchResults = await fetchDeepSeekSearchApi(effectiveDsKey, searchQuery, 3);
+      } catch {}
+    }
+
+    const newsForPayload: Array<{ time?: string; timeMsk?: string; title?: string; impact?: string }> = [];
+    if (detWarning?.active) {
+      newsForPayload.push({ timeMsk: detWarning.timeMsk, title: detWarning.text, impact: "CRITICAL" });
+    }
+    if (Array.isArray(latestNews)) {
+      for (const n of latestNews.slice(0, 2)) {
+        newsForPayload.push({ time: n.time, title: n.title, impact: n.impact });
+      }
+    }
+    if (Array.isArray(liveWorldNews) && newsForPayload.length < 3) {
+      for (const n of liveWorldNews.slice(0, 3 - newsForPayload.length)) {
+        newsForPayload.push({ time: n.pubDate, title: `${n.source ? `[${n.source}] ` : ""}${n.title}` });
       }
     }
 
-    // 1. DeepSeek AI Provider execution
-    if (activeProvider === "deepseek") {
-      const dsKey = effectiveDsKey;
+    const migrationLogTail = getStabilizerMigrationLog(ticker).slice(-2);
+    const slimPayload = buildSlimDataPayload({
+      ticker,
+      timeframe: propInterval,
+      currentPrice: currentPriceNum,
+      schedule: currentSchedule,
+      isDangerWindow,
+      imminentInfo,
+      propContext: effectivePropContext,
+      gex: {
+        regime: gex?.regime || (isPositiveGamma ? "POSITIVE_GAMMA" : "NEGATIVE_GAMMA"),
+        dayCw: currentDayCw,
+        dayPw: currentDayPw,
+        monthCw: currentMonthCw,
+        monthPw: currentMonthPw,
+        flip: currentFlip,
+        pain: currentMaxPain,
+        migrationLog: migrationLogTail
+      },
+      consensus5Line: consensus5Str,
+      ufe: effectiveUfe || indicatorForecast,
+      rawIndicators: {
+        rsi14: rawRsi14,
+        macdHist: rawMacdHist,
+        delta: rawDelta,
+        div: rawDiv
+      },
+      news: newsForPayload,
+      searchResults: dsSearchResults
+    });
+
+    const userDirective = isChatQuery
+      ? `ВОПРОС ТРЕЙДЕРА (${ticker} ${propInterval}): "${userQuery.trim()}". Ответь кратко (2–4 предложения) строго по сути.`
+      : cachedPromptMode === "audit"
+      ? `Проведи АУДИТ UFE v1 и риск-менеджмент сделки по ${ticker} (${propInterval}).${userQuery ? ` Запрос: ${userQuery.trim()}` : ""}`
+      : cachedPromptMode === "short"
+      ? `Сформируй КОРОТКИЙ торговый план (4 строки) по ${ticker} (${propInterval}).${userQuery ? ` Запрос: ${userQuery.trim()}` : ""}`
+      : `Сформируй РАЗВЁРНУТЫЙ торговый план (4 блока) по ${ticker} (${propInterval}).${userQuery ? ` Запрос: ${userQuery.trim()}` : ""}`;
+
+    const cachedUserMessage = buildCachedUserMessage(userDirective, slimPayload);
+    const llmMaxTokens = (isChatQuery || cachedPromptMode === "short") ? 700 : 2048;
+
+    const saveAndRespond = (rawText: string, providerLabel: string, isSimulated: boolean) => {
+      const cleanPlan = sanitizeTradePlanOutput(rawText, sanitizeOpts);
+      const cachedAt = Date.now();
+      if (!isChatQuery) {
+        manualPlanCache.set(planCacheKey, {
+          plan: cleanPlan,
+          provider: providerLabel,
+          isSimulated,
+          timestamp: `${timeMsk} МСК`,
+          cachedAt,
+          stateSignature
+        });
+      }
+      autoRecordForecast(providerLabel);
+      addServerLog("INFO", `Анализ сформирован: ${providerLabel} [${cachedPromptMode}]`);
+      return res.json({
+        plan: cleanPlan,
+        provider: providerLabel,
+        isSimulated,
+        timestamp: `${timeMsk} МСК`,
+        cached: false,
+        cachedAt,
+        stateSignature
+      });
+    };
+
+    // 1. DeepSeek AI Provider execution (Context-Cached static system + slim DATA PAYLOAD)
+    if (activeProvider === "deepseek" && hasValidDs) {
       const dsModel = clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat";
-      if (!dsKey || dsKey.trim().length < 5) {
-        const fallback = generateAutonomousAiPlan({
-          ticker,
-          timeframe,
-          currentPrice,
-          multiTfMetrics,
-          indicatorForecast,
-          gex,
-          events,
-          mode,
-          eventContext,
-          userQuery: userQuery || "",
-          timeMsk,
-          dateMsk
-        });
-        return res.json({
-          plan: fallback,
-          provider: "QUANTEX Macro & Quant Engine",
-          isSimulated: true,
-          timestamp: `${timeMsk} МСК`
-        });
-      }
-
-      const isDsWebSearchEnabled = clientAi.deepSeekWebSearch !== false && serverAi.deepSeekWebSearch !== false;
-
-      let dsSystemInstruction = systemInstruction;
-      let dsPrompt = prompt;
-
-      if (isDsWebSearchEnabled) {
-        dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ (LIVE WEB SEARCH): АКТИВИРОВАН.
-Ты напрямую подключен к актуальному мировому интернету в режиме реального времени. В твоем распоряжении свежие международные данные, новости и котировки из сети.
-При ответе на вопросы о прогнозах, ожиданиях аналитиков к концу года, заседании ФРС, макростатистике (инфляция США CPI/PCE, рынок труда NFP) или геополитике:
-1. Обязательно используй переданные актуальные мировые новости и данные из сети.
-2. Приводи конкретные цифры фактических данных и консенсус-прогнозы, процентные ставки и фундаментальные драйверы.`;
-
-        if (!isChatQuery) {
-          dsSystemInstruction += `\n3. В конце ответа сошлись на проверенные источники:
-🌐 **Проверенные мировые источники и новости из сети (Live Web Search):**
-с перечислением ключевых агентств (Bloomberg, Reuters, CME Group, Kitco, Investing.com) и дат.`;
-        } else {
-          dsSystemInstruction += `\n3. В режиме чата отвечай кратко и конкретно (2–4 емких предложения), приводя точные цифры макростатистики.`;
-        }
-
-        // Direct search without intermediate 422 errors: query /v1/tools/search directly first
-        const searchQuery = buildCleanMacroSearchQuery(ticker, userQuery);
-        console.log(`[DeepSeek Live Search] 🔍 Прямой запрос в DeepSeek Search API (https://api.deepseek.com/v1/tools/search) с запросом: "${searchQuery}"...`);
-        const dsSearchResults = await fetchDeepSeekSearchApi(dsKey, searchQuery, 5);
-
-        if (dsSearchResults.length > 0) {
-          console.log(`[DeepSeek Search API] ✅ Получено ${dsSearchResults.length} проверенных RU/EN результатов веб-поиска:`, dsSearchResults.map(s => `[${s.title}](${s.url})`));
-          addServerLog("INFO", `[DeepSeek Search API] ✅ Успешно получено ${dsSearchResults.length} источников из интернета от поисковика DeepSeek`);
-          dsPrompt += `\n\n🌐 РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ ЖИВОГО ПОИСКА В ИНТЕРНЕТЕ ИЗ ПОИСКОВОЙ СИСТЕМЫ DEEPSEEK (Search API):\n` +
-            dsSearchResults.map(s => `• [${s.title}](${s.url}) — ${s.snippet || ""}`).join("\n");
-        } else {
-          console.log(`[DeepSeek Search API] Поисковик не вернул прямых результатов, используются потоки мировых новостей.`);
-        }
-      } else {
-        dsSystemInstruction += `\n\n🌐 ЖИВОЙ ВЫХОД В ИНТЕРНЕТ: ОТКЛЮЧЕН пользователем. Опирайся исключительно на локальные алгоритмические данные терминала.`;
-        dsPrompt = dsPrompt.replace(/🌐 АКТУАЛЬНЫЕ МИРОВЫЕ НОВОСТИ ИЗ СЕТИ[\s\S]*?(?=\n\n|\n📊)/g, "");
-      }
-
       try {
         const endpoint = aiProviderConfig?.deepSeekEndpoint || "https://api.deepseek.com/chat/completions";
-        
-        // Standard chat completions payload WITHOUT tools parameter to prevent HTTP 422 error
-        const dsRequestBody: any = {
-          model: dsModel,
-          messages: [
-            { role: "system", content: dsSystemInstruction },
-            { role: "user", content: dsPrompt }
-          ],
-          temperature: 0.4,
-          max_tokens: 4096
-        };
-
-        console.log(`[DeepSeek API Request] 🌐 Отправка POST ${endpoint} | Модель: ${dsModel} (без tools, с внедренными данными поиска)...`);
-        addServerLog("INFO", `[DeepSeek API] Отправка запроса на ${endpoint} (модель: ${dsModel}, прямой поиск: ${isDsWebSearchEnabled ? "активен" : "отключен"})`);
-
         const dsRes = await fetch(endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${dsKey.trim()}`
+            "Authorization": `Bearer ${effectiveDsKey.trim()}`
           },
-          body: JSON.stringify(dsRequestBody)
+          body: JSON.stringify({
+            model: dsModel,
+            messages: [
+              { role: "system", content: staticSystemPrompt },
+              { role: "user", content: cachedUserMessage }
+            ],
+            temperature: 0.35,
+            max_tokens: llmMaxTokens
+          })
         });
 
         if (dsRes.ok) {
           const dsData = await dsRes.json();
-          console.log(`[DeepSeek API Response] HTTP ${dsRes.status} OK.`);
-
-          // 3. Inspect search_results or citations in response
-          const searchResults = dsData.search_results || 
-            dsData.choices?.[0]?.message?.search_results || 
-            dsData.choices?.[0]?.message?.tool_calls ||
-            dsData.choices?.[0]?.message?.annotations;
-
-          const citations = dsData.citations || 
-            dsData.choices?.[0]?.message?.citations;
-
-          if (searchResults || citations) {
-            console.log(`[DeepSeek Live Search] 🔍 ОБНАРУЖЕНЫ РЕЗУЛЬТАТЫ ВЕБ-ПОИСКА В ОТВЕТЕ API:`, {
-              searchResults: searchResults || null,
-              citations: citations || null
-            });
-            addServerLog("INFO", `[DeepSeek Search] ✅ В ответе API обнаружены ссылки и результаты поиска: ${JSON.stringify(citations || searchResults).slice(0, 200)}`);
-          } else {
-            console.log(`[DeepSeek Live Search] Ответ API получен. Поисковые данные успешно интегрированы моделью в текст ответа.`);
-            addServerLog("INFO", `[DeepSeek API] Ответ успешно получен. Поисковые данные верифицированы.`);
-          }
-
           const text = dsData?.choices?.[0]?.message?.content;
           if (text) {
-            let finalPlan = text;
-            if (!isChatQuery && isDsWebSearchEnabled && Array.isArray(liveWorldNews) && liveWorldNews.length > 0 && !finalPlan.includes("🌐") && !finalPlan.toLowerCase().includes("источник")) {
-              finalPlan += `\n\n---\n🌐 **Актуальные мировые источники и новости из сети (Live Web Search):**\n` +
-                liveWorldNews.slice(0, 4).map(item => `• **${item.source}**: [${item.title}](${item.link}) — _${item.pubDate}_`).join("\n");
-            }
-
-            finalPlan = sanitizeTradePlanOutput(finalPlan, sanitizeOpts);
-            const providerLabel = isDsWebSearchEnabled
-              ? `DeepSeek (${dsModel} 🌐 Live Web)`
-              : `DeepSeek (${dsModel})`;
-
-            autoRecordForecast(providerLabel);
-            addServerLog("INFO", `Анализ сформирован нейросетью ${providerLabel}`);
-            return res.json({
-              plan: finalPlan,
-              provider: providerLabel,
-              isSimulated: false,
-              timestamp: `${timeMsk} МСК`
-            });
+            const providerLabel = isDsWebSearchEnabled ? `DeepSeek (${dsModel} 🌐 Cached)` : `DeepSeek (${dsModel})`;
+            return saveAndRespond(text, providerLabel, false);
           }
         } else {
           const errText = await dsRes.text();
-          addServerLog("WARN", `Ошибка вызова DeepSeek API (${dsRes.status}): ${errText}`);
-          const fallback = sanitizeTradePlanOutput(generateAutonomousAiPlan({
-            ticker,
-            timeframe,
-            currentPrice,
-            multiTfMetrics,
-            indicatorForecast,
-            gex,
-            events: effectiveEvents,
-            mode,
-            eventContext,
-            userQuery: userQuery || "",
-            timeMsk,
-            dateMsk,
-            responseStyle,
-            marketInfo
-          }), sanitizeOpts);
-          return res.json({
-            plan: `⚠️ **Ответ DeepSeek API (${dsRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ Настройки станции -> API ИИ». Сформирован развернутый макро-план:_\n\n---\n\n${fallback}`,
-            provider: `DeepSeek (Ошибка ${dsRes.status} -> QUANTEX Macro)`,
-            isSimulated: true,
-            timestamp: `${timeMsk} МСК`
-          });
+          addServerLog("WARN", `Ошибка DeepSeek API (${dsRes.status}): ${errText}`);
         }
       } catch (err: any) {
         addServerLog("WARN", `Ошибка вызова DeepSeek API: ${err.message}`);
@@ -12196,244 +12354,82 @@ ${liveWorldNewsFormatted}
     }
 
     // 2. Qwen / Alibaba DashScope Provider execution
-    if (activeProvider === "qwen") {
-      const qwenKey = effectiveQwenKey;
+    if (activeProvider === "qwen" && hasValidQwen) {
       const qwenModel = aiProviderConfig?.qwenModel || "qwen-plus";
       const qwenEndpoint = aiProviderConfig?.qwenEndpoint || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions";
-      
-      if (!qwenKey || qwenKey.trim().length < 5) {
-        const fallback = sanitizeTradePlanOutput(generateAutonomousAiPlan({
-          ticker,
-          timeframe,
-          currentPrice,
-          multiTfMetrics,
-          indicatorForecast,
-          gex,
-          events: effectiveEvents,
-          mode,
-          eventContext,
-          userQuery: userQuery || "",
-          timeMsk,
-          dateMsk,
-          responseStyle,
-          marketInfo
-        }), sanitizeOpts);
-        return res.json({
-          plan: fallback,
-          provider: "QUANTEX Macro & Quant Engine",
-          isSimulated: true,
-          timestamp: `${timeMsk} МСК`
-        });
-      }
-
       try {
         const qwenRes = await fetch(qwenEndpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${qwenKey.trim()}`
+            "Authorization": `Bearer ${effectiveQwenKey.trim()}`
           },
           body: JSON.stringify({
             model: qwenModel,
             messages: [
-              { role: "system", content: systemInstruction },
-              { role: "user", content: prompt }
+              { role: "system", content: staticSystemPrompt },
+              { role: "user", content: cachedUserMessage }
             ],
-            temperature: 0.4,
-            max_tokens: 4096
+            temperature: 0.35,
+            max_tokens: llmMaxTokens
           })
         });
-
         if (qwenRes.ok) {
           const qwenData = await qwenRes.json();
           const text = qwenData?.choices?.[0]?.message?.content;
           if (text) {
-            const cleanPlan = sanitizeTradePlanOutput(text, sanitizeOpts);
-            const qwenProv = `Qwen (${qwenModel})`;
-            autoRecordForecast(qwenProv);
-            addServerLog("INFO", `Анализ сформирован нейросетью ${qwenProv}`);
-            return res.json({
-              plan: cleanPlan,
-              provider: qwenProv,
-              isSimulated: false,
-              timestamp: `${timeMsk} МСК`
-            });
+            return saveAndRespond(text, `Qwen (${qwenModel})`, false);
           }
         } else {
           const errText = await qwenRes.text();
           addServerLog("WARN", `Ошибка вызова Qwen API (${qwenRes.status}): ${errText}`);
-          const fallback = sanitizeTradePlanOutput(generateAutonomousAiPlan({
-            ticker,
-            timeframe,
-            currentPrice,
-            multiTfMetrics,
-            indicatorForecast,
-            gex,
-            events: effectiveEvents,
-            mode,
-            eventContext,
-            userQuery: userQuery || "",
-            timeMsk,
-            dateMsk,
-            responseStyle,
-            marketInfo
-          }), sanitizeOpts);
-          return res.json({
-            plan: `⚠️ **Ответ Qwen / DashScope (${qwenRes.status})**: ${errText.slice(0, 160)}...\n\n_Проверьте баланс и правильность ключа в «⚙️ Настройки станции -> API ИИ». Сформирован развернутый макро-план:_\n\n---\n\n${fallback}`,
-            provider: `Qwen (Ошибка ${qwenRes.status} -> QUANTEX Macro)`,
-            isSimulated: true,
-            timestamp: `${timeMsk} МСК`
-          });
         }
       } catch (err: any) {
         addServerLog("WARN", `Ошибка вызова Qwen API: ${err.message}`);
       }
     }
 
-    // 3. Gemini Provider execution across all official Gemini models
-    if (activeProvider === "gemini") {
-      const gKey = effectiveGeminiKey && effectiveGeminiKey.trim().length > 5 ? effectiveGeminiKey : undefined;
+    // 3. Gemini Provider execution
+    const client = getGeminiClient();
+    if (activeProvider === "gemini" && (hasValidGemini || client)) {
+      const gKey = hasValidGemini ? effectiveGeminiKey : undefined;
       const gEndpoint = clientAi.geminiEndpoint || serverAi.geminiEndpoint;
       const customGeminiClient = gKey ? createGeminiClient(gKey, gEndpoint) : client;
-
       if (customGeminiClient) {
         try {
           const preferredModel = normalizeGeminiModel(clientAi.geminiModel || serverAi.geminiModel || "gemini-3.1-flash-lite");
-          // Multi-model fallback cascade across all official @google/genai models:
           const candidateModels = Array.from(new Set([
             preferredModel,
             "gemini-3.1-flash-lite",
             "gemini-3.8-flash",
-            "gemini-flash-latest",
-            "gemini-4-argon",
-            "gemini-3.1-pro-preview"
+            "gemini-flash-latest"
           ]));
-
-          let responseText = "";
-          let finalModelUsed = preferredModel;
-          let webSourcesText = "";
-
           for (const modelCandidate of candidateModels) {
             try {
-              let res: any = null;
-              // 1. Attempt generation with Google Search Grounding for live internet access
-              try {
-                res = await customGeminiClient.models.generateContent({
-                  model: modelCandidate,
-                  contents: prompt,
-                  config: {
-                    systemInstruction,
-                    temperature: 0.35,
-                    tools: [{ googleSearch: {} }]
-                  }
-                });
-              } catch (searchToolErr: any) {
-                // If search tool is not supported or rejected on this model tier, retry without tools
-                res = await customGeminiClient.models.generateContent({
-                  model: modelCandidate,
-                  contents: prompt,
-                  config: {
-                    systemInstruction,
-                    temperature: 0.35
-                  }
-                });
-              }
-
-              if (res && res.text) {
-                responseText = res.text;
-                finalModelUsed = modelCandidate;
-
-                // Extract verified web citations if grounding was triggered
-                const groundingChunks = res.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                if (Array.isArray(groundingChunks) && groundingChunks.length > 0) {
-                  const sources = groundingChunks
-                    .filter((c: any) => c?.web?.uri)
-                    .map((c: any) => `• [${c.web.title || c.web.uri}](${c.web.uri})`)
-                    .slice(0, 6)
-                    .join("\n");
-                  if (sources) {
-                    webSourcesText = `\n\n🌐 **Проверенные первоисточники и новости из мировой паутины (Google Search Grounding):**\n${sources}`;
-                  }
-                } else if (!isChatQuery && liveWorldNews && liveWorldNews.length > 0) {
-                  const rssSources = liveWorldNews
-                    .map((n: any) => `• [${n.title}](${n.link}) *(${n.source})*`)
-                    .slice(0, 4)
-                    .join("\n");
-                  webSourcesText = `\n\n🌐 **Свежие мировые новости и первоисточники (Google News Live):**\n${rssSources}`;
+              const gRes: any = await customGeminiClient.models.generateContent({
+                model: modelCandidate,
+                contents: cachedUserMessage,
+                config: {
+                  systemInstruction: staticSystemPrompt,
+                  temperature: 0.35
                 }
-                break;
+              });
+              if (gRes && gRes.text) {
+                return saveAndRespond(gRes.text, `Gemini (${modelCandidate})`, false);
               }
             } catch (candErr: any) {
               const errMsg = String(candErr?.message || "");
-              const isInvalidKey = errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID");
-              if (isInvalidKey) {
-                addServerLog("WARN", `Ключ Gemini API недействителен. Проверьте ключ в Настройках станции.`);
-                break;
-              }
-              addServerLog("INFO", `Модель ${modelCandidate} недоступна (${errMsg.slice(0, 70)}...). Переключаемся на резерв...`);
-            }
-          }
-
-          if (responseText) {
-            const cleanGeminiPlan = sanitizeTradePlanOutput(responseText + webSourcesText, sanitizeOpts);
-            const geminiProv = `Gemini (${finalModelUsed}${webSourcesText.includes("Google Search Grounding") ? " 🌐 Live Search" : " 🌐"})`;
-            autoRecordForecast(geminiProv);
-            return res.json({
-              plan: cleanGeminiPlan,
-              provider: geminiProv,
-              isSimulated: false,
-              timestamp: `${timeMsk} МСК`
-            });
-          }
-
-          // If Gemini returned empty response or errored, and DeepSeek key is present, failover to DeepSeek!
-          if (!responseText && hasValidDs) {
-            addServerLog("INFO", "Gemini недоступен -> автоматический резервный вызов DeepSeek API");
-            try {
-              const dsRes = await fetch(clientAi.deepSeekEndpoint || serverAi.deepSeekEndpoint || "https://api.deepseek.com/chat/completions", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Authorization": `Bearer ${effectiveDsKey.trim()}`
-                },
-                body: JSON.stringify({
-                  model: clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat",
-                  messages: [
-                    { role: "system", content: systemInstruction },
-                    { role: "user", content: prompt }
-                  ],
-                  temperature: 0.4,
-                  max_tokens: 4096
-                })
-              });
-              if (dsRes.ok) {
-                const dsData = await dsRes.json();
-                const text = dsData?.choices?.[0]?.message?.content;
-                if (text) {
-                  const cleanFailoverPlan = sanitizeTradePlanOutput(text, sanitizeOpts);
-                  const dsFailoverProv = `DeepSeek (${clientAi.deepSeekModel || serverAi.deepSeekModel || "deepseek-chat"} ⚡ Резервный)`;
-                  autoRecordForecast(dsFailoverProv);
-                  return res.json({
-                    plan: cleanFailoverPlan,
-                    provider: dsFailoverProv,
-                    isSimulated: false,
-                    timestamp: `${timeMsk} МСК`
-                  });
-                }
-              }
-            } catch (dsFailErr: any) {
-              console.warn("DeepSeek failover error:", dsFailErr?.message);
+              if (errMsg.includes("API key not valid") || errMsg.includes("API_KEY_INVALID")) break;
             }
           }
         } catch (err: any) {
-          console.error("Gemini cascade error in generate-plan:", err);
           handleGeminiError("/api/ai-analyst/generate-plan", err);
         }
       }
     }
 
-    // High-grade institutional fallback if API key absent or quota exceeded
-    const fallbackPlan = sanitizeTradePlanOutput(generateAutonomousAiPlan({
+    // Institutional deterministic fallback if LLM absent or errored
+    const fallbackRaw = generateAutonomousAiPlan({
       ticker,
       timeframe,
       currentPrice,
@@ -12451,21 +12447,9 @@ ${liveWorldNewsFormatted}
       liveWorldNews,
       migrationDiagnosis,
       hasPreviousSnapshot
-    }), sanitizeOpts);
-
-    const isApiKeyMissingOrInvalid = !effectiveGeminiKey || effectiveGeminiKey.startsWith("AIzaSyAhY9_") || effectiveGeminiKey.length < 10;
-    const finalFallbackProv = isApiKeyMissingOrInvalid
-      ? "QUANTEX Консенсус & Мировые данные 🌐 (Автономный)"
-      : (responseStyle === "short" ? "⚡ Короткий квант-ответ" : "📊 Развёрнутый макро-план (Мировые данные 🌐)");
-
-    autoRecordForecast(finalFallbackProv);
-
-    res.json({
-      plan: fallbackPlan,
-      provider: finalFallbackProv,
-      isSimulated: true,
-      timestamp: `${timeMsk} МСК`
     });
+    const finalFallbackProv = "QUANTEX Консенсус (Детерминированный резерв)";
+    return saveAndRespond(fallbackRaw, finalFallbackProv, true);
   } catch (err: any) {
     console.error("Error in /api/ai-analyst/generate-plan:", err);
     res.status(500).json({ error: err.message || "Internal Server Error" });
@@ -12579,47 +12563,49 @@ app.delete("/api/ai-learning/rules/:id", (req, res) => {
   }
 });
 
-// Periodic background evaluator (runs every 15 seconds)
-setInterval(() => {
-  try {
-    const priceMap: Record<string, { currentPrice: number; high?: number; low?: number }> = {};
-    for (const [key, val] of oandaHistoricalSeriesMap.entries()) {
-      if (val && val.lastSpotPrice) {
-        const sym = key.split("_")[0];
-        const lastBar = val.candles?.[val.candles.length - 1];
-        priceMap[sym] = {
-          currentPrice: val.lastSpotPrice,
-          high: lastBar?.high || val.lastSpotPrice,
-          low: lastBar?.low || val.lastSpotPrice
-        };
+// Periodic deterministic math evaluator (runs every 15 seconds — ZERO LLM calls)
+if (process.env.QUANTEX_UNIT_TEST !== "1") {
+  setInterval(() => {
+    try {
+      const priceMap: Record<string, { currentPrice: number; high?: number; low?: number }> = {};
+      for (const [key, val] of oandaHistoricalSeriesMap.entries()) {
+        if (val && val.lastSpotPrice) {
+          const sym = key.split("_")[0];
+          const lastBar = val.candles?.[val.candles.length - 1];
+          priceMap[sym] = {
+            currentPrice: val.lastSpotPrice,
+            high: lastBar?.high || val.lastSpotPrice,
+            low: lastBar?.low || val.lastSpotPrice
+          };
+        }
       }
-    }
-    evaluateForecastOutcomes(priceMap);
-    evaluateIndicatorSetups(priceMap);
+      evaluateForecastOutcomes(priceMap);
+      evaluateIndicatorSetups(priceMap);
 
-    // Background GEX migration tracker (throttled to 1 snapshot / 60 sec per ticker)
-    const xauSpot = priceMap["XAUUSD"]?.currentPrice || cachedDualMarketData?.oanda?.price;
-    if (xauSpot && Number.isFinite(xauSpot) && xauSpot > 0) {
-      (async () => {
-        try {
-          const dayRep = await getStabilizedGexReport("XAUUSD", "DAY", xauSpot).catch(() => null);
-          const monthRep = await getStabilizedGexReport("XAUUSD", "MONTH", xauSpot).catch(() => null);
-          if (dayRep || monthRep) {
-            recordGexMigrationSnapshot("XAUUSD", {
-              dayCw: dayRep?.callWall,
-              dayPw: dayRep?.putWall,
-              monthCw: monthRep?.callWall || dayRep?.callWall,
-              monthPw: monthRep?.putWall || dayRep?.putWall,
-              flip: dayRep?.zeroGex || dayRep?.gammaFlip,
-              pain: dayRep?.maxPain,
-              spot: xauSpot
-            });
-          }
-        } catch {}
-      })();
-    }
-  } catch {}
-}, 15000);
+      // Background GEX migration tracker (throttled to 1 snapshot / 60 sec per ticker)
+      const xauSpot = priceMap["XAUUSD"]?.currentPrice || cachedDualMarketData?.oanda?.price;
+      if (xauSpot && Number.isFinite(xauSpot) && xauSpot > 0) {
+        (async () => {
+          try {
+            const dayRep = await getStabilizedGexReport("XAUUSD", "DAY", xauSpot).catch(() => null);
+            const monthRep = await getStabilizedGexReport("XAUUSD", "MONTH", xauSpot).catch(() => null);
+            if (dayRep || monthRep) {
+              recordGexMigrationSnapshot("XAUUSD", {
+                dayCw: dayRep?.callWall,
+                dayPw: dayRep?.putWall,
+                monthCw: monthRep?.callWall || dayRep?.callWall,
+                monthPw: monthRep?.putWall || dayRep?.putWall,
+                flip: dayRep?.zeroGex || dayRep?.gammaFlip,
+                pain: dayRep?.maxPain,
+                spot: xauSpot
+              });
+            }
+          } catch {}
+        })();
+      }
+    } catch {}
+  }, 15000);
+}
 
 export function generateAutonomousAiPlan(params: {
   ticker: string;

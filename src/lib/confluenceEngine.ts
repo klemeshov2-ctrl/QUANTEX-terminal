@@ -867,8 +867,10 @@ export function computeConfluenceSetup(
     return makeNoTrade(`Блокировка новостным окном (${newsDetails})`, { newsBlock, newsDetails });
   }
 
-  // Compute Volume Profile & Liquidity Pools
-  const vp = computeVolumeProfile(candles, 200);
+  // Compute Volume Profile & Liquidity Pools (tighter lookback on HTF so POC/VAH/VAL stay current)
+  const vpLookback =
+    timeframe === "1d" ? 40 : timeframe === "4h" ? 60 : timeframe === "1h" ? 100 : 200;
+  const vp = computeVolumeProfile(candles, vpLookback);
   const pools = detectLiquidityPools(candles);
 
   // Compute all 6 layers
@@ -1001,25 +1003,35 @@ export function computeConfluenceSetup(
   // TP2 >= 2.6R and >= TP1 + 0.8 ATR
   // TP3 = runner
   // -----------------------------------------------------------
+  const isHtf = timeframe === "1h" || timeframe === "4h" || timeframe === "1d";
+  const maxTp1Dist = isHtf ? Math.max(2.6 * riskR, 2.5 * atr) : Math.max(5.0 * riskR, 6.2 * atr);
+  const maxTp2Dist = isHtf ? Math.max(3.8 * riskR, 3.8 * atr) : Math.max(7.0 * riskR, 7.5 * atr);
+
   let tp1Price = isLong ? entryMid + 1.5 * riskR : entryMid - 1.5 * riskR;
   let tp1Tag = "[1.5R]";
 
-  // Try snapping TP1 to nearest pool (EQH for long, EQL for short)
+  // Try snapping TP1 to nearest valid pool (EQH for long, EQL for short) within realistic ceiling
   if (isLong) {
-    const poolTp1 = pools.find(p => p.type === "EQH" && p.price >= entryMid + 1.45 * riskR);
+    const validEqh = pools
+      .filter(p => p.type === "EQH" && p.price >= entryMid + 1.45 * riskR && p.price <= entryMid + maxTp1Dist)
+      .sort((a, b) => a.price - b.price);
+    const poolTp1 = validEqh[0];
     if (poolTp1) {
       tp1Price = poolTp1.price;
       tp1Tag = `[EQH] +${((tp1Price - entryMid) / riskR).toFixed(1)}R`;
-    } else if (vp && vp.poc >= entryMid + 1.45 * riskR && vp.poc < entryMid + 2.5 * riskR) {
+    } else if (vp && vp.poc >= entryMid + 1.45 * riskR && vp.poc < entryMid + Math.min(2.5 * riskR, maxTp1Dist)) {
       tp1Price = vp.poc;
       tp1Tag = `[POC] +${((tp1Price - entryMid) / riskR).toFixed(1)}R`;
     }
   } else {
-    const poolTp1 = pools.find(p => p.type === "EQL" && p.price <= entryMid - 1.45 * riskR);
+    const validEql = pools
+      .filter(p => p.type === "EQL" && p.price <= entryMid - 1.45 * riskR && p.price >= entryMid - maxTp1Dist)
+      .sort((a, b) => b.price - a.price);
+    const poolTp1 = validEql[0];
     if (poolTp1) {
       tp1Price = poolTp1.price;
       tp1Tag = `[EQL] +${((entryMid - tp1Price) / riskR).toFixed(1)}R`;
-    } else if (vp && vp.poc <= entryMid - 1.45 * riskR && vp.poc > entryMid - 2.5 * riskR) {
+    } else if (vp && vp.poc <= entryMid - 1.45 * riskR && vp.poc > entryMid - Math.min(2.5 * riskR, maxTp1Dist)) {
       tp1Price = vp.poc;
       tp1Tag = `[POC] +${((entryMid - tp1Price) / riskR).toFixed(1)}R`;
     }
@@ -1027,24 +1039,32 @@ export function computeConfluenceSetup(
 
   const actualR1 = Math.abs(tp1Price - entryMid) / riskR;
 
-  // TP2 calculation (>= 2.6R and >= TP1 + 0.8 ATR)
+  // TP2 calculation (>= 2.6R and >= TP1 + 0.8 ATR, capped by maxTp2Dist)
   let minTp2Dist = Math.max(2.6 * riskR, Math.abs(tp1Price - entryMid) + 0.8 * atr);
   let tp2Price = isLong ? entryMid + minTp2Dist : entryMid - minTp2Dist;
   let tp2Tag = "[2.6R+]";
 
   if (isLong) {
-    if (vp && vp.vah >= entryMid + minTp2Dist * 0.98) {
+    if (vp && vp.vah >= entryMid + minTp2Dist * 0.98 && vp.vah <= entryMid + maxTp2Dist) {
       tp2Price = vp.vah;
       tp2Tag = `[VAH] +${((tp2Price - entryMid) / riskR).toFixed(1)}R`;
-    } else if (gexReport?.callWall && Number(gexReport.callWall) >= entryMid + minTp2Dist * 0.98) {
+    } else if (
+      gexReport?.callWall &&
+      Number(gexReport.callWall) >= entryMid + minTp2Dist * 0.98 &&
+      Number(gexReport.callWall) <= entryMid + maxTp2Dist
+    ) {
       tp2Price = Number(gexReport.callWall);
       tp2Tag = `[CW ${tp2Price.toFixed(0)}] +${((tp2Price - entryMid) / riskR).toFixed(1)}R`;
     }
   } else {
-    if (vp && vp.val <= entryMid - minTp2Dist * 0.98) {
+    if (vp && vp.val <= entryMid - minTp2Dist * 0.98 && vp.val >= entryMid - maxTp2Dist) {
       tp2Price = vp.val;
       tp2Tag = `[VAL] +${((entryMid - tp2Price) / riskR).toFixed(1)}R`;
-    } else if (gexReport?.putWall && Number(gexReport.putWall) <= entryMid - minTp2Dist * 0.98) {
+    } else if (
+      gexReport?.putWall &&
+      Number(gexReport.putWall) <= entryMid - minTp2Dist * 0.98 &&
+      Number(gexReport.putWall) >= entryMid - maxTp2Dist
+    ) {
       tp2Price = Number(gexReport.putWall);
       tp2Tag = `[PW ${tp2Price.toFixed(0)}] +${((entryMid - tp2Price) / riskR).toFixed(1)}R`;
     }

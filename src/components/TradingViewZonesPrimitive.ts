@@ -35,8 +35,8 @@ export interface ForecastArrow {
   tp1Time: number;
   tp1Price: number;
   tp1Logical?: number;
-  tp2Time: number;
-  tp2Price: number;
+  tp2Time?: number;
+  tp2Price?: number;
   tp2Logical?: number;
   isBull: boolean;
   labelStart?: string;
@@ -836,19 +836,34 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
         }
 
         // 2. Draw Forecast Zigzag Trajectory (Start -> Entry -> TP1 -> TP2)
+        const resolveLogicalOrTimeX = (logical?: number, time?: number): number | null => {
+          let x: number | null = null;
+          if (typeof logical === "number") {
+            const c = timeScale.logicalToCoordinate(logical as any);
+            if (c !== null) x = c as number;
+          }
+          if (x === null && typeof time === "number") {
+            const c = timeScale.timeToCoordinate(time as any);
+            if (c !== null) x = c as number;
+          }
+          // Future whitespace fallback when logical bar extends beyond chart rightOffset
+          if (x === null && typeof logical === "number" && typeof data.lastCandleLogical === "number") {
+            const lastX = timeScale.logicalToCoordinate(data.lastCandleLogical as any);
+            if (lastX !== null) {
+              x = (lastX as number) + (logical - data.lastCandleLogical) * barSpacing;
+            }
+          }
+          if (x !== null) {
+            return Math.min(mediaW - 14, Math.max(4, x));
+          }
+          return null;
+        };
+
         if (data.forecast) {
           const fc = data.forecast;
           const getPt = (logical?: number, time?: number, price?: number) => {
             if (price === undefined || !isFinite(price) || price <= 0) return null;
-            let x: number | null = null;
-            if (typeof logical === "number") {
-              const c = timeScale.logicalToCoordinate(logical as any);
-              if (c !== null) x = c as number;
-            }
-            if (x === null && typeof time === "number") {
-              const c = timeScale.timeToCoordinate(time as any);
-              if (c !== null) x = c as number;
-            }
+            const x = resolveLogicalOrTimeX(logical, time);
             const y = series.priceToCoordinate(price);
             if (x === null || y === null) return null;
             return { x: snapPx(x), y: snapHalf(y as number) };
@@ -866,7 +881,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           const secondaryColor = fc.isBull ? "#38bdf8" : "#fb7185";
 
           ctx.save();
-          ctx.lineWidth = isMobile ? 1.25 : 1.45;
+          ctx.lineWidth = isMobile ? 1.4 : 1.75;
           ctx.lineCap = "round";
           ctx.lineJoin = "round";
 
@@ -887,11 +902,11 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
             // Pullback / Entry marker
             ctx.beginPath();
-            ctx.arc(p1.x, p1.y, 2.5, 0, Math.PI * 2);
+            ctx.arc(p1.x, p1.y, 2.8, 0, Math.PI * 2);
             ctx.fill();
           }
 
-          // Leg 2: Entry -> TP1 (solid teal/cyan line to TP1 as shown on screenshot)
+          // Leg 2: Entry -> TP1 (solid/dashed line to TP1)
           if (p1 && p2) {
             ctx.strokeStyle = primaryColor;
             ctx.setLineDash(fc.leg1Hit ? [] : [4, 3]);
@@ -902,8 +917,15 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
             ctx.fillStyle = primaryColor;
             ctx.beginPath();
-            ctx.arc(p2.x, p2.y, 2.5, 0, Math.PI * 2);
+            ctx.arc(p2.x, p2.y, 2.8, 0, Math.PI * 2);
             ctx.fill();
+          } else if (p0 && p2 && !p1) {
+            ctx.strokeStyle = primaryColor;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
           }
 
           // Leg 3: TP1 -> TP2 (dashed cyan/sky-blue line up to TP2)
@@ -917,7 +939,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
 
             ctx.fillStyle = secondaryColor;
             ctx.beginPath();
-            ctx.arc(p3.x, p3.y, 2.5, 0, Math.PI * 2);
+            ctx.arc(p3.x, p3.y, 2.8, 0, Math.PI * 2);
             ctx.fill();
           }
           ctx.restore();
@@ -929,15 +951,7 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
           const alt = data.altForecast;
           const getPt = (logical?: number, time?: number, price?: number) => {
             if (price === undefined || !isFinite(price) || price <= 0) return null;
-            let x: number | null = null;
-            if (typeof logical === "number") {
-              const c = timeScale.logicalToCoordinate(logical as any);
-              if (c !== null) x = c as number;
-            }
-            if (x === null && typeof time === "number") {
-              const c = timeScale.timeToCoordinate(time as any);
-              if (c !== null) x = c as number;
-            }
+            const x = resolveLogicalOrTimeX(logical, time);
             const y = series.priceToCoordinate(price);
             if (x === null || y === null) return null;
             return { x: snapPx(x), y: snapHalf(y as number) };
@@ -1109,6 +1123,12 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               const rawX1 = timeScale.timeToCoordinate(pl.startTime as any);
               if (rawX1 !== null) x1 = rawX1 as number;
             }
+            if (x1 === null && typeof pl.startLogical === "number" && typeof data.lastCandleLogical === "number") {
+              const lastX = timeScale.logicalToCoordinate(data.lastCandleLogical as any);
+              if (lastX !== null) {
+                x1 = (lastX as number) + (pl.startLogical - data.lastCandleLogical) * barSpacing;
+              }
+            }
 
             if (typeof pl.endLogical === "number") {
               const c2 = timeScale.logicalToCoordinate(pl.endLogical as any);
@@ -1117,6 +1137,12 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
             if (x2 === null && typeof pl.endTime === "number") {
               const rawX2 = timeScale.timeToCoordinate(pl.endTime as any);
               if (rawX2 !== null) x2 = rawX2 as number;
+            }
+            if (x2 === null && typeof pl.endLogical === "number" && typeof data.lastCandleLogical === "number") {
+              const lastX = timeScale.logicalToCoordinate(data.lastCandleLogical as any);
+              if (lastX !== null) {
+                x2 = (lastX as number) + (pl.endLogical - data.lastCandleLogical) * barSpacing;
+              }
             }
 
             // Fallback bounded coordinate
@@ -1143,24 +1169,43 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
               pl.id === "flip_pain_line" ||
               pl.id === "cw_line" ||
               pl.id === "pw_line";
-            const clampedRawY = isGexCoreLine
+            const isUfeForecastLine =
+              pl.id === "sl_line" ||
+              pl.id === "entry_line" ||
+              pl.id === "tp1_line" ||
+              pl.id === "tp2_line" ||
+              pl.id === "tp3_line" ||
+              pl.id === "plan_b_activation" ||
+              pl.id === "next_entry_line" ||
+              pl.id === "next_sl_line" ||
+              pl.id === "next_tp1_line";
+            const isOffscreenTop = (rawY as number) < safeTop;
+            const isOffscreenBottom = (rawY as number) > mediaH - 16;
+            const clampedRawY = (isGexCoreLine || isUfeForecastLine)
               ? Math.max(safeTop, Math.min(mediaH - 16, rawY as number))
               : (rawY as number);
 
             const y = snapHalf(rawY as number);
             const left = snapPx(Math.min(x1, x2));
             const rawRight = Math.max(x1, x2);
-            const badgeW = pl.label ? measureBadgeWidth(ctx, pl.label, mediaW, 9.5) : 0;
+            const effectiveLabel = pl.label
+              ? (isUfeForecastLine && isOffscreenTop
+                  ? `▲ ${pl.label}`
+                  : isUfeForecastLine && isOffscreenBottom
+                  ? `▼ ${pl.label}`
+                  : pl.label)
+              : "";
+            const badgeW = effectiveLabel ? measureBadgeWidth(ctx, effectiveLabel, mediaW, 9.5) : 0;
 
             // Stop the horizontal line in the right margin before its badge so the badge is always strictly to the right of the line
             const minRightPastCandles = candleEndX > 0 ? candleEndX + Math.max(8, barSpacing * 1.2) : left + 16;
-            const maxRightForBadge = pl.label ? Math.max(left + 10, mediaW - badgeW - 8) : mediaW - 4;
+            const maxRightForBadge = effectiveLabel ? Math.max(left + 10, mediaW - badgeW - 8) : mediaW - 4;
             const right = snapPx(Math.max(left + 10, Math.min(Math.max(rawRight, minRightPastCandles), maxRightForBadge)));
 
             let badgeItem: AntiCollisionBadgeItem | undefined;
 
             // Collect badge for deterministic vertical anti-collision solver
-            if (pl.label) {
+            if (effectiveLabel) {
               const anchorY = snapPx(clampedRawY);
               const badgeX = snapPx(right + 5);
 
@@ -1198,8 +1243,8 @@ class TradingViewForegroundForecastRenderer implements IPrimitivePaneRenderer {
                 : "#ffffff");
 
               badgeItem = {
-                id: pl.id || pl.label,
-                label: pl.label,
+                id: pl.id || pl.label || effectiveLabel,
+                label: effectiveLabel,
                 x: badgeX,
                 y: anchorY,
                 anchorY,

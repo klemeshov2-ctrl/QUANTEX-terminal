@@ -279,7 +279,9 @@ async function runVerification() {
     assert.ok(tradeableRes.entryZone[0] < tradeableRes.entryZone[1], "Зона входа должна быть валидной");
     assert.ok(tradeableRes.sl > 0, "SL должен быть положительным");
     assert.ok(tradeableRes.tp1.price > tradeableRes.sl, "TP1 должен быть выше SL для LONG");
-    assert.ok(tradeableRes.tp2.price > tradeableRes.tp1.price, "TP2 должен быть выше TP1");
+    if (tradeableRes.tp2) {
+      assert.ok(tradeableRes.tp2.price > tradeableRes.tp1.price, "TP2 должен быть выше TP1");
+    }
     assert.strictEqual(tradeableRes.permission.state, "TRADEABLE", "При согласии моделей и S>=0.70 состояние TRADEABLE");
     console.log(`  ✓ TRADEABLE: Согласие моделей -> S=${tradeableRes.permission.score.toFixed(2)}, state=${tradeableRes.permission.state}`);
 
@@ -308,8 +310,8 @@ async function runVerification() {
     assert.ok(Number.isFinite(blockedRes.entryMid), "Вход должен быть числом при BLOCKED");
     assert.ok(Number.isFinite(blockedRes.sl), "SL должен быть числом при BLOCKED");
     assert.ok(Number.isFinite(blockedRes.tp1.price), "TP1 должен быть числом при BLOCKED");
-    assert.ok(Number.isFinite(blockedRes.tp2.price), "TP2 должен быть числом при BLOCKED");
-    assert.ok(Number.isFinite(blockedRes.tp3.price), "TP3 должен быть числом при BLOCKED");
+    assert.ok(blockedRes.tp2 === null || Number.isFinite(blockedRes.tp2.price), "TP2 должен быть числом или null (в SCALP) при BLOCKED");
+    assert.ok(blockedRes.tp3 === null || Number.isFinite(blockedRes.tp3.price), "TP3 должен быть числом или null (если ограничен раннер-капом)");
     assert.ok(blockedRes.permission.primaryReason.length > 0, "Причина блокировки указана");
     assert.ok(blockedRes.permission.unblockTrigger.length > 0, "Триггер разблокировки указан");
     console.log(`  ✓ BLOCKED: Линии не исчезают, state=${blockedRes.permission.state}, причина="${blockedRes.permission.primaryReason}", триггер="${blockedRes.permission.unblockTrigger}"`);

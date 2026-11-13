@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   createChart,
   CandlestickSeries,
@@ -497,9 +497,9 @@ import {
   createSetupLevelsForBar,
   isValidAnchoredSetup
 } from "../lib/pineSuperIndicatorEngine";
-import { getSessionSchedule } from "../lib/marketSessions";
-import { computeConfluenceSetup, ConfluenceSetupResult } from "../lib/confluenceEngine";
-import { computeUnifiedForecast, UnifiedForecastResult } from "../lib/unifiedForecastEngine";
+import { getSessionSchedule, getDeterministicPreNewsWarning } from "../lib/marketSessions";
+import { ConfluenceSetupResult } from "../lib/confluenceEngine";
+import { validateLadderInvariant, UnifiedForecastResult } from "../lib/unifiedForecastEngine";
 
 interface ChartOverlaysProps {
   chart: IChartApi | null;
@@ -524,6 +524,8 @@ interface ChartOverlaysProps {
   useCll?: boolean;
   onToggleCll?: () => void;
   cllSetup?: ConfluenceSetupResult | null;
+  serverUnifiedForecast?: UnifiedForecastResult | null;
+  isForecastLoading?: boolean;
   showEma9?: boolean;
   showEma21?: boolean;
   showEma50?: boolean;
@@ -547,6 +549,8 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   useCll = true,
   onToggleCll,
   cllSetup,
+  serverUnifiedForecast = null,
+  isForecastLoading = false,
   showEma9 = true,
   showEma21 = true,
   showEma50 = true,
@@ -556,30 +560,8 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
   const [hoveredCandle, setHoveredCandle] = useState<any | null>(null);
   const [priceCoordY, setPriceCoordY] = useState<number | null>(null);
 
-  const ufeSetup = useMemo(() => {
-    if (!candles || candles.length === 0) return null;
-    const lastCandle = candles[candles.length - 1];
-    const fc = indicatorOutput?.forecast;
-    return computeUnifiedForecast({
-      candles,
-      gexReport: indicatorOutput?.gex as any,
-      schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
-      adrPct: (indicatorOutput?.hud as any)?.adrPct ?? 50,
-      symbol: activeAsset,
-      timeframe: activeTf,
-      currentPrice: lastCandle.close,
-      tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01,
-      legacyWave: fc ? {
-        direction: (fc as any)?.direction || (fc.isBull ? "LONG" : "SHORT"),
-        entry: fc.p1Entry ?? lastCandle.close,
-        sl: fc.invalidLevelSl ?? fc.activeTrailingSl ?? (fc.isBull ? lastCandle.close - 15 : lastCandle.close + 15),
-        tp1: fc.p2Tp1 ?? (fc.isBull ? lastCandle.close + 20 : lastCandle.close - 20),
-        tp2: fc.p3Tp2 ?? (fc.isBull ? lastCandle.close + 35 : lastCandle.close - 35),
-        confidence: fc.probability ?? 70,
-        status: fc.status
-      } : null
-    });
-  }, [candles, indicatorOutput, activeAsset, activeTf]);
+  // Pure server mirror: forecast is authoritative from server /api/forecast/unified
+  const ufeSetup = serverUnifiedForecast;
 
   const candlesRef = useRef(candles);
   useEffect(() => {
@@ -714,6 +696,8 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
                       ? "bg-amber-500/30 text-amber-300 border border-amber-500/40"
                       : ufeSetup.permission.state === "SCALP"
                       ? "bg-amber-500/30 text-amber-300 border border-amber-500/40"
+                      : ufeSetup.permission.state === "EXPIRED"
+                      ? "bg-gray-700/50 text-gray-300 border border-gray-600/60"
                       : ufeSetup.permission.state === "DEGRADED"
                       ? "bg-orange-500/30 text-orange-300 border border-orange-500/40"
                       : "bg-blue-500/30 text-blue-300 border border-blue-500/40"
@@ -726,8 +710,22 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
                   <span className="text-emerald-400 hidden xs:inline text-[9px]">
                     TP1: <strong>{ufeSetup.tp1.price.toFixed(1)}</strong>
                   </span>
+                  {!ufeSetup.isScalpMode && ufeSetup.tp2 && (
+                    <span className="text-cyan-400 hidden md:inline text-[9px]">
+                      TP2: <strong>{ufeSetup.tp2.price.toFixed(1)}</strong>
+                    </span>
+                  )}
+                  {!ufeSetup.isScalpMode && ufeSetup.tp3 && (
+                    <span className="text-purple-400 hidden lg:inline text-[9px]">
+                      TP3: <strong>{ufeSetup.tp3.price.toFixed(1)}</strong>
+                    </span>
+                  )}
                   <span className="text-rose-400 hidden xs:inline text-[9px]">
-                    SL: <strong>{ufeSetup.sl.toFixed(1)}</strong>
+                    {Math.abs(ufeSetup.managedSl - ufeSetup.sl) > 0.01 ? (
+                      <>SL (упр): <strong className="text-rose-300">{ufeSetup.managedSl.toFixed(1)}</strong></>
+                    ) : (
+                      <>SL: <strong>{ufeSetup.sl.toFixed(1)}</strong></>
+                    )}
                   </span>
                   {ufeSetup.permission.state === "BLOCKED" && (
                     <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-rose-500/25 text-rose-200 border border-rose-500/50">
@@ -737,6 +735,11 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
                   {ufeSetup.permission.state === "CONDITIONAL" && (
                     <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50">
                       ⚠️ ЖДАТЬ: {ufeSetup.permission.unblockTrigger}
+                    </span>
+                  )}
+                  {ufeSetup.permission.state === "EXPIRED" && (
+                    <span className="px-1 py-0.2 rounded text-[8.5px] font-bold bg-gray-700/60 text-gray-300 border border-gray-600">
+                      ⛔ EXPIRED: {ufeSetup.permission.primaryReason}
                     </span>
                   )}
                   {ufeSetup.isScalpMode && (
@@ -751,14 +754,14 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
                   )}
                 </>
               ) : (
-                <span className="text-gray-400 text-[9px]">UFE расчёт...</span>
+                <span className="text-cyan-400 text-[9px] animate-pulse">📡 Зеркало сервера…</span>
               )}
               <span className="text-cyan-400 text-[9px] font-bold">▾</span>
             </button>
 
-            {/* UFE 7 Layer Chips */}
+            {/* UFE 7 Layer Chips + Server Pools Chips + Deterministic Pre-News Template */}
             {ufeSetup && (
-              <div className="hidden lg:flex items-center gap-1">
+              <div className="hidden lg:flex items-center gap-1 flex-wrap">
                 {ufeSetup.permission.allLayers.map(layer => (
                   <span
                     key={layer.id}
@@ -772,6 +775,27 @@ const ChartOverlays: React.FC<ChartOverlaysProps> = React.memo(({
                     {layer.id} {layer.tag}
                   </span>
                 ))}
+                {ufeSetup.poolsChips && ufeSetup.poolsChips.slice(0, 6).map(chip => (
+                  <span
+                    key={chip.id}
+                    className="px-1.5 py-0.2 rounded text-[8px] font-mono bg-purple-500/15 text-purple-200 border border-purple-500/30"
+                    title={`Пул ликвидности ${chip.type}: ${chip.price} (объем ${chip.volume}, дист ${chip.distancePts})`}
+                  >
+                    💧 {chip.label}
+                  </span>
+                ))}
+                {(() => {
+                  const preNews = getDeterministicPreNewsWarning(new Date());
+                  if (!preNews) return null;
+                  return (
+                    <span
+                      className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-amber-500/25 text-amber-200 border border-amber-500/50"
+                      title={preNews.text}
+                    >
+                      {preNews.text}
+                    </span>
+                  );
+                })()}
                 {/* Popover / tooltip explanation button */}
                 <span
                   className="px-1.5 py-0.2 rounded text-[8px] font-mono cursor-help bg-gray-800 text-gray-300 border border-gray-700 hover:text-white"
@@ -1112,6 +1136,57 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     getInitialPref("stochPaneHeight", "quantex_stoch_height", 95)
   );
 
+  // Pure server mirror state: server-authoritative UFE forecast & build tracking
+  const [serverUnifiedForecast, setServerUnifiedForecast] = useState<UnifiedForecastResult | null>(null);
+  const [isForecastLoading, setIsForecastLoading] = useState<boolean>(true);
+  const serverBuildIdRef = useRef<string | null>(null);
+
+  const fetchUnifiedForecast = useCallback(async (asset: AssetSymbol, tf: Timeframe) => {
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("quantex_auth_token") : null;
+      const res = await fetch(
+        `/api/forecast/unified?symbol=${encodeURIComponent(asset)}&interval=${encodeURIComponent(tf)}&t=${Date.now()}`,
+        {
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache",
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          }
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.forecast) {
+          if (activeAssetRef.current !== asset || activeTfRef.current !== tf) return;
+          setServerUnifiedForecast(data.forecast);
+          setIsForecastLoading(false);
+        }
+      }
+    } catch (e: any) {
+      console.warn("[Client Mirror] Notice fetching server forecast:", e.message);
+    }
+  }, []);
+
+  const checkServerVersion = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/server/version?t=${Date.now()}`, {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.buildId) {
+          if (serverBuildIdRef.current && serverBuildIdRef.current !== data.buildId) {
+            console.log("[Client Mirror] Server build updated, reloading:", serverBuildIdRef.current, "->", data.buildId);
+            window.location.reload();
+          } else {
+            serverBuildIdRef.current = data.buildId;
+          }
+        }
+      }
+    } catch {}
+  }, []);
+
   const handleStartResizePane = (pane: "macd" | "rsi" | "stoch", e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     const startY = "touches" in e ? e.touches[0].clientY : e.clientY;
@@ -1215,14 +1290,22 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
   }, [activeAsset, activeTf]);
   const fetchSeqRef = useRef<number>(0);
 
-  // Clear any residual candle cache on mount to guarantee fresh live data from server
+  // Block C: Pure server mirror - purge any residual market/forecast cache on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.clear();
         for (let i = localStorage.length - 1; i >= 0; i--) {
           const k = localStorage.key(i);
-          if (k && (k.startsWith("quantex_real_candles_") || k.startsWith("quantex_gex_") || k === "quantex_anchored_forecasts_v4")) {
+          if (
+            k &&
+            (k.startsWith("quantex_real_candles_") ||
+              k.startsWith("quantex_gex_") ||
+              k.startsWith("quantex_unified_") ||
+              k === "quantex_anchored_forecasts_v4" ||
+              k.startsWith("quantex_gex_history_") ||
+              k.startsWith("quantex_gex_migration_log_"))
+          ) {
             localStorage.removeItem(k);
           }
         }
@@ -1238,7 +1321,10 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     setCandles([]);
     setCandlesKey(key);
     setActiveTf(tf);
+    setServerUnifiedForecast(null);
+    setIsForecastLoading(true);
     fetchCandles(activeAsset, tf);
+    fetchUnifiedForecast(activeAsset, tf);
   };
 
   // Asset switching directly requests fresh server data
@@ -1249,12 +1335,15 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     setCandles([]);
     setCandlesKey(key);
     setActiveAsset(asset);
+    setServerUnifiedForecast(null);
+    setIsForecastLoading(true);
     try {
       localStorage.setItem("quantex_active_asset", asset);
     } catch {}
     fetchCandles(asset, activeTf);
     fetchDayGexReport(asset);
     fetchGexReport(asset, gexHorizonRef.current);
+    fetchUnifiedForecast(asset, activeTf);
   };
 
   const [gexReport, setGexReport] = useState<GexMarketReport | null>(null);
@@ -2748,7 +2837,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     }
   };
 
-  // Initial Data Load & Auto-Refresh Interval
+  // Initial Data Load & Auto-Refresh Interval (Pure Server Mirror)
   useEffect(() => {
     hydrateSetupsFromServer().then((updated) => {
       if (updated) {
@@ -2758,6 +2847,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     fetchCandles(activeAsset, activeTf);
     fetchDayGexReport(activeAsset);
     fetchGexReport(activeAsset, gexHorizonRef.current);
+    fetchUnifiedForecast(activeAsset, activeTf);
+    checkServerVersion();
     fetchCalendar();
     fetchMarketNews();
     fetchJournal();
@@ -2767,22 +2858,30 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     let tickCount = 0;
     const interval = setInterval(() => {
       tickCount += 1;
-      fetchCandles(activeAsset, activeTf);
+      // Candles polling: every 3s (tickCount % 2 === 0)
+      if (tickCount % 2 === 0) {
+        fetchCandles(activeAsset, activeTf);
+      }
+      // Server Unified Forecast polling: every ~5s (tickCount % 3 === 0)
       if (tickCount % 3 === 0) {
+        fetchUnifiedForecast(activeAsset, activeTf);
         fetchMoexContracts();
       }
-      if (tickCount % 8 === 0) {
+      // GEX polling: every 15s (tickCount % 10 === 0)
+      if (tickCount % 10 === 0) {
         fetchDayGexReport(activeAsset);
         fetchGexReport(activeAsset, gexHorizonRef.current);
       }
-      if (tickCount % 16 === 0) {
+      // Version and Macro polling: every 30s (tickCount % 20 === 0)
+      if (tickCount % 20 === 0) {
+        checkServerVersion();
         fetchMarketNews();
         fetchCalendar();
       }
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [activeAsset, activeTf]);
+  }, [activeAsset, activeTf, fetchUnifiedForecast, checkServerVersion]);
 
   // Handle Preset Resolution exactly matching `f_resolve_preset` in Pine Script
   const applyPreset = (presetName: string, changeAsset = false) => {
@@ -4843,7 +4942,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
         x3Time = lastCandle.time + tfSec * Math.max(12, x3Log - lastIdx);
       }
 
-      if (showForecast) {
+      // Fallback to legacy wave arrows ONLY while serverUnifiedForecast has not loaded yet.
+      if (showForecast && !serverUnifiedForecast) {
         forecastData = {
           startTime: setupAnchorTime,
           startPrice: setupAnchorPrice,
@@ -4912,6 +5012,63 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
     const dec = (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 4 : (activeAsset === "MOEX_SI" || activeAsset === "MOEX_RI") ? 0 : (activeAsset === "MOEX_GOLD" || activeAsset === "MOEX_MINI") ? 1 : 2;
 
+    // Render UFE zigzag forecast trajectory & Plan B directly from serverUnifiedForecast unconditionally
+    // (works even when local indicatorOutput is null or DEGRADED < 50 candles)
+    if (showForecast && serverUnifiedForecast) {
+      const ufe = serverUnifiedForecast;
+      const isInvValid = ufe.invariantValid !== false &&
+        validateLadderInvariant(ufe.direction, ufe.entryMid, ufe.sl, ufe.tp1?.price, ufe.tp2?.price ?? null, ufe.tp3?.price ?? null);
+      if (isInvValid && ufe.direction !== "NONE") {
+        const isBullUfe = ufe.direction === "LONG";
+        const stg = ufe.stateProgression?.stage || "ST0";
+        const leg1Hit = ufe.permission?.state === "IN_POSITION" || stg !== "ST0";
+        const leg2Hit = stg === "TP1" || stg === "TP2" || stg === "TRAIL";
+        const leg3Hit = stg === "TP2" || stg === "TRAIL";
+        const rawBarsSince = ufe.stateProgression?.barsSinceEntry ?? 0;
+        const ufeBarsBack = rawBarsSince > 0 ? Math.min(12, rawBarsSince + 2) : 4;
+        const ufeStartLog = Math.max(0, lastIdx - ufeBarsBack);
+        const ufeStartTime = cleanCandles[ufeStartLog]?.time ?? lastCandle.time;
+        const ufeStartPrice = leg1Hit ? ufe.entryMid : lastCandle.close;
+
+        forecastData = {
+          startTime: ufeStartTime,
+          startPrice: ufeStartPrice,
+          startLogical: ufeStartLog,
+          pullbackTime: lastCandle.time + tfSec * 3,
+          pullbackPrice: ufe.entryMid,
+          pullbackLogical: lastIdx + 3,
+          tp1Time: lastCandle.time + tfSec * 9,
+          tp1Price: ufe.tp1.price,
+          tp1Logical: lastIdx + 9,
+          tp2Time: (!ufe.isScalpMode && ufe.tp2) ? lastCandle.time + tfSec * 15 : undefined,
+          tp2Price: (!ufe.isScalpMode && ufe.tp2) ? ufe.tp2.price : undefined,
+          tp2Logical: (!ufe.isScalpMode && ufe.tp2) ? lastIdx + 15 : undefined,
+          isBull: isBullUfe,
+          labelStart: `${isBullUfe ? "🟢 Long" : "🔴 Short"} UFE`,
+          leg1Hit,
+          leg2Hit,
+          leg3Hit
+        };
+
+        if (showAltWave && ufe.planB && Number.isFinite(ufe.planB.tp1) && ufe.planB.tp1 > 0) {
+          altForecastData = {
+            startTime: ufeStartTime,
+            startPrice: ufe.sl,
+            startLogical: ufeStartLog,
+            tp1Time: lastCandle.time + tfSec * 7,
+            tp1Price: ufe.planB.tp1,
+            tp1Logical: lastIdx + 7,
+            tp2Time: lastCandle.time + tfSec * 12,
+            tp2Price: ufe.planB.tp2,
+            tp2Logical: lastIdx + 12,
+            isBull: !isBullUfe,
+            labelTp1: `План Б: ${ufe.planB.tp1.toFixed(dec)}`,
+            labelTp2: `Цель 2: ${ufe.planB.tp2.toFixed(dec)}`
+          };
+        }
+      }
+    }
+
     const fc = indicatorOutput?.forecast;
     const isNoSetup = fc?.status === "NO_SETUP" || fc?.hasValidSetup === false;
 
@@ -4933,7 +5090,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
       } = {};
       const isFallbackRecalc = !isComputedValid;
 
-      if (isFallbackRecalc) {
+      if (!serverUnifiedForecast && isFallbackRecalc) {
         if (fc && isValidAnchoredSetup(fc)) {
           computedEntry = fc.p1Entry;
           computedTp1 = fc.p2Tp1;
@@ -4988,227 +5145,294 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
 
       const recalcBadgeSuffix = isFallbackRecalc ? " [⚠️ пересчёт]" : "";
 
-      // In original Pine Script: line_sl := line.new(x0, disp_active_sl, sl_end_x, disp_active_sl, ...)
-      // where x0 = setupAnchorLog (bar where signal originated), and lineEnd stops just past the last candle so labels sit to the right of the line
-      const lineStartLog = setupAnchorLog;
+      // Ensure horizontal UFE forecast lines stay cleanly bounded around recent bars on all timeframes
+      const ufeBarsBackLine = serverUnifiedForecast
+        ? Math.min(Math.max(12, lineLen), (serverUnifiedForecast.stateProgression?.barsSinceEntry || 0) + 12)
+        : Math.max(lineLen, 20);
+      const lineStartLog = serverUnifiedForecast
+        ? Math.max(0, lastIdx - Math.min(lineLen, ufeBarsBackLine))
+        : Math.max(Math.max(0, lastIdx - Math.max(lineLen, 24)), Math.min(setupAnchorLog, Math.max(0, lastIdx - Math.min(lineLen, 12))));
       const lineEndLog = lastIdx + 3;
       const lineStartTime = cleanCandles[lineStartLog]?.time ?? gx1Time;
       const lineEndTime = lastCandle.time + tfSec * 3;
 
-      // UNIFIED FORECAST ENGINE (UFE v1): Single unified ladder
-      const ufe: UnifiedForecastResult = computeUnifiedForecast({
-        candles: cleanCandles,
-        gexReport: (dayGexReport || gexReport || indicatorOutput?.gex) as any,
-        schedule: getSessionSchedule(new Date(lastCandle.time * 1000)),
-        adrPct: (indicatorOutput?.hud as any)?.adrPct ?? 50,
-        symbol: activeAsset,
-        timeframe: activeTf,
-        currentPrice: lastCandle.close,
-        tickSize: (activeAsset === "XRPUSDT" || activeAsset === "MOEX_NG") ? 0.0001 : 0.01,
-        legacyWave: fc ? {
-          direction: (fc as any)?.direction || (fc.isBull ? "LONG" : "SHORT"),
-          entry: computedEntry,
-          sl: computedSl,
-          tp1: computedTp1,
-          tp2: computedTp2,
-          confidence: fc.probability ?? 70,
-          status: fc.status
-        } : null
-      });
+      // UNIFIED FORECAST ENGINE (UFE v1): Server-authoritative mirror
+      const ufe: UnifiedForecastResult | null = serverUnifiedForecast;
 
-      const pState = ufe.permission.state;
-      const isBlocked = pState === "BLOCKED";
-      const isConditional = pState === "CONDITIONAL";
-      const isScalp = pState === "SCALP" || ufe.isScalpMode;
-      const isDegraded = pState === "DEGRADED";
-      const isBull = ufe.direction === "LONG";
+      if (ufe) {
+        const isInvariantValid = ufe.invariantValid !== false &&
+          validateLadderInvariant(ufe.direction, ufe.entryMid, ufe.sl, ufe.tp1?.price, ufe.tp2?.price ?? null, ufe.tp3?.price ?? null);
 
-      // 1. Zone Box (Entry Zone)
-      const zoneFill = isBlocked
-        ? "rgba(239, 68, 68, 0.08)"
-        : isConditional
-        ? "rgba(245, 158, 11, 0.08)"
-        : isScalp
-        ? "rgba(245, 158, 11, 0.12)"
-        : isDegraded
-        ? "rgba(245, 158, 11, 0.10)"
-        : isBull
-        ? "rgba(16, 185, 129, 0.14)"
-        : "rgba(6, 182, 212, 0.14)";
+        const pState = !isInvariantValid ? "BLOCKED" : ufe.permission.state;
+        const isBlocked = pState === "BLOCKED";
+        const isExpired = pState === "EXPIRED";
+        const isPositionActive = pState === "IN_POSITION" ||
+          ufe.stateProgression.stage === "ST1" ||
+          ufe.stateProgression.stage === "TP1" ||
+          ufe.stateProgression.stage === "TP2" ||
+          ufe.stateProgression.stage === "TRAIL";
+        const isConditional = pState === "CONDITIONAL";
+        const isScalp = pState === "SCALP" || ufe.isScalpMode;
+        const isDegraded = pState === "DEGRADED";
+        const isBull = ufe.direction === "LONG";
 
-      const zoneBorder = isBlocked
-        ? "rgba(239, 68, 68, 0.45)"
-        : isConditional || isScalp || isDegraded
-        ? "#f59e0b"
-        : isBull
-        ? "#10b981"
-        : "#06b6d4";
+        // 1. Zone Box (Entry Zone)
+        const zoneFill = isExpired
+          ? "rgba(107, 114, 128, 0.08)"
+          : isBlocked
+          ? "rgba(239, 68, 68, 0.08)"
+          : isConditional
+          ? "rgba(245, 158, 11, 0.08)"
+          : isScalp
+          ? "rgba(245, 158, 11, 0.12)"
+          : isDegraded
+          ? "rgba(245, 158, 11, 0.10)"
+          : isBull
+          ? "rgba(16, 185, 129, 0.14)"
+          : "rgba(6, 182, 212, 0.14)";
 
-      const zoneLabel = isBlocked
-        ? `⛔ ВХОД ЗАБЛОКИРОВАН: ${ufe.permission.primaryReason} • Триггер: ${ufe.permission.unblockTrigger}`
-        : isConditional
-        ? `⚠️ ЖДАТЬ: ${ufe.permission.unblockTrigger}`
-        : isScalp
-        ? `⚡ СКАЛЬП (ADR > 85%) | S=${ufe.permission.score.toFixed(2)}`
-        : isDegraded
-        ? `⚠️ DEGRADED (Wave only) [${ufe.permission.score.toFixed(2)}]`
-        : `UFE v1 [S=${ufe.permission.score.toFixed(2)}] ${ufe.permission.activeLayers.length}/7`;
+        const zoneBorder = isExpired
+          ? "rgba(156, 163, 175, 0.45)"
+          : isBlocked
+          ? "rgba(239, 68, 68, 0.45)"
+          : isConditional || isScalp || isDegraded
+          ? "#f59e0b"
+          : isBull
+          ? "#10b981"
+          : "#06b6d4";
 
-      zoneBoxes.push({
-        id: "ufe_entry_zone",
-        type: isBull ? "ob_bull" : "ob_bear",
-        topPrice: ufe.entryZone[1],
-        bottomPrice: ufe.entryZone[0],
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        fillColor: zoneFill,
-        borderColor: zoneBorder,
-        label: zoneLabel
-      });
+        const zoneLabel = !isInvariantValid
+          ? "⛔ ВХОД ЗАБЛОКИРОВАН: Нарушен инвариант направления (LONG/SHORT)"
+          : isExpired
+          ? `⛔ EXPIRED: ${ufe.permission.primaryReason}`
+          : isBlocked
+          ? `⛔ ВХОД ЗАБЛОКИРОВАН: ${ufe.permission.primaryReason} • Триггер: ${ufe.permission.unblockTrigger}`
+          : isConditional
+          ? `⚠️ ЖДАТЬ: ${ufe.permission.unblockTrigger}`
+          : isScalp
+          ? `⚡ СКАЛЬП (ADR > 85%) | S=${ufe.permission.score.toFixed(2)}`
+          : isDegraded
+          ? `⚠️ DEGRADED (Wave only) [${ufe.permission.score.toFixed(2)}]`
+          : `UFE v1 [S=${ufe.permission.score.toFixed(2)}] ${ufe.permission.activeLayers.length}/7`;
 
-      // 2. SL Line
-      const slColor = isBlocked ? "rgba(239, 68, 68, 0.35)" : "#ef4444";
-      const slPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
-      boundedLines.push({
-        id: "sl_line",
-        price: Number(ufe.sl.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: slColor,
-        lineWidth: 1,
-        lineStyle: "dashed",
-        label: `${slPrefix}SL: ${ufe.sl.toFixed(dec)} [Инвалидация] -1.0R`,
-        labelBg: isBlocked ? "rgba(30, 9, 13, 0.5)" : "rgba(30, 9, 13, 0.98)",
-        labelBorderColor: isBlocked ? "rgba(248, 113, 113, 0.4)" : "#f87171",
-        labelTextColor: isBlocked ? "rgba(254, 205, 211, 0.6)" : "#fecdd3"
-      });
-
-      // 3. Entry Line
-      const entryColor = isBlocked
-        ? "rgba(245, 158, 11, 0.35)"
-        : isConditional
-        ? "#f59e0b"
-        : isBull
-        ? "#10b981"
-        : "#f59e0b";
-      const entryPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
-      const entryHit = ufe.stateProgression.stage !== "ST0";
-      boundedLines.push({
-        id: "entry_line",
-        price: Number(ufe.entryMid.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: entryHit ? "#10b981" : entryColor,
-        lineWidth: 1,
-        lineStyle: entryHit ? "solid" : isConditional ? "dotted" : "solid",
-        label: entryHit
-          ? `ВХОД ВЗЯТ: ${ufe.entryMid.toFixed(dec)} ✓ [S=${ufe.permission.score.toFixed(2)}]`
-          : `${entryPrefix}ВХОД (UFE): ${ufe.entryMid.toFixed(dec)} [confl ${ufe.permission.activeLayers.length}/7]`,
-        labelBg: isBlocked ? "rgba(24, 18, 6, 0.5)" : "rgba(24, 18, 6, 0.98)",
-        labelBorderColor: entryHit ? "#34d399" : (isBull ? "#34d399" : "#fbbf24"),
-        labelTextColor: isBlocked ? "rgba(254, 243, 199, 0.6)" : "#fef3c7"
-      });
-
-      // 4. TP1 Line
-      const tp1Color = isBlocked ? "rgba(16, 185, 129, 0.35)" : "#10b981";
-      const tp1Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
-      boundedLines.push({
-        id: "tp1_line",
-        price: Number(ufe.tp1.price.toFixed(dec)),
-        startTime: lineStartTime,
-        endTime: lineEndTime,
-        startLogical: lineStartLog,
-        endLogical: lineEndLog,
-        color: tp1Color,
-        lineWidth: 1,
-        lineStyle: "dashed",
-        label: `${tp1Prefix}TP1 (UFE): ${ufe.tp1.price.toFixed(dec)} ${ufe.tp1.tag} +${ufe.tp1.r}R`,
-        labelBg: isBlocked ? "rgba(6, 26, 18, 0.5)" : "rgba(6, 26, 18, 0.98)",
-        labelBorderColor: isBlocked ? "rgba(52, 211, 153, 0.4)" : "#34d399",
-        labelTextColor: isBlocked ? "rgba(167, 243, 208, 0.6)" : "#a7f3d0"
-      });
-
-      // 5. TP2 Line
-      if (isScalp) {
-        boundedLines.push({
-          id: "tp2_line",
-          price: Number(ufe.tp2.price.toFixed(dec)),
+        zoneBoxes.push({
+          id: "ufe_entry_zone",
+          type: isBull ? "ob_bull" : "ob_bear",
+          topPrice: ufe.entryZone[1],
+          bottomPrice: ufe.entryZone[0],
           startTime: lineStartTime,
           endTime: lineEndTime,
           startLogical: lineStartLog,
           endLogical: lineEndLog,
-          color: "rgba(107, 114, 128, 0.4)",
-          lineWidth: 1,
-          lineStyle: "dotted",
-          label: `TP2: ${ufe.tp2.price.toFixed(dec)} [скрыто: ADR ${Math.round((indicatorOutput?.hud as any)?.adrPct ?? 89)}%]`,
-          labelBg: "rgba(17, 24, 39, 0.7)",
-          labelBorderColor: "#4b5563",
-          labelTextColor: "#9ca3af"
+          fillColor: zoneFill,
+          borderColor: zoneBorder,
+          label: zoneLabel
         });
-      } else {
-        const tp2Color = isBlocked ? "rgba(6, 182, 212, 0.35)" : "#06b6d4";
-        const tp2Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
-        boundedLines.push({
-          id: "tp2_line",
-          price: Number(ufe.tp2.price.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: tp2Color,
-          lineWidth: 1,
-          lineStyle: "dashed",
-          label: `${tp2Prefix}TP2 (UFE): ${ufe.tp2.price.toFixed(dec)} ${ufe.tp2.tag} +${ufe.tp2.r}R`,
-          labelBg: isBlocked ? "rgba(6, 26, 30, 0.5)" : "rgba(6, 26, 30, 0.98)",
-          labelBorderColor: isBlocked ? "rgba(34, 211, 238, 0.4)" : "#22d3ee",
-          labelTextColor: isBlocked ? "rgba(207, 250, 254, 0.6)" : "#cffafe"
-        });
-      }
 
-      // 6. TP3 Line (Runner)
-      if (!isScalp) {
-        const tp3Color = isBlocked ? "rgba(139, 92, 246, 0.35)" : "#8b5cf6";
-        const tp3Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : "";
-        boundedLines.push({
-          id: "tp3_line",
-          price: Number(ufe.tp3.price.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: tp3Color,
-          lineWidth: 1,
-          lineStyle: "dotted",
-          label: `${tp3Prefix}TP3 (UFE): ${ufe.tp3.price.toFixed(dec)} ${ufe.tp3.tag} +${ufe.tp3.r}R`,
-          labelBg: isBlocked ? "rgba(20, 10, 36, 0.5)" : "rgba(20, 10, 36, 0.98)",
-          labelBorderColor: isBlocked ? "rgba(167, 139, 250, 0.4)" : "#a78bfa",
-          labelTextColor: isBlocked ? "rgba(237, 233, 254, 0.6)" : "#ede9fe"
-        });
-      }
+        // If invariant is broken, do NOT render ladder lines
+        if (isInvariantValid) {
+          // 2. SL Line (Managed SL when in position)
+          const slPrice = isPositionActive ? ufe.managedSl : ufe.sl;
+          const isManaged = isPositionActive && Math.abs(ufe.managedSl - ufe.sl) > 0.01;
+          const slColor = isExpired ? "rgba(156, 163, 175, 0.4)" : isBlocked ? "rgba(239, 68, 68, 0.35)" : "#ef4444";
+          const slPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : isExpired ? "[EXPIRED] " : "";
+          const slLabelText = isManaged
+            ? `SL [Управляемый]: ${ufe.managedSl.toFixed(dec)}`
+            : `${slPrefix}SL: ${ufe.sl.toFixed(dec)} [Инвалидация] -1.0R`;
 
-      // 7. Plan B Ghost
-      if (ufe.planB && (showAltWave || ufe.planB.isActive || ufe.planB.isTriggered)) {
-        boundedLines.push({
-          id: "plan_b_ghost",
-          price: Number(ufe.planB.entry.toFixed(dec)),
-          startTime: lineStartTime,
-          endTime: lineEndTime,
-          startLogical: lineStartLog,
-          endLogical: lineEndLog,
-          color: "#f59e0b",
-          lineWidth: 1,
-          lineStyle: "dashed",
-          label: `👻 ${ufe.planB.condition}`,
-          labelBg: "rgba(28, 20, 8, 0.98)",
-          labelBorderColor: "#f59e0b",
-          labelTextColor: "#fef3c7"
-        });
+          boundedLines.push({
+            id: "sl_line",
+            price: Number(slPrice.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: slColor,
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: slLabelText,
+            labelBg: isBlocked ? "rgba(30, 9, 13, 0.5)" : "rgba(30, 9, 13, 0.98)",
+            labelBorderColor: isBlocked ? "rgba(248, 113, 113, 0.4)" : "#f87171",
+            labelTextColor: isBlocked ? "rgba(254, 205, 211, 0.6)" : "#fecdd3"
+          });
+
+          // 3. Entry Line
+          const entryColor = isExpired
+            ? "rgba(156, 163, 175, 0.4)"
+            : isBlocked
+            ? "rgba(245, 158, 11, 0.35)"
+            : isConditional
+            ? "#f59e0b"
+            : isBull
+            ? "#10b981"
+            : "#f59e0b";
+          const entryPrefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : isExpired ? "[EXPIRED] " : "";
+          const entryHit = ufe.stateProgression.stage !== "ST0";
+          boundedLines.push({
+            id: "entry_line",
+            price: Number(ufe.entryMid.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: entryHit ? "#10b981" : entryColor,
+            lineWidth: 1,
+            lineStyle: entryHit ? "solid" : isConditional ? "dotted" : "solid",
+            label: entryHit
+              ? `ВХОД ВЗЯТ: ${ufe.entryMid.toFixed(dec)} ✓ [S=${ufe.permission.score.toFixed(2)}]`
+              : `${entryPrefix}ВХОД (UFE): ${ufe.entryMid.toFixed(dec)} [confl ${ufe.permission.activeLayers.length}/7]`,
+            labelBg: isBlocked ? "rgba(24, 18, 6, 0.5)" : "rgba(24, 18, 6, 0.98)",
+            labelBorderColor: entryHit ? "#34d399" : (isBull ? "#34d399" : "#fbbf24"),
+            labelTextColor: isBlocked ? "rgba(254, 243, 199, 0.6)" : "#fef3c7"
+          });
+
+          // 4. TP1 Line
+          const tp1Color = isExpired ? "rgba(156, 163, 175, 0.4)" : isBlocked ? "rgba(16, 185, 129, 0.35)" : "#10b981";
+          const tp1Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : isExpired ? "[EXPIRED] " : "";
+          boundedLines.push({
+            id: "tp1_line",
+            price: Number(ufe.tp1.price.toFixed(dec)),
+            startTime: lineStartTime,
+            endTime: lineEndTime,
+            startLogical: lineStartLog,
+            endLogical: lineEndLog,
+            color: tp1Color,
+            lineWidth: 1,
+            lineStyle: "dashed",
+            label: `${tp1Prefix}TP1 (UFE): ${ufe.tp1.price.toFixed(dec)} ${ufe.tp1.tag} +${ufe.tp1.r}R`,
+            labelBg: isBlocked ? "rgba(6, 26, 18, 0.5)" : "rgba(6, 26, 18, 0.98)",
+            labelBorderColor: isBlocked ? "rgba(52, 211, 153, 0.4)" : "#34d399",
+            labelTextColor: isBlocked ? "rgba(167, 243, 208, 0.6)" : "#a7f3d0"
+          });
+
+          // 5. TP2 Line (strictly hidden in scalp mode)
+          if (!isScalp && ufe.tp2 != null) {
+            const tp2Color = isExpired ? "rgba(156, 163, 175, 0.4)" : isBlocked ? "rgba(6, 182, 212, 0.35)" : "#06b6d4";
+            const tp2Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : isExpired ? "[EXPIRED] " : "";
+            boundedLines.push({
+              id: "tp2_line",
+              price: Number(ufe.tp2.price.toFixed(dec)),
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: tp2Color,
+              lineWidth: 1,
+              lineStyle: "dashed",
+              label: `${tp2Prefix}TP2 (UFE): ${ufe.tp2.price.toFixed(dec)} ${ufe.tp2.tag} +${ufe.tp2.r}R`,
+              labelBg: isBlocked ? "rgba(6, 26, 30, 0.5)" : "rgba(6, 26, 30, 0.98)",
+              labelBorderColor: isBlocked ? "rgba(34, 211, 238, 0.4)" : "#22d3ee",
+              labelTextColor: isBlocked ? "rgba(207, 250, 254, 0.6)" : "#cffafe"
+            });
+          }
+
+          // 6. TP3 Line (Runner - strictly hidden in scalp mode or when capped)
+          if (!isScalp && ufe.tp3 != null) {
+            const tp3Color = isExpired ? "rgba(156, 163, 175, 0.4)" : isBlocked ? "rgba(139, 92, 246, 0.35)" : "#8b5cf6";
+            const tp3Prefix = isBlocked ? "[ЗАБЛОКИРОВАНО] " : isExpired ? "[EXPIRED] " : "";
+            boundedLines.push({
+              id: "tp3_line",
+              price: Number(ufe.tp3.price.toFixed(dec)),
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: tp3Color,
+              lineWidth: 1,
+              lineStyle: "dotted",
+              label: `${tp3Prefix}TP3 (UFE): ${ufe.tp3.price.toFixed(dec)} ${ufe.tp3.tag} +${ufe.tp3.r}R`,
+              labelBg: isBlocked ? "rgba(20, 10, 36, 0.5)" : "rgba(20, 10, 36, 0.98)",
+              labelBorderColor: isBlocked ? "rgba(167, 139, 250, 0.4)" : "#a78bfa",
+              labelTextColor: isBlocked ? "rgba(237, 233, 254, 0.6)" : "#ede9fe"
+            });
+          }
+
+          // 7. Plan B Activation Badge (strictly separated below SL)
+          if (ufe.planB) {
+            const planBTriggerPrice = ufe.direction === "LONG"
+              ? Number((ufe.sl - 0.2 * ufe.atr).toFixed(dec))
+              : Number((ufe.sl + 0.2 * ufe.atr).toFixed(dec));
+            boundedLines.push({
+              id: "plan_b_activation",
+              price: planBTriggerPrice,
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: "rgba(245, 158, 11, 0.6)",
+              lineWidth: 1,
+              lineStyle: "dotted",
+              label: `⚡ План Б: активация при закрытии за ${ufe.sl.toFixed(dec)}`,
+              labelBg: "rgba(28, 20, 8, 0.95)",
+              labelBorderColor: "#f59e0b",
+              labelTextColor: "#fef3c7"
+            });
+          }
+
+          // 8. Next Setup Active Ladder (when state is EXPIRED and nextSetup exists)
+          if (isExpired && ufe.nextSetup) {
+            const next = ufe.nextSetup;
+            const nextIsBull = next.direction === "LONG";
+            zoneBoxes.push({
+              id: "ufe_next_zone",
+              type: nextIsBull ? "ob_bull" : "ob_bear",
+              topPrice: next.entryZone[1],
+              bottomPrice: next.entryZone[0],
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              fillColor: nextIsBull ? "rgba(16, 185, 129, 0.14)" : "rgba(6, 182, 212, 0.14)",
+              borderColor: nextIsBull ? "#10b981" : "#06b6d4",
+              label: `⚡ СВЕЖИЙ СЕТАП [S=${next.permission.score.toFixed(2)}]`
+            });
+            boundedLines.push({
+              id: "next_entry_line",
+              price: Number(next.entryMid.toFixed(dec)),
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: nextIsBull ? "#10b981" : "#f59e0b",
+              lineWidth: 1,
+              lineStyle: "solid",
+              label: `ВХОД (next): ${next.entryMid.toFixed(dec)}`,
+              labelBg: "rgba(24, 18, 6, 0.98)",
+              labelBorderColor: nextIsBull ? "#34d399" : "#fbbf24",
+              labelTextColor: "#fef3c7"
+            });
+            boundedLines.push({
+              id: "next_sl_line",
+              price: Number(next.sl.toFixed(dec)),
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: "#ef4444",
+              lineWidth: 1,
+              lineStyle: "dashed",
+              label: `SL (next): ${next.sl.toFixed(dec)}`,
+              labelBg: "rgba(30, 9, 13, 0.98)",
+              labelBorderColor: "#f87171",
+              labelTextColor: "#fecdd3"
+            });
+            boundedLines.push({
+              id: "next_tp1_line",
+              price: Number(next.tp1.price.toFixed(dec)),
+              startTime: lineStartTime,
+              endTime: lineEndTime,
+              startLogical: lineStartLog,
+              endLogical: lineEndLog,
+              color: "#10b981",
+              lineWidth: 1,
+              lineStyle: "dashed",
+              label: `TP1 (next): ${next.tp1.price.toFixed(dec)}`,
+              labelBg: "rgba(6, 26, 18, 0.98)",
+              labelBorderColor: "#34d399",
+              labelTextColor: "#a7f3d0"
+            });
+          }
+        }
       }
 
       // Note: Alternative Plan B & Target 2 are rendered along the diagonal contingency ray
@@ -5573,6 +5797,7 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
     labelOffset,
     lineLen,
     indicatorOutput,
+    serverUnifiedForecast,
     chartLabelFontSize,
     showChartBadgeBorders
   ]);
@@ -7305,6 +7530,8 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                   useCll={useCll}
                   onToggleCll={() => setUseCll(prev => !prev)}
                   cllSetup={activeCllSetup}
+                  serverUnifiedForecast={serverUnifiedForecast}
+                  isForecastLoading={isForecastLoading}
                   showEma9={showEma9}
                   showEma21={showEma21}
                   showEma50={showEma50}
@@ -7647,20 +7874,25 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <span
                           className="font-bold px-1.5 py-0.5 rounded text-[10px] text-right truncate"
                           style={{
-                            backgroundColor: indicatorOutput?.forecast.isPlanBActive
-                              ? "rgba(239, 68, 68, 0.2)"
-                              : indicatorOutput?.forecast.leg3Hit
-                              ? "rgba(16, 185, 129, 0.2)"
-                              : indicatorOutput?.forecast.leg2Hit
-                              ? "rgba(56, 189, 248, 0.2)"
-                              : indicatorOutput?.forecast.leg1Hit
-                              ? "rgba(251, 191, 36, 0.2)"
+                            backgroundColor: serverUnifiedForecast
+                              ? serverUnifiedForecast.permission.state === "TRADEABLE" || serverUnifiedForecast.permission.state === "IN_POSITION"
+                                ? "rgba(16, 185, 129, 0.2)"
+                                : serverUnifiedForecast.permission.state === "BLOCKED"
+                                ? "rgba(239, 68, 68, 0.2)"
+                                : "rgba(245, 158, 11, 0.2)"
                               : "rgba(245, 158, 11, 0.2)",
-                            color: indicatorOutput?.hud.recCol || "#ffffff"
+                            color: serverUnifiedForecast
+                              ? serverUnifiedForecast.permission.state === "TRADEABLE" || serverUnifiedForecast.permission.state === "IN_POSITION"
+                                ? "#34d399"
+                                : serverUnifiedForecast.permission.state === "BLOCKED"
+                                ? "#f87171"
+                                : "#fbbf24"
+                              : (indicatorOutput?.hud.recCol || "#ffffff")
                           }}
                         >
-                          {indicatorOutput?.hud.recActionStr ||
-                            `⏳ Ждём вход @${indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? (candles && candles.length > 0 ? candles[candles.length - 1]?.close?.toFixed(1) : "-")} (${indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"})`}
+                          {serverUnifiedForecast
+                            ? `[${serverUnifiedForecast.permission.state}] ${serverUnifiedForecast.permission.primaryReason}`
+                            : (indicatorOutput?.hud.recActionStr || "📡 Загрузка прогноза сервера...")}
                         </span>
                       </div>
 
@@ -7670,37 +7902,32 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                           <span className="text-gray-400 font-bold flex items-center gap-1 shrink-0 flex-wrap">
                             <span>📍 Позиция:</span>
                             <span className={`px-1 py-0.2 rounded text-[9.5px] font-bold ${
-                              indicatorOutput?.forecast.isBull
+                              (serverUnifiedForecast ? serverUnifiedForecast.direction === "LONG" : indicatorOutput?.forecast.isBull)
                                 ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                                 : "bg-rose-500/20 text-rose-300 border border-rose-500/40"
                             }`}>
-                              {indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} ({indicatorOutput?.forecast.probability || 84}%)
+                              {serverUnifiedForecast
+                                ? `${serverUnifiedForecast.direction} (S=${serverUnifiedForecast.permission.score.toFixed(2)})`
+                                : `${indicatorOutput?.forecast.isBull ? "LONG" : "SHORT"} (${indicatorOutput?.forecast.probability || 84}%)`}
                             </span>
-                            {indicatorOutput?.hud?.trendAlignmentBadge && (
-                              <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${
-                                indicatorOutput.hud.isCounterTrend
-                                  ? "bg-amber-500/20 text-amber-200 border border-amber-500/40"
-                                  : "bg-cyan-500/15 text-cyan-200 border border-cyan-500/30"
-                              }`}>
-                                {indicatorOutput.hud.trendAlignmentBadge}
-                              </span>
-                            )}
-                            {indicatorOutput?.hud?.maeBadge && (
-                              <span className="px-1 py-0.2 rounded text-[9px] font-extrabold bg-rose-500/25 text-rose-200 border border-rose-500/50 animate-pulse">
-                                {indicatorOutput.hud.maeBadge}
+                            {serverUnifiedForecast?.isScalpMode && (
+                              <span className="px-1 py-0.2 rounded text-[9px] font-bold bg-amber-500/20 text-amber-200 border border-amber-500/40">
+                                ⚡ СКАЛЬП
                               </span>
                             )}
                           </span>
                           <div className="flex items-center gap-1.5 font-mono text-[10px] text-right">
                             <span className="text-gray-300" title="Точка входа">
-                              Вход: <strong className="text-white">{indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-"}</strong>
+                              Вход: <strong className="text-white">{serverUnifiedForecast ? serverUnifiedForecast.entryMid.toFixed(1) : (indicatorOutput?.forecast.p1Entry?.toFixed(1) ?? "-")}</strong>
                             </span>
                             <span className="text-emerald-400" title="Тейк-профит 1">
-                              TP1: <strong>{indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-"}</strong>
+                              TP1: <strong>{serverUnifiedForecast ? serverUnifiedForecast.tp1.price.toFixed(1) : (indicatorOutput?.forecast.p2Tp1?.toFixed(1) ?? "-")}</strong>
                             </span>
-                            <span className="text-cyan-400" title="Тейк-профит 2">
-                              TP2: <strong>{indicatorOutput?.forecast.p3Tp2?.toFixed(1) ?? "-"}</strong>
-                            </span>
+                            {(!serverUnifiedForecast?.isScalpMode && (serverUnifiedForecast?.tp2 || !serverUnifiedForecast)) && (
+                              <span className="text-cyan-400" title="Тейк-профит 2">
+                                TP2: <strong>{serverUnifiedForecast?.tp2 ? serverUnifiedForecast.tp2.price.toFixed(1) : (indicatorOutput?.forecast.p3Tp2?.toFixed(1) ?? "-")}</strong>
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -7710,14 +7937,16 @@ export const AutonomousTradingStation: React.FC<AutonomousTradingStationProps> =
                         <span className="text-gray-400 shrink-0">🛡️ Защита &amp; SL:</span>
                         <div className="flex items-center gap-1.5 text-right font-mono">
                           <span className="text-rose-400 font-bold">
-                            SL: {indicatorOutput?.forecast.activeTrailingSl?.toFixed(1) || indicatorOutput?.forecast.invalidLevelSl?.toFixed(1) || "-"}
+                            SL: {serverUnifiedForecast ? serverUnifiedForecast.managedSl.toFixed(1) : (indicatorOutput?.forecast.activeTrailingSl?.toFixed(1) || indicatorOutput?.forecast.invalidLevelSl?.toFixed(1) || "-")}
                           </span>
                           <span className="text-amber-300 text-[9.5px] bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/30">
-                            {indicatorOutput?.forecast.trailingStageStr || "🛡️ Начальный SL"}
+                            {serverUnifiedForecast
+                              ? (Math.abs(serverUnifiedForecast.managedSl - serverUnifiedForecast.sl) > 0.01 ? "🛡️ Управляемый SL" : "🛡️ Начальный SL")
+                              : (indicatorOutput?.forecast.trailingStageStr || "🛡️ Начальный SL")}
                           </span>
-                          {indicatorOutput?.forecast.altTp1 && (
+                          {serverUnifiedForecast?.planB && (
                             <span className="text-gray-400 text-[9px] hidden sm:inline" title="План Б при сломе стопа">
-                              (План Б: {indicatorOutput.forecast.altTp1.toFixed(1)})
+                              (План Б: за {serverUnifiedForecast.sl.toFixed(1)})
                             </span>
                           )}
                         </div>

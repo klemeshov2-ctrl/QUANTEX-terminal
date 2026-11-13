@@ -13,6 +13,230 @@
 import { SessionSchedule, formatScheduleForPrompt } from "../src/lib/marketSessions";
 import { PropDeskContext } from "./propContextEngine";
 
+export type CachedPromptMode = "short" | "detailed" | "audit" | "chat";
+
+/**
+ * Блок 3: Абсолютно статический системный префикс под Context Cache DeepSeek.
+ * СТРОГОЕ ОГРАНИЧЕНИЕ: внутри этого текста НЕТ цен, тикеров, времени, дат, стен GEX и новостей.
+ * Хэш результата байт-в-байт идентичен между любыми вызовами с разными рыночными данными.
+ */
+const STATIC_CORE_RULES = `РОЛЬ: Ты — Senior Prop Trader и старший риск-менеджер институционального деска QUANTEX.
+Стиль: жёсткая дисциплина проп-трейдера, защита капитала, чёткий язык практикующего трейдера без воды и академических терминов. Запрещены слова: рефлексия, нейтрально-волатильно, имбалансы, ордерблоки, лимитку, 0DTE, ODTE — пиши: откат, пробой, лимитный ордер, стоп-лосс, тейк-профит.
+
+МАТЕМАТИЧЕСКИЕ ИНВАРИАНТЫ СДЕЛКИ (НАРУШЕНИЕ ЗАПРЕЩЕНО):
+- LONG: SL < Вход < TP1 < TP2.
+- SHORT: SL > Вход > TP1 > TP2.
+
+ПРАВИЛА GEX И ГАММЫ:
+- Позитивная гамма (+GEX, цена выше Flip): волатильность сжата, уровни держат цену — работа на отбой от границ к центру.
+- Негативная гамма (-GEX, цена ниже Flip): дилеры ускоряют импульс — уровни пробиваются, торговля контртренд на отбой ЗАПРЕЩЕНА, работать только по тренду.
+- ЗАПРЕТ ШОРТА В УБЕГАЮЩУЮ СТЕНУ: если цена закрепилась выше дневного Call Wall и месячный Call Wall смещается вверх — шорт от старого уровня категорически запрещён; старый Call Wall становится зеркальной поддержкой для LONG. Симметрично при пробое Put Wall вниз и смещении поддержки ниже — ловля ножей (отскок в LONG) запрещена.
+
+ПРАВИЛА PROP DESK И ЛИКВИДНОСТИ:
+- Запрещено ставить SL перед неснятым пулом ликвидности ближе 1.5 ATR — стоп прятать ЗА пулом либо входить после подтверждённого свипа.
+- При дивергенции дельты/RSI или скрытом поглощении (Absorption) слепой вход по тренду запрещён.
+- Если ADR14 исчерпан >= 80% — пробойные сделки запрещены (только скальп или возврат к среднему), дальние TP не ставить.
+- В опасные окна макростатистики, первые 30 мин открытия США и на закрытии сессии новые сделки блокируются.
+
+ПРАВИЛА АНТИ-ФЛУДА И ИНТЕРФЕЙСА:
+- Запрещено придумывать пункты меню терминала («Data Feed», «Онлайн-канал», «Лицензия»). На вопросы о настройках отвечай: «Я не управляю интерфейсом терминала. Проверьте настройки в меню QUANTEX».
+- Не выдумывай новости или события, которых нет в DATA PAYLOAD. Сверяйся строго с переданными фактами.
+- Отвечай по делу, короткими ёмкими фразами. Все переменные рыночные цифры бери строго из блока DATA PAYLOAD в конце сообщения пользователя.`;
+
+const STATIC_FORMAT_SHORT = `${STATIC_CORE_RULES}
+
+ФОРМАТ ОТВЕТА — «КОРОТКИЙ» (СТРОГО 4 СТРОКИ):
+1. 🚨 Статус новостного фона (предупреждение, если в DATA PAYLOAD есть близкое событие, иначе «Фон чистый»).
+2. Рынок: ключевые стены GEX + 5ТФ консенсус + POC/ADR.
+3. Аудит: сигнал UFE/индикатора и вердикт («Согласен» или «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ — причина»).
+4. План: Направление | Вход | SL (<1.5 ATR) | TP1 (и TP2 если не SCALP).`;
+
+const STATIC_FORMAT_DETAILED = `${STATIC_CORE_RULES}
+
+ФОРМАТ ОТВЕТА — «РАЗВЁРНУТЫЙ» (СТРОГО 4 БЛОКА):
+1. 📰 Фундаментальный фон и опасные окна (только факты из DATA PAYLOAD; красное предупреждение первой строкой при активном опасном окне).
+2. 📊 Опционный профиль GEX и Prop Desk Context (CW, PW, Flip, Pain, гамма-режим, миграция стен, POC/VAH/VAL, пулы, ADR).
+3. 📈 Технический анализ, 5ТФ консенсус и Order Flow (консенсус, RSI/MACD/дельта, дивергенции/поглощение).
+4. 📋 Аудит UFE v1 и Торговый план:
+   - Статус допуска UFE (TRADEABLE / CONDITIONAL / BLOCKED / DEGRADED) и причина. Если BLOCKED/CONDITIONAL — обязательно укажи конкретный триггер разблокировки («Вход появится, если...»).
+   - Мой вердикт: «Согласен с индикатором» ИЛИ «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» с обоснованием.
+   - Уровни: Направление | Вход | SL | TP1 | TP2 | План Б (если применимо).`;
+
+const STATIC_FORMAT_AUDIT = `${STATIC_CORE_RULES}
+
+РЕЖИМ: «АУДИТ UFE v1 И РИСК-МЕНЕДЖМЕНТ».
+Задача: проверить математику лестницы UFE, риск в ATR, пулы ликвидности и допуск:
+1. Вердикт аудита («Согласен с UFE» или «ВНИМАНИЕ: ДИВЕРГЕНЦИЯ» + причина).
+2. Проверка конфликтов (стены GEX, ближайшие неснятые пулы, ADR, опасные окна).
+3. Итоговые уровни (Вход, SL, TP1, TP2/План Б) или точное условие разблокировки при BLOCKED/CONDITIONAL.`;
+
+const STATIC_FORMAT_CHAT = `${STATIC_CORE_RULES}
+
+РЕЖИМ: «ОТВЕТ В ЧАТЕ».
+Правила чата:
+- Отвечай КРАТКО (2–4 ёмких предложения) строго на суть вопроса трейдера.
+- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выводить шаблон из 4 блоков, если трейдер явно не попросил полный торговый план.
+- Не пересказывай лишние данные из DATA PAYLOAD, которые не относятся к вопросу.`;
+
+export function getStaticSeniorPropSystemPrompt(mode: CachedPromptMode = "detailed"): string {
+  switch (mode) {
+    case "short":
+      return STATIC_FORMAT_SHORT;
+    case "audit":
+      return STATIC_FORMAT_AUDIT;
+    case "chat":
+      return STATIC_FORMAT_CHAT;
+    case "detailed":
+    default:
+      return STATIC_FORMAT_DETAILED;
+  }
+}
+
+export interface SlimDataPayloadParams {
+  ticker: string;
+  timeframe?: string;
+  currentPrice: number;
+  schedule?: SessionSchedule | null;
+  isDangerWindow?: boolean;
+  imminentInfo?: { isImminent?: boolean; title?: string; timeMsk?: string; minutesRemaining?: number } | null;
+  propContext?: PropDeskContext | any | null;
+  gex?: {
+    regime?: string;
+    dayCw?: number | null;
+    dayPw?: number | null;
+    monthCw?: number | null;
+    monthPw?: number | null;
+    flip?: number | null;
+    pain?: number | null;
+    migrationLog?: any[];
+  } | null;
+  consensus5Line?: string;
+  ufe?: any | null;
+  rawIndicators?: { rsi14?: number; macdHist?: number; delta?: string | number; div?: string } | null;
+  news?: Array<{ time?: string; timeMsk?: string; title?: string; impact?: string }> | null;
+  searchResults?: Array<{ title?: string; url?: string }> | null;
+}
+
+const r1 = (v: unknown): string => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(1) : "н/д";
+};
+
+/**
+ * Компактный DATA PAYLOAD для конца user-сообщения (снижает размер в 3–5 раз):
+ * - числа округлены до 1 знака;
+ * - пулы: максимум топ-5;
+ * - 5ТФ консенсус одной строкой;
+ * - migration-log: максимум последние 2 записи;
+ * - schedule: только при isDesyncWeek или активном опасном окне.
+ */
+export function buildSlimDataPayload(p: SlimDataPayloadParams): string {
+  const lines: string[] = [];
+  lines.push(`ASSET=${p.ticker} TF=${p.timeframe || "15m"} SPOT=${r1(p.currentPrice)}`);
+
+  // Schedule ТОЛЬКО при isDesyncWeek или активном опасном окне
+  const isDanger = Boolean(p.isDangerWindow || p.imminentInfo?.isImminent);
+  if (p.schedule && (p.schedule.isDesyncWeek || isDanger)) {
+    lines.push(
+      `SCHEDULE[${p.schedule.labelRu}]: US_OPEN=${p.schedule.usOpenMsk} MACRO=${p.schedule.macro0830Msk} FOMC=${p.schedule.fomc1400Msk}${
+        p.imminentInfo?.isImminent ? ` | ALERT=${p.imminentInfo.title}(${p.imminentInfo.timeMsk},-` + `${p.imminentInfo.minutesRemaining}m)` : ""
+      }`
+    );
+  }
+
+  // GEX + max 2 migration-log entries
+  if (p.gex) {
+    const g = p.gex;
+    let gLine = `GEX[${g.regime || "н/д"}]: dCW=${r1(g.dayCw)} dPW=${r1(g.dayPw)} mCW=${r1(g.monthCw)} mPW=${r1(g.monthPw)} FLIP=${r1(g.flip)} PAIN=${r1(g.pain)}`;
+    if (Array.isArray(g.migrationLog) && g.migrationLog.length > 0) {
+      const last2 = g.migrationLog.slice(-2).map((m: any) => {
+        const lvl = m.level || m.field || "WALL";
+        const fromV = m.from !== undefined ? r1(m.from) : "?";
+        const toV = m.to !== undefined ? r1(m.to) : (m.newValue !== undefined ? r1(m.newValue) : "?");
+        const reason = m.reason || "shift";
+        return `${lvl}:${fromV}->${toV}(${reason})`;
+      });
+      gLine += ` | MIGR_LAST2=[${last2.join("; ")}]`;
+    }
+    lines.push(gLine);
+  }
+
+  // 5TF Consensus — строго 1 строка
+  if (p.consensus5Line) {
+    lines.push(`5TF: ${p.consensus5Line}`);
+  }
+
+  // Prop Context (числа до 1 знака, пулы макс 5)
+  const ctx = p.propContext;
+  if (ctx && ctx.available) {
+    const vp = ctx.volumeProfile
+      ? `VP(POC=${r1(ctx.volumeProfile.poc)} VAH=${r1(ctx.volumeProfile.vah)} VAL=${r1(ctx.volumeProfile.val)})`
+      : "VP=н/д";
+    const adr = ctx.adr?.available && ctx.adr.adr14 !== null
+      ? `ADR14=${r1(ctx.adr.adr14)}(used=${r1(ctx.adr.usedPct)}%)`
+      : `ADR14=н/д(rng=${r1(ctx.adr?.todayRange)})`;
+    const flow = ctx.orderFlow
+      ? `FLOW(d=${Math.round(Number(ctx.orderFlow.recentDelta ?? ctx.orderFlow.barDelta ?? 0))},cvd=${Math.round(Number(ctx.orderFlow.cvd || 0))}${
+          ctx.orderFlow.deltaDivergence && ctx.orderFlow.deltaDivergence !== "NONE" ? `,DIV=${ctx.orderFlow.deltaDivergence}` : ""
+        }${ctx.orderFlow.absorption ? `,ABS=${ctx.orderFlow.absorption.side || ctx.orderFlow.absorption.direction}@${r1(ctx.orderFlow.absorption.price)}` : ""})`
+      : "FLOW=0";
+    const smc = ctx.structure ? `SMC=${ctx.structure.trend}` : "SMC=н/д";
+    lines.push(`PROP: ${vp} | ${adr} | ${smc} | ${flow}`);
+
+    const rawPools = Array.isArray(ctx.liquidityPools) ? ctx.liquidityPools : [];
+    const top5Pools = rawPools.slice(0, 5).map((pl: any) => `${pl.type}@${r1(pl.price)}[${pl.swept ? "S" : "U"}]`);
+    if (top5Pools.length > 0) {
+      lines.push(`POOLS(top5): ${top5Pools.join(", ")}`);
+    }
+  } else {
+    lines.push(`PROP: накопление(<50 свечей)`);
+  }
+
+  // UFE v1 (permission / reasons / unblockTrigger)
+  const ufe = p.ufe;
+  if (ufe && (ufe.permission || ufe.state)) {
+    const state = ufe.permission?.state || ufe.state || "н/д";
+    const score = ufe.permission?.score ?? ufe.score;
+    const reasonText = ufe.permission?.primaryReason || ufe.primaryReason || (Array.isArray(ufe.reasons) ? ufe.reasons[0]?.text : "") || "н/д";
+    const unblock = ufe.permission?.unblockTrigger || (Array.isArray(ufe.reasons) ? ufe.reasons[0]?.unblockTrigger : "") || "—";
+    const slEff = ufe.managedSl ?? ufe.sl;
+    lines.push(
+      `UFE: dir=${ufe.direction} state=${state} S=${score !== undefined ? Number(score).toFixed(2) : "—"} ` +
+      `entry=${r1(ufe.entryMid)} sl=${r1(slEff)} tp1=${r1(ufe.tp1?.price)} tp2=${ufe.tp2 ? r1(ufe.tp2.price) : "—"} | ` +
+      `reason="${reasonText}" | unblock="${unblock}"`
+    );
+  }
+
+  // Raw indicators (1 line, 1 decimal)
+  if (p.rawIndicators) {
+    lines.push(
+      `RAW: RSI14=${r1(p.rawIndicators.rsi14)} MACDh=${r1(p.rawIndicators.macdHist)} delta=${String(p.rawIndicators.delta ?? "0").slice(0, 40)}`
+    );
+  }
+
+  // News (max 3 headlines)
+  const newsArr = Array.isArray(p.news) ? p.news.slice(0, 3) : [];
+  if (newsArr.length > 0) {
+    lines.push(
+      `NEWS: ${newsArr.map(n => `[${n.time || n.timeMsk || ""}]${(n.title || "").slice(0, 80)}`).join(" | ")}`
+    );
+  } else {
+    lines.push(`NEWS: фон чистый`);
+  }
+
+  if (Array.isArray(p.searchResults) && p.searchResults.length > 0) {
+    lines.push(
+      `WEB: ${p.searchResults.slice(0, 3).map(s => `${(s.title || "").slice(0, 70)}(${s.url || ""})`).join(" | ")}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+export function buildCachedUserMessage(userInstructionText: string, dataPayload: string): string {
+  return `${userInstructionText.trim()}\n\nDATA PAYLOAD:\n${dataPayload}`;
+}
+
 export function formatPropContextForPrompt(ctx: PropDeskContext | any | null | undefined): string {
   if (!ctx || !ctx.available) {
     return "- Prop Desk Context: Микроструктура (VP, пулы ликвидности, Order Flow) в процессе накопления свечей (требуется >= 50 баров).";
@@ -99,10 +323,12 @@ export function formatPropContextForPrompt(ctx: PropDeskContext | any | null | u
   }
 
   // 7. ADR (14)
-  if (ctx.adr) {
+  if (ctx.adr && ctx.adr.available && ctx.adr.adr14 !== null) {
     const adr = ctx.adr;
     const range = adr.todayRange ?? adr.currentRange ?? 0;
-    lines.push(`- ADR (14): Средний ход = ${Number(adr.adr14).toFixed(2)} п., текущий размах = ${Number(range).toFixed(2)} п. (исчерпано ${adr.usedPct}% ADR)${adr.usedPct >= 80 ? " ⚠️ ADR исчерпан >80% — только скальп / mean-reversion!" : ""}`);
+    lines.push(`- ADR (14): Средний ход = ${Number(adr.adr14).toFixed(2)} п., текущий размах = ${Number(range).toFixed(2)} п. (исчерпано ${adr.usedPct}% ADR)${adr.usedPct !== null && adr.usedPct >= 80 ? " ⚠️ ADR исчерпан >80% — только скальп / mean-reversion!" : ""}`);
+  } else if (ctx.adr) {
+    lines.push(`- ADR (14): Размах дня = ${Number(ctx.adr.todayRange || 0).toFixed(2)} п. (ADR н/д: мало дневных корзин)`);
   } else {
     lines.push(`- ADR (14): В пределах нормы`);
   }

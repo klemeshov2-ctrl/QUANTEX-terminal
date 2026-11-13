@@ -75,9 +75,10 @@ export interface OrderFlowResult {
 }
 
 export interface AdrResult {
-  adr14: number;
+  available: boolean;
+  adr14: number | null;
   todayRange: number;
-  usedPct: number;
+  usedPct: number | null;
 }
 
 export interface StructureSwing {
@@ -606,21 +607,32 @@ export function computeAdr(candles: CandleLike[]): AdrResult | null {
   const currentDay = daysMap.get(currentDayKey)!;
   const todayRange = Number((currentDay.high - currentDay.low).toFixed(2));
 
-  // Предыдущие 14 дней для расчёта ADR
-  const prevDays = sortedDays.slice(Math.max(0, sortedDays.length - 15), sortedDays.length - 1);
+  // Предыдущие завершённые дни (без текущего незаконченного дня)
+  const prevDays = sortedDays.slice(0, sortedDays.length - 1);
+
+  // Требуется строго >= 10 полных дневных корзин МСК; иначе adr.available = false, usedPct = null
+  if (prevDays.length < 10) {
+    return {
+      available: false,
+      adr14: null,
+      todayRange,
+      usedPct: null
+    };
+  }
+
+  // Расчёт среднего за последние 14 завершённых дней (без fallback на todayRange!)
+  const adrDays = prevDays.slice(Math.max(0, prevDays.length - 14));
   let sumRanges = 0;
-  for (const k of prevDays) {
+  for (const k of adrDays) {
     const d = daysMap.get(k)!;
     sumRanges += (d.high - d.low);
   }
 
-  const adr14 = prevDays.length > 0
-    ? Number((sumRanges / prevDays.length).toFixed(2))
-    : todayRange || 10.0;
-
-  const usedPct = adr14 > 0 ? Number(((todayRange / adr14) * 100).toFixed(1)) : 50;
+  const adr14 = Number((sumRanges / adrDays.length).toFixed(2));
+  const usedPct = adr14 > 0 ? Number(((todayRange / adr14) * 100).toFixed(1)) : null;
 
   return {
+    available: true,
     adr14,
     todayRange,
     usedPct

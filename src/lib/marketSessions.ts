@@ -358,4 +358,52 @@ export function getGexCacheTtlMs(asset: string, date: Date = new Date()): number
   return 15 * 60 * 1000;
 }
 
+/**
+ * Детерминированный шаблон пре-ньюс предупреждения для графика и HUD (БЕЗ LLM).
+ * Проверяет близость к ключевым окнам макро/сессий (US Open, Macro 08:30 ET, London Open, FOMC, MOEX clearing)
+ * по времени МСК и возвращает строгий шаблон уведомления.
+ */
+export function getDeterministicPreNewsWarning(date: Date = new Date()): {
+  active: boolean;
+  windowName: string;
+  timeMsk: string;
+  minutesToEvent: number;
+  text: string;
+} | null {
+  const sched = getSessionSchedule(date);
+  const mskTime = date.getTime() + 3 * 3600 * 1000;
+  const mskDate = new Date(mskTime);
+  const mskDay = mskDate.getUTCDay();
+  if (mskDay === 0 || mskDay === 6) return null;
 
+  const curMins = mskDate.getUTCHours() * 60 + mskDate.getUTCMinutes();
+  const candidates = [
+    { name: "London Open", mins: sched.londonOpenMins, timeMsk: sched.londonOpenMsk },
+    { name: "US Macro 08:30 ET", mins: sched.macro0830Mins, timeMsk: sched.macro0830Msk },
+    { name: "US Cash Open", mins: sched.usOpenMins, timeMsk: sched.usOpenMsk },
+    { name: "ISM / Michigan", mins: sched.ism1000Mins, timeMsk: sched.ism1000Msk },
+    { name: "FOMC Rate", mins: sched.fomc1400Mins, timeMsk: sched.fomc1400Msk },
+    { name: "MOEX Clearing (14:00)", mins: 14 * 60, timeMsk: "14:00" },
+    { name: "MOEX Clearing (18:50)", mins: 18 * 60 + 50, timeMsk: "18:50" }
+  ];
+
+  for (const ev of candidates) {
+    const diff = ev.mins - curMins;
+    if (diff >= -15 && diff <= 15) {
+      const mskNowStr = `${String(mskDate.getUTCHours()).padStart(2, "0")}:${String(mskDate.getUTCMinutes()).padStart(2, "0")} МСК`;
+      const timingText = diff > 0
+        ? `через ${diff} мин (${ev.timeMsk} МСК)`
+        : diff === 0
+        ? `сейчас (${ev.timeMsk} МСК)`
+        : `идёт ${Math.abs(diff)} мин (окно ${ev.timeMsk} МСК)`;
+      return {
+        active: true,
+        windowName: ev.name,
+        timeMsk: mskNowStr,
+        minutesToEvent: diff,
+        text: `⚠️ ПРЕ-НЬЮС ОКНО (${mskNowStr}): ${ev.name} ${timingText} — повышенная волатильность, сбор стопов`
+      };
+    }
+  }
+  return null;
+}

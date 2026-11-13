@@ -68,14 +68,16 @@ export function authenticateJwt(req: Request, res: Response, next: NextFunction)
     return next();
   }
 
-  // Check if route is a public endpoint (read-only market feeds, quotes, GEX, auth check)
+  // Check if route is a public endpoint (read-only market feeds, quotes, GEX, auth check, version, forecast mirror)
   const isPublicEndpoint =
     fullPath === "/api/health" ||
+    fullPath === "/api/server/version" ||
     fullPath.startsWith("/api/auth/") ||
     fullPath.startsWith("/api/users/login") ||
     fullPath.startsWith("/api/users/list") ||
     fullPath.startsWith("/api/market/") ||
     fullPath.startsWith("/api/gex/") ||
+    fullPath.startsWith("/api/forecast/") ||
     fullPath.startsWith("/api/economic/") ||
     fullPath.startsWith("/api/indicator/code") ||
     (req.method === "GET" && (fullPath === "/api/journal/trades" || fullPath === "/api/ai/forecast/journal" || fullPath === "/api/ai/forecast/stats"));
